@@ -1,0 +1,38 @@
+[build]
+target = "armv7a-none-eabihf"
+
+# ---------------------------------------------------------------------------
+# armv7-unknown-linux-gnueabihf — used for QEMU benchmark runs only.
+# Run: cargo bench --target armv7-unknown-linux-gnueabihf
+#
+# qemu-arm -cpu cortex-a9 emulates Cortex-A9 including VFPv3-D16 and NEON.
+# The RUSTFLAGS here match the embedded target so codegen is representative.
+# ---------------------------------------------------------------------------
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+runner = ["qemu-arm", "-cpu", "cortex-a9", "-L", "/usr/arm-linux-gnueabihf"]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon",
+]
+
+[target.armv7a-none-eabihf]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon",
+  "-C", "link-arg=--gc-sections",
+  "-C", "force-frame-pointers=yes",
+]
+
+[alias]
+# Used when building the embedded firmware for armv7a-none-eabihf.
+# build-std cannot live in [unstable] because it applies to all targets,
+# breaking host-native `cargo test` for the rza1/deluge-bsp crates.
+# build-fw-bin requires cargo-binutils (`cargo install cargo-binutils`).
+build-fw      = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem"
+build-fw-rel  = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features"
+build-fw-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-firmware -- -O binary target/armv7a-none-eabihf/release/deluge-firmware.bin"
+
+[env]
+# UAC2 (3 ifaces) + CDC-ACM (2 ifaces) + USB-MIDI (2 ifaces) = 7 total.
+EMBASSY_USB_MAX_INTERFACE_COUNT = "8"

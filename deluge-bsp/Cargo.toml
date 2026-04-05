@@ -1,0 +1,29 @@
+[package]
+name = "deluge-bsp"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+# Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
+# `cargo test` (host target). They cannot compile for armv7a-none-eabihf
+# because the `test` crate requires std.
+test = false
+
+[dependencies]
+rza1l-hal = { path = "../rza1l-hal" }
+embedded-sdmmc = { version = "0.9", default-features = false, features = ["defmt-log"] }
+critical-section = "1"
+log = { version = "0.4", default-features = false, features = ["release_max_level_off"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+cortex-ar = "0.3"
+embassy-sync = "0.8"
+embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main", features = ["tick-hz-1_000_000"] }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-usb-host = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+critical-section = { version = "1", features = ["std"] }
+
+

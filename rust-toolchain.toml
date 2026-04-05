@@ -1,0 +1,4 @@
+[toolchain]
+channel = "nightly"
+targets = ["armv7a-none-eabihf"]
+components = ["rust-src", "llvm-tools-preview"]

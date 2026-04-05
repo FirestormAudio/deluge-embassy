@@ -1,0 +1,20 @@
+# Cargo build outputs
+/target/
+
+# Debug / flash artifacts
+*.nmdump
+*.jdebug.user
+/JLinkLog.log
+
+# IDE configs
+.vscode/
+.idea/
+*.srctrl*
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+vendor/

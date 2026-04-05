@@ -1,0 +1,37 @@
+[package]
+name = "rza1l-hal"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+# Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
+# `cargo test` (host target). They cannot compile for armv7a-none-eabihf
+# because the `test` crate requires std.
+test = false
+
+[target.'cfg(target_os = "none")'.dependencies]
+cortex-ar = { version = "0.3", features = ["critical-section-single-core"] }
+
+[dependencies]
+critical-section = "1"
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+linked_list_allocator = { version = "0.10", default-features = false }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embedded-hal = "1"
+embedded-hal-async = "1"
+embedded-io-async = "0.7"
+log = { version = "0.4", default-features = false, features = ["release_max_level_off"] }
+
+[features]
+rtt = ["dep:rtt-target"]
+
+[dependencies.rtt-target]
+version = "0.6"
+optional = true
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+critical-section = { version = "1", features = ["std"] }
+
+

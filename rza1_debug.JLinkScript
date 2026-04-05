@@ -1,0 +1,54 @@
+/*
+ * rza1_debug.JLinkScript
+ *
+ * Called by JLink GDB server when 'monitor reset' is issued.
+ * Replaces the default reset with a halt + CPU state fixup so the
+ * Rust firmware can execute directly from SRAM via JTAG without going
+ * through the ROM bootloader.
+ *
+ * Problem without this script:
+ *   After 'monitor reset' the CPU may have SCTLR.M=1 (MMU enabled) with
+ *   TTBR0 reset to 0 or left pointing at a now-corrupted translation table.
+ *   Any instruction fetch goes through the MMU, triggers a page-table walk,
+ *   the walk reads garbage from SPI flash (CS0 at 0x00000000), gets an
+ *   invalid descriptor, and fires a Data Abort -> ROM handler -> crash.
+ *
+ * Fix: halt the CPU and enable retention-RAM writes (SYSCR3).
+ * SCTLR.M/C/I (MMU + caches) and VBAR are cleared/set via 'monitor cp15'
+ * GDB commands in launch.json, since JLink script files have no CP15 API.
+ * After this the Rust firmware runs with direct physical SRAM access.
+ */
+
+int ResetTarget(void) {
+    int timeout;
+
+    JLINK_SYS_Report("RZA1: custom ResetTarget -- halting CPU");
+
+    /* Halt the CPU (don't assert nRESET: that would run the ROM bootloader) */
+    JLINK_TARGET_Halt();
+    timeout = 500;
+    while (JLINK_TARGET_IsHalted() == 0) {
+        JLINK_SYS_Sleep(1);
+        timeout = timeout - 1;
+        if (timeout == 0) {
+            JLINK_SYS_Report("RZA1: ERROR - CPU did not halt, giving up");
+            return -1;
+        }
+    }
+
+    /*
+     * Enable CPU write access to data-retention RAM (0x20000000-0x2001FFFF).
+     * CPG.SYSCR3 at 0xFCFE0408 -- bits[3:0] enable the four 32KB banks.
+     * Without this any CPU store to retention RAM causes a Data Abort.
+     * The debug interface bypasses the CPU's MMU, so this write always works.
+     *
+     * Note: SCTLR (disable MMU/caches) and VBAR are set via 'monitor cp15'
+     * GDB commands in launch.json after this script runs, since JLink script
+     * files have no CP15 API.
+     */
+    JLINK_MEM_WriteU8(0xFCFE0408, 0x0F);
+    JLINK_SYS_Report("RZA1: SYSCR3 = 0x0F  (retention RAM writable)");
+
+    JLINK_SYS_Report("RZA1: custom ResetTarget done");
+    return 0;
+}

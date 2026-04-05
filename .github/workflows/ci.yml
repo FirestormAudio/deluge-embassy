@@ -1,0 +1,15 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    name: Firmware
+    uses: ./.github/workflows/firmware.yml
+    with:
+      build-type: release
+      retention-days: 7

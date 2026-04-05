@@ -1,0 +1,30 @@
+[package]
+name = "deluge-firmware"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "deluge-firmware"
+test = false
+
+[dependencies]
+rza1l-hal = { path = "../rza1l-hal" }
+deluge-bsp = { path = "../deluge-bsp" }
+cortex-ar = "0.3"
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", branch = "main", features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main", features = ["tick-hz-1_000_000"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-usb-host = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+rtt-target = { version = "0.6", features = ["log"], optional = true }
+log = { version = "0.4.29", features = ["release_max_level_off"] }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+deluge-fft = { path = "../deluge-fft" }
+
+[features]
+## Enable RTT (SEGGER Real-Time Transfer) debug logging.
+## Activates rtt-target, defines _SEGGER_RTT, and registers the logger.
+## Disable for release builds: cargo build-fw --release --no-default-features
+default = ["rtt"]
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

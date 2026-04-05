@@ -1,0 +1,62 @@
+name: Firmware
+
+on:
+  workflow_call:
+    inputs:
+      build-type:
+        description: "Cargo build profile (debug | release)"
+        default: "release"
+        type: string
+      retention-days:
+        default: 7
+        type: number
+    outputs:
+      artifact-name:
+        value: ${{ jobs.build.outputs.artifact-name }}
+  workflow_dispatch:
+    inputs:
+      build-type:
+        description: "Build profile"
+        type: choice
+        options: [debug, release]
+        default: release
+
+jobs:
+  build:
+    name: Build firmware (${{ inputs.build-type }})
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.set-artifact.outputs.name }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: armv7a-none-eabihf
+          components: rust-src,llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: |
+          if [ "${{ inputs.build-type }}" = "release" ]; then
+            cargo build-fw-bin
+          else
+            cargo build-fw
+          fi
+
+      - name: Set artifact name
+        id: set-artifact
+        run: echo "name=firmware-${{ inputs.build-type }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.set-artifact.outputs.name }}
+          path: |
+            target/armv7a-none-eabihf/release/deluge-firmware.bin
+            target/armv7a-none-eabihf/debug/deluge-firmware
+          retention-days: ${{ inputs.retention-days }}
