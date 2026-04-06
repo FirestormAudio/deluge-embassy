@@ -40,6 +40,9 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils --locked
+
       - name: Build
         run: |
           if [ "${{ inputs.build-type }}" = "release" ]; then
