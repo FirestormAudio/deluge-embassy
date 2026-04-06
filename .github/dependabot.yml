@@ -13,18 +13,8 @@ updates:
       all-actions:
         patterns: [ "*" ]
 
-  - package-ecosystem: "pip"
-    directory: scripts/toolchain/
-    labels:
-      - "pr-dependencies"
-      - "toolchain"
-    schedule:
-      interval: "weekly"
-      day: "friday"
-      time: "01:30"
-
-  - package-ecosystem: "pip"
-    directory: tests/integration/usbmidi
+  - package-ecosystem: "cargo"
+    directory: "/"
     labels:
       - "pr-dependencies"
     schedule:
