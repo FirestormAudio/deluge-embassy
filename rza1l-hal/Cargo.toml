@@ -2,6 +2,7 @@
 name = "rza1l-hal"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [lib]
 # Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
