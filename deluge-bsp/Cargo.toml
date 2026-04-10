@@ -12,7 +12,7 @@ test = false
 
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal" }
-embedded-sdmmc = { version = "0.9", default-features = false, features = ["defmt-log"] }
+embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"] }
 critical-section = "1"
 log = { version = "0.4", default-features = false, features = ["release_max_level_off"] }
 

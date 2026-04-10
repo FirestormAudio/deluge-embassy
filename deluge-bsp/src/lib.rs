@@ -17,6 +17,7 @@ pub mod pads;
 pub mod pic;
 pub mod scux_dvu_path;
 pub mod scux_src_path;
+pub mod scux_usb_tx_path;
 pub mod sd;
 pub mod sdram;
 pub mod system;

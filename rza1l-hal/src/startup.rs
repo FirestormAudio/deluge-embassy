@@ -356,13 +356,13 @@ _boot_fault_loop:
     .global _fiq_handler
 _undef_handler:
     mov r4, #1
-    b _boot_fault_loop
+    b    _undef_rtt
 _svc_handler:
     mov r4, #2
     b _boot_fault_loop
 _prefetch_handler:
     mov r4, #3
-    b _boot_fault_loop
+    b    _pabt_rtt
 _abort_handler:
     b    _abort_rtt              /* branch to cfg-selected implementation */
 _reserved_handler:
@@ -376,23 +376,141 @@ _fiq_handler:       subs pc, lr, #4
 "#
 );
 
-// RTT-enabled data-abort body: writes "DABT" to RTT channel 0 then halts.
+// Non-XIP builds: _copy_data_to_ram is a no-op (everything is already in RAM).
+#[cfg(not(feature = "xip"))]
+global_asm!(
+    r#"
+    .section .text._copy_data_to_ram, "ax"
+    .code 32
+    .global _copy_data_to_ram
+_copy_data_to_ram:
+    bx lr
+"#
+);
+
+// XIP builds: copy .data section from flash LMA (__sidata) to RAM VMA (__sdata..__edata).
+#[cfg(feature = "xip")]
+global_asm!(
+    r#"
+    .section .text._copy_data_to_ram, "ax"
+    .code 32
+    .global _copy_data_to_ram
+_copy_data_to_ram:
+    ldr  r0, =__sidata            /* src: LMA of .data (in flash)  */
+    ldr  r1, =__sdata             /* dst: VMA start (in RAM)       */
+    ldr  r2, =__edata             /* end: VMA end (in RAM)         */
+.Ldata_copy_loop:
+    cmp  r1, r2
+    ldrlt r3, [r0], #4
+    strlt r3, [r1], #4
+    blt  .Ldata_copy_loop
+    bx   lr
+"#
+);
+
+// RTT-enabled data-abort body: dumps "DABT\n  PC=XXXXXXXX DFAR=XXXXXXXX DFSR=XXXXXXXX\n"
+// (where XXXXXXXX are 8 ASCII hex digits) to RTT channel 0, then halts.
+//
+// On Data Abort entry:
+//   LR_abt = faulting PC + 8  (so faulting PC = LR - 8)
+//   SPSR_abt = CPSR of aborted mode
+// CP15 c6 c0 0 = DFAR (Data Fault Address Register)
+// CP15 c5 c0 0 = DFSR (Data Fault Status Register)
 #[cfg(feature = "rtt")]
 global_asm!(
     r#"
 _abort_rtt:
     mov  r4, #4
+    /* Save scratch registers (we're in ABT mode with banked LR/SP). */
+    push {{r5, r6, r7, r8, r9, r10}}
+
+    /* Compute faulting PC = LR_abt - 8. */
+    sub  r5, lr, #8               /* r5 = faulting PC              */
+
+    /* Read DFAR and DFSR from CP15. */
+    mrc  p15, 0, r6, c6, c0, 0   /* r6 = DFAR                     */
+    mrc  p15, 0, r7, c5, c0, 0   /* r7 = DFSR                     */
+
     /* rtt-target 0.6 RttControlBlock layout (32-bit ARM, usize = 4 bytes):
      *   _SEGGER_RTT + 0x1C  acUp[0].buffer  (*mut u8)
      *   _SEGGER_RTT + 0x24  acUp[0].write   (AtomicUsize / WrOff)
      */
     ldr  r0, =_SEGGER_RTT
-    ldr  r1, [r0, #0x1C]          /* r1 = acUp[0].buffer          */
-    ldr  r2, [r0, #0x24]          /* r2 = WrOff                   */
-    ldr  r3, =0x54424144          /* little-endian "DABT"          */
-    str  r3, [r1, r2]             /* buffer[WrOff] = "DABT"        */
+    ldr  r1, [r0, #0x1C]          /* r1 = buffer base              */
+    ldr  r2, [r0, #0x24]          /* r2 = WrOff                    */
+
+    /* Write "DABT\n  PC=" (9 bytes) */
+    ldr  r3, =0x54424144          /* "DABT"                        */
+    str  r3, [r1, r2]
     add  r2, r2, #4
-    str  r2, [r0, #0x24]          /* WrOff += 4                   */
+    ldr  r3, =0x43205c6e          /* "\n  C"  (little-endian)      */
+    str  r3, [r1, r2]
+    add  r2, r2, #4
+    ldr  r3, =0x3d435750          /* "PC=C" (we overwrite last C)  */
+    /* Actually write "  PC=" as 5 bytes — easier to do nibble-by-nibble below */
+    /* Restart: write the whole tag line as 4-byte chunks.
+       Prefix header = "DABT\n  PC=" = 10 bytes.
+       Use a simpler byte-by-byte approach via a helper macro. */
+    /* Back up WrOff to redo — overwrite the partial writes with correct data. */
+    ldr  r2, [r0, #0x24]          /* re-read original WrOff        */
+
+    /* Inline helper: write_hex8(r1+r2, r_val) — 8 hex chars, advances r2 by 8.
+       Uses r3, r8, r9, r10 as scratch. */
+    .macro write_hex8 reg
+    mov  r9, \reg
+    mov  r10, #28
+.Lhex_loop_\@:
+    lsr  r8, r9, r10
+    and  r8, r8, #0xF
+    cmp  r8, #10
+    addlt r8, r8, #0x30
+    addge r8, r8, #0x37
+    strb r8, [r1, r2]
+    add  r2, r2, #1
+    subs r10, r10, #4
+    bge  .Lhex_loop_\@
+    .endm
+
+    .macro write_char ch
+    mov  r8, \ch
+    strb r8, [r1, r2]
+    add  r2, r2, #1
+    .endm
+
+    /* Write "DABT" */
+    write_char #0x44
+    write_char #0x41
+    write_char #0x42
+    write_char #0x54
+    write_char #0x0A              /* '\n' */
+    /* Write "  PC=" */
+    write_char #0x20
+    write_char #0x20
+    write_char #0x50
+    write_char #0x43
+    write_char #0x3D
+    write_hex8 r5                 /* faulting PC */
+    write_char #0x0A
+    /* Write "DFAR=" */
+    write_char #0x44
+    write_char #0x46
+    write_char #0x41
+    write_char #0x52
+    write_char #0x3D
+    write_hex8 r6                 /* DFAR */
+    write_char #0x0A
+    /* Write "DFSR=" */
+    write_char #0x44
+    write_char #0x46
+    write_char #0x53
+    write_char #0x52
+    write_char #0x3D
+    write_hex8 r7                 /* DFSR */
+    write_char #0x0A
+
+    str  r2, [r0, #0x24]          /* WrOff = updated value         */
+
+    pop  {{r5, r6, r7, r8, r9, r10}}
     b    _boot_fault_loop         /* Blink 4x repeating pattern   */
 "#
 );
@@ -403,6 +521,125 @@ global_asm!(
     r#"
 _abort_rtt:
     mov  r4, #4
+    b    _boot_fault_loop
+_undef_rtt:
+    mov  r4, #1
+    b    _boot_fault_loop
+_pabt_rtt:
+    mov  r4, #3
+    b    _boot_fault_loop
+"#
+);
+
+// RTT-enabled undefined-instruction handler: dumps "UNDEF\n  PC=XXXXXXXX\n"
+#[cfg(feature = "rtt")]
+global_asm!(
+    r#"
+_undef_rtt:
+    /* On UNDEF entry: LR_und = faulting PC + 4 (ARM) or +2 (Thumb) */
+    push {{r5, r6, r7, r8, r9, r10}}
+    sub  r5, lr, #4               /* faulting PC (ARM; Thumb: #2) */
+    ldr  r0, =_SEGGER_RTT
+    ldr  r1, [r0, #0x1C]          /* buffer base */
+    ldr  r2, [r0, #0x24]          /* WrOff */
+    .macro write_char_u ch
+    mov  r8, \ch
+    strb r8, [r1, r2]
+    add  r2, r2, #1
+    .endm
+    .macro write_hex8_u reg
+    mov  r9, \reg
+    mov  r10, #28
+.Lhex_loop_u_\@:
+    lsr  r8, r9, r10
+    and  r8, r8, #0xF
+    cmp  r8, #10
+    addlt r8, r8, #0x30
+    addge r8, r8, #0x37
+    strb r8, [r1, r2]
+    add  r2, r2, #1
+    subs r10, r10, #4
+    bge  .Lhex_loop_u_\@
+    .endm
+    write_char_u #0x55   /* U */
+    write_char_u #0x4E   /* N */
+    write_char_u #0x44   /* D */
+    write_char_u #0x45   /* E */
+    write_char_u #0x46   /* F */
+    write_char_u #0x0A   /* \n */
+    write_char_u #0x20
+    write_char_u #0x20
+    write_char_u #0x50   /* P */
+    write_char_u #0x43   /* C */
+    write_char_u #0x3D   /* = */
+    write_hex8_u r5
+    write_char_u #0x0A
+    str  r2, [r0, #0x24]
+    pop  {{r5, r6, r7, r8, r9, r10}}
+    b    _boot_fault_loop
+"#
+);
+
+// RTT-enabled prefetch-abort handler: dumps "PABT\n  PC=XXXXXXXX IFSR=XXXXXXXX\n"
+#[cfg(feature = "rtt")]
+global_asm!(
+    r#"
+_pabt_rtt:
+    /* On PABT entry: LR_abt = faulting PC + 4 */
+    push {{r5, r6, r7, r8, r9, r10}}
+    sub  r5, lr, #4               /* faulting PC */
+    mrc  p15, 0, r6, c5, c0, 1   /* IFSR */
+    mrc  p15, 0, r7, c6, c0, 2   /* IFAR */
+    ldr  r0, =_SEGGER_RTT
+    ldr  r1, [r0, #0x1C]
+    ldr  r2, [r0, #0x24]
+    .macro write_char_p ch
+    mov  r8, \ch
+    strb r8, [r1, r2]
+    add  r2, r2, #1
+    .endm
+    .macro write_hex8_p reg
+    mov  r9, \reg
+    mov  r10, #28
+.Lhex_loop_p_\@:
+    lsr  r8, r9, r10
+    and  r8, r8, #0xF
+    cmp  r8, #10
+    addlt r8, r8, #0x30
+    addge r8, r8, #0x37
+    strb r8, [r1, r2]
+    add  r2, r2, #1
+    subs r10, r10, #4
+    bge  .Lhex_loop_p_\@
+    .endm
+    write_char_p #0x50   /* P */
+    write_char_p #0x41   /* A */
+    write_char_p #0x42   /* B */
+    write_char_p #0x54   /* T */
+    write_char_p #0x0A
+    write_char_p #0x20
+    write_char_p #0x20
+    write_char_p #0x50   /* P */
+    write_char_p #0x43   /* C */
+    write_char_p #0x3D   /* = */
+    write_hex8_p r5
+    write_char_p #0x0A
+    write_char_p #0x49   /* I */
+    write_char_p #0x46   /* F */
+    write_char_p #0x53   /* S */
+    write_char_p #0x52   /* R */
+    write_char_p #0x3D
+    write_hex8_p r6
+    write_char_p #0x0A
+    write_char_p #0x49   /* I */
+    write_char_p #0x46   /* F */
+    write_char_p #0x41   /* A */
+    write_char_p #0x52   /* R */
+    write_char_p #0x3D
+    write_hex8_p r7
+    write_char_p #0x0A
+    str  r2, [r0, #0x24]
+    pop  {{r5, r6, r7, r8, r9, r10}}
     b    _boot_fault_loop
 "#
 );

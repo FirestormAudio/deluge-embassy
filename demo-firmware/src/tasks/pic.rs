@@ -73,14 +73,14 @@ pub(crate) async fn pic_task() {
                         }
                         oled::notify_redraw();
                     }
-                    controls::button::FILL => {
+                    controls::button::SYNC_SCALING => {
                         pad_set_all(true);
                         for led in 0..36u8 {
                             pic::led_on(led).await;
                         }
                         oled::notify_redraw();
                     }
-                    controls::button::SELECT => {
+                    controls::button::TRIPLETS => {
                         pad_invert_all();
                         oled::notify_redraw();
                     }

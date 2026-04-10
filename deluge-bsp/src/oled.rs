@@ -355,6 +355,12 @@ pub async fn send_frame(fb: &FrameBuffer) {
     // Await DMA completion interrupt.
     dmac::wait_transfer_complete(OLED_DMA_CH).await;
 
+    // Wait for RSPI0 to finish clocking out its FIFO/shift register (TEND=1).
+    // DMA completion only means all bytes have been *enqueued*; deselecting
+    // before TEND causes the SSD1309 to receive a truncated frame and its
+    // GDDRAM address pointer drifts, corrupting every subsequent frame.
+    unsafe { rspi::wait_end(SPI_CH) };
+
     // RSPI0 DMA transfer complete — cv_gate may proceed.
     crate::RSPI0_DMA_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
 

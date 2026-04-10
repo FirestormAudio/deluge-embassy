@@ -3,7 +3,7 @@
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! let (mut audio, ep_out) = AudioClass::new(&mut builder, 288);
+//! let (mut audio, ep_out, ep_in) = AudioClass::<8>::new(&mut builder, 288);
 //! builder.handler(&mut audio);
 //! let usb = builder.build();
 //! ```
@@ -24,6 +24,13 @@ pub static USB_BITS_PER_SAMPLE: AtomicU8 = AtomicU8::new(24);
 /// Set by [`AudioClass`] when the host selects a capture alternate setting.
 /// Read by `uac2_mic_task` to determine the sample pack width.
 pub static USB_CAPTURE_BITS_PER_SAMPLE: AtomicU8 = AtomicU8::new(24);
+
+/// Current USB device sample rate in Hz (44100 or 48000).
+/// Updated by [`AudioClass`] when the host issues a SET_CUR sample-rate
+/// request.  Read by `uac2_task` / `uac2_mic_task` to decide whether the
+/// SCUX SRC paths are needed.
+pub static USB_SAMPLE_RATE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(44_100);
 
 const USB_CLASS_AUDIO: u8 = 0x01;
 const USB_SUBCLASS_AUDIO_CONTROL: u8 = 0x01;
@@ -61,8 +68,11 @@ pub const SAMPLE_RATE_48000: u32 = 48_000;
 
 /// Handles UAC2 SET_CUR / GET_CUR for sample-rate negotiation.
 ///
+/// `CAPTURE_CH` is the number of channels in the ISO IN (capture) endpoint.
+/// The speaker (ISO OUT) endpoint is always stereo.
+///
 /// Create via [`AudioClass::new`], register with `builder.handler()`.
-pub struct AudioClass {
+pub struct AudioClass<const CAPTURE_CH: usize> {
     ac_iface: InterfaceNumber,
     as_iface: InterfaceNumber,         // speaker OUT
     as_capture_iface: InterfaceNumber, // mic IN
@@ -74,7 +84,7 @@ pub struct AudioClass {
     pub capture_active: bool,
 }
 
-impl AudioClass {
+impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     fn request_targets_ac_interface(&self, req: &Request) -> bool {
         (req.index as u8) == u8::from(self.ac_iface)
     }
@@ -87,8 +97,10 @@ impl AudioClass {
     /// IN packet rate to determine how many samples the device consumes per
     /// SOF interval and adjusts the OUT data rate accordingly.
     ///
-    /// `iso_packet_size` — max bytes per isochronous packet.  288 covers
-    /// both 44.1 kHz (264 B) and 48 kHz (288 B) at stereo 24-bit.
+    /// `iso_packet_size` — max bytes per isochronous packet for the speaker ISO
+    /// OUT endpoint.  288 covers both 44.1 kHz (264 B) and 48 kHz (288 B) at
+    /// stereo 24-bit.  The capture ISO IN MPS is derived from `CAPTURE_CH`:
+    /// `49 * CAPTURE_CH * 3` bytes (49-frame stuffing headroom, 24-bit samples).
     ///
     /// Returns `(handler, ep_out, ep_in)`.
     pub fn new<'d, D: Driver<'d>>(
@@ -165,11 +177,11 @@ impl AudioClass {
                 (TERM_MICROPHONE >> 8) as u8,
                 0x00,
                 CLOCK_SOURCE_ID,
-                0x02,
-                0x03,
+                CAPTURE_CH as u8,
                 0x00,
                 0x00,
-                0x00, // 2ch FL+FR
+                0x00,
+                0x00, // CAPTURE_CH channels, no predefined spatial mapping
                 0x00,
                 0x00,
                 0x00,
@@ -223,18 +235,18 @@ impl AudioClass {
                 0x00,
                 0x00,
                 0x00, // PCM format
-                0x02,
-                0x03,
+                CAPTURE_CH as u8,
                 0x00,
                 0x00,
                 0x00,
-                0x00, // 2ch FL+FR
+                0x00,
+                0x00, // CAPTURE_CH channels, no predefined spatial mapping
             ],
         );
         as_cap_alt1.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x02, 0x10]); // subslot=2, 16-bit
         let ep_in = as_cap_alt1.endpoint_isochronous_in(
             None,
-            iso_packet_size, // MPS=288 so ep_in.info.max_packet_size covers alt2 too
+            (49 * CAPTURE_CH * 3) as u16, // 49-frame stuffing × CAPTURE_CH ch × 3 bytes
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -259,18 +271,18 @@ impl AudioClass {
                 0x00,
                 0x00,
                 0x00, // PCM format
-                0x02,
-                0x03,
+                CAPTURE_CH as u8,
                 0x00,
                 0x00,
                 0x00,
-                0x00, // 2ch FL+FR
+                0x00,
+                0x00, // CAPTURE_CH channels, no predefined spatial mapping
             ],
         );
         as_cap_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x03, 0x18]); // subslot=3, 24-bit
         let _ep_in_24 = as_cap_alt2.endpoint_isochronous_in(
             Some(ep_in.info().addr), // reuses the same pipe as alt 1
-            iso_packet_size,
+            (49 * CAPTURE_CH * 3) as u16,
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -386,7 +398,7 @@ impl AudioClass {
     }
 }
 
-impl Handler for AudioClass {
+impl<const CAPTURE_CH: usize> Handler for AudioClass<CAPTURE_CH> {
     fn control_out(&mut self, req: Request, data: &[u8]) -> Option<OutResponse> {
         // UAC2 SET_CUR — clock source SAM_FREQ_CONTROL
         if req.request_type == RequestType::Class
@@ -400,6 +412,7 @@ impl Handler for AudioClass {
                 let hz = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if hz == SAMPLE_RATE_44100 || hz == SAMPLE_RATE_48000 {
                     self.sample_rate = hz;
+                    USB_SAMPLE_RATE.store(hz, core::sync::atomic::Ordering::Release);
                 }
             }
             return Some(OutResponse::Accepted);
@@ -428,15 +441,16 @@ impl Handler for AudioClass {
             UAC2_GET_RANGE => {
                 // UAC2 §5.2.3.1: GET_RANGE response = wNumSubRanges followed by
                 // (dMIN, dMAX, dRES) tuples for each supported frequency.
-                // Only 44100 Hz is advertised — the SSI clock is derived from the
-                // AUDIO_X1 crystal (22.5792 MHz) and cannot produce 48000 Hz.
-                // Advertising both rates causes Linux snd-usb-audio to pick 48000 Hz
-                // which overflows the 44100 Hz DMA buffer with a 3900 frame/s surplus.
+                //
+                // We advertise exactly the engine's current sample rate so the host
+                // is coerced to match it.  No SRC is needed: USB audio bypasses SCUX
+                // entirely and feeds the engine rings directly.
+                let rate = USB_SAMPLE_RATE.load(core::sync::atomic::Ordering::Acquire);
                 let resp: [u8; 14] = {
                     let mut b = [0u8; 14];
                     b[0..2].copy_from_slice(&1u16.to_le_bytes()); // wNumSubRanges = 1
-                    b[2..6].copy_from_slice(&44_100u32.to_le_bytes()); // dMIN
-                    b[6..10].copy_from_slice(&44_100u32.to_le_bytes()); // dMAX
+                    b[2..6].copy_from_slice(&rate.to_le_bytes()); // dMIN
+                    b[6..10].copy_from_slice(&rate.to_le_bytes()); // dMAX
                     b[10..14].copy_from_slice(&0u32.to_le_bytes()); // dRES
                     b
                 };

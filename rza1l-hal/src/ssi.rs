@@ -68,7 +68,7 @@ const DMARS_SSI0_RX: u32 = 0x00E2;
 
 // ── CHCFG register field constants (shared with scux; defined in dmac) ───────
 use crate::dmac::{
-    CHCFG_AM_BURST, CHCFG_DAD, CHCFG_DDS_32BIT, CHCFG_DEM, CHCFG_DMS, CHCFG_HIEN, CHCFG_LVL,
+    CHCFG_AM_BURST, CHCFG_DAD, CHCFG_DDS_32BIT, CHCFG_DMS, CHCFG_HIEN, CHCFG_LVL,
     CHCFG_REQD, CHCFG_SAD, CHCFG_SDS_32BIT,
 };
 
@@ -212,10 +212,10 @@ const STEREO_FRAME_ALIGN_MASK: u32 = !7u32;
 /// Compute CHCFG word for an SSI TX DMA channel (SRAM → SSIFTDR).
 /// Source address increments (SAD=0); destination is fixed SSIFTDR (DAD=1).
 /// Trigger: destination-select (REQD=1) — SSI TX FIFO drives the request.
+/// DEM is cleared so DMAINT fires once per full buffer pass (enables interrupt).
 #[inline(always)]
 const fn tx_chcfg(dma_ch: u8) -> u32 {
     CHCFG_DMS
-        | CHCFG_DEM
         | CHCFG_DAD
         | CHCFG_DDS_32BIT
         | CHCFG_SDS_32BIT
@@ -229,10 +229,10 @@ const fn tx_chcfg(dma_ch: u8) -> u32 {
 /// Compute CHCFG word for an SSI RX DMA channel (SSIFRDR → SRAM).
 /// Source is fixed SSIFRDR (SAD=1); destination address increments (DAD=0).
 /// Trigger: source-select (REQD=0) — SSI RX FIFO drives the request.
+/// DEM is cleared so DMAINT fires once per full buffer pass (enables interrupt).
 #[inline(always)]
 const fn rx_chcfg(dma_ch: u8) -> u32 {
     CHCFG_DMS
-        | CHCFG_DEM
         | CHCFG_SAD
         | CHCFG_DDS_32BIT
         | CHCFG_SDS_32BIT
@@ -507,4 +507,20 @@ pub fn rx_buf_start() -> *const i32 {
 /// One-past-the-end pointer for the RX buffer (uncached view).
 pub fn rx_buf_end() -> *const i32 {
     unsafe { rx_buf_start().add(RX_BUF_LEN) }
+}
+
+/// Returns the DMA channel number assigned to the SSI RX path.
+///
+/// Valid after [`init`] or [`init_rx_only`] has been called.  Used by the
+/// firmware to register a GIC completion handler (DMAINT = 41 + ch).
+pub fn rx_dma_ch() -> u8 {
+    RX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Returns the DMA channel number assigned to the SSI TX path.
+///
+/// Valid after [`init`] has been called.  Used by the firmware to register a
+/// GIC completion handler (DMAINT = 41 + ch).
+pub fn tx_dma_ch() -> u8 {
+    TX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
 }

@@ -85,6 +85,12 @@ impl CsHeap {
     pub fn free(&self) -> usize {
         critical_section::with(|_| unsafe { (*self.0.get()).free() })
     }
+
+    /// Returns the base address of this heap, or 0 if not yet initialised.
+    /// Used by allocation-policy code to route `dealloc` to the correct arena.
+    pub fn bottom(&self) -> usize {
+        critical_section::with(|_| unsafe { (*self.0.get()).bottom() as usize })
+    }
 }
 
 unsafe impl Allocator for CsHeap {

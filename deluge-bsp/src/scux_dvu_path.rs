@@ -196,6 +196,81 @@ pub unsafe fn init() {
     }
 }
 
+/// Initialise the DVU output path with async sample-rate conversion.
+///
+/// Identical to [`init`] except that 2SRC0/0 is configured in async SRC mode
+/// (input rate `engine_hz` → output 44.1 kHz) instead of bypass mode.
+///
+/// Use this when the engine is configured at a sample rate other than 44.1 kHz.
+/// The engine writes samples at `engine_hz` into `DVU_TX_BUF`; the SCUX
+/// 2SRC0/0 block converts them to 44.1 kHz before passing to the DVU and
+/// ultimately to the SSI0 codec.
+///
+/// # Safety
+/// Must be called once from a single-threaded boot context after
+/// `rza1l_hal::stb::init()` and SSI0 pin-mux setup.
+pub unsafe fn init_with_src(engine_hz: u32) {
+    unsafe {
+        log::debug!("scux_dvu_path: init with SRC {} Hz → 44100 Hz", engine_hz);
+
+        ssi::init_rx_only(&crate::system::SSI_CONFIG);
+        scux::reset();
+
+        let buf_ptr = core::ptr::addr_of!(DVU_TX_BUF.0[0]) as *const u32;
+        let buf_bytes = DVU_PATH_BUF_LEN * core::mem::size_of::<i32>();
+        scux::init_ffd_dma(FFD_CH, crate::system::SCUX_FFD0_DMA_CH, buf_ptr, buf_bytes);
+
+        scux::configure_ipc(IPC_CH, IpcSel::FfdToSrcAsync);
+        scux::configure_opc(OPC_CH, OpcSel::ToSsi);
+        scux::configure_ffd(FFD_CH, AudioInfo::STEREO_24, 8);
+
+        // 2SRC0/0: async SRC — engine_hz → 44100 Hz.
+        let intifs = scux::intifs(engine_hz, 44100);
+        scux::configure_src(
+            SRC_UNIT,
+            SRC_PAIR,
+            SrcConfig {
+                mode: SrcMode::Async,
+                audio: AudioInfo::STEREO_24,
+                bypass: false,
+                intifs,
+                mnfsr: 0,
+                buf_size: 0,
+            },
+        );
+
+        let dvu_cfg = DvuConfig {
+            audio: AudioInfo::STEREO_24,
+            bypass: false,
+            volumes: [0x0010_0000; 8],
+            ramp: None,
+            zero_cross_mute: false,
+        };
+        scux::configure_dvu(DVU_CH, dvu_cfg);
+        scux::configure_mix(MixConfig {
+            audio: AudioInfo::STEREO_24,
+            bypass: true,
+        });
+        scux::set_fdtsel(SRC_UNIT, TSEL_SSIF0_WS);
+        scux::set_futsel(SRC_UNIT, TSEL_SSIF0_WS);
+        scux::set_ssictrl(SSICTRL_SSI0TX);
+
+        scux::start(
+            0b0001, // FFD mask: FFD0
+            0b0000, // FFU mask: none
+            0b0001, // 2SRC mask: unit0, pair0
+            0b0001, // DVU mask: DVU0
+            false,  // MIX: not in path
+            0b0001, // IPC mask: IPC0
+            0b0001, // OPC mask: OPC0
+        );
+        scux::apply_dvu_after_init(DVU_CH, dvu_cfg);
+        ssi::enable_tx();
+
+        log::debug!("scux_dvu_path: SRC streaming started");
+    }
+}
+
 /// Set the volume for a single audio channel (0 = left, 1 = right).
 ///
 /// Takes effect immediately (no ramp).  `vol = 0x0010_0000` is unity gain (0 dB).
@@ -258,4 +333,20 @@ pub fn tx_current_ptr() -> *mut i32 {
     let crsa = unsafe { rza1l_hal::dmac::current_src(crate::system::SCUX_FFD0_DMA_CH) };
     let aligned = crsa & !7u32;
     (aligned as usize + UNCACHED_MIRROR_OFFSET) as *mut i32
+}
+
+/// Update the input sample rate of 2SRC0/0 while the path is running.
+///
+/// Only valid when the path was initialised with [`init_with_src`].  Calling
+/// this when the path is in bypass mode (initialised with [`init`]) has no
+/// effect on audio quality but wastes a register write.
+///
+/// # Safety
+/// Writes to SCUX SRC memory-mapped registers.  Must not be called from the
+/// audio thread (register RMW is not atomic).
+pub unsafe fn update_engine_rate(engine_hz: u32) {
+    unsafe {
+        let intifs = scux::intifs(engine_hz, 44_100);
+        scux::src_update_intifs(SRC_UNIT, SRC_PAIR, intifs);
+    }
 }
