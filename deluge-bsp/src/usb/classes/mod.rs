@@ -9,3 +9,5 @@
 //!   Deluge's high-quality audio interface.
 
 pub mod audio;
+#[cfg(target_os = "none")]
+pub mod midi;

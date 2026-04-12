@@ -777,7 +777,7 @@ async fn read_byte_dma(ch: usize) -> u8 {
 /// `DMA_RX_*` statics must have been initialised by `init_dma_rx` for this
 /// channel, and this function must only be called from a single task per
 /// channel.
-unsafe fn try_read_dma(ch: usize) -> Option<u8> {
+pub unsafe fn try_read_dma(ch: usize) -> Option<u8> {
     unsafe {
         let dma_ch = DMA_RX_DMACH[ch];
         let buf_base = DMA_RX_BASE[ch];
@@ -860,6 +860,27 @@ pub async fn write_bytes(ch: usize, buf: &[u8]) {
             wait_tdfe(ch).await;
         }
     }
+}
+
+/// Non-blocking write to the SCIF TX FIFO.
+///
+/// Writes as many bytes from `buf` as fit in the TX FIFO immediately, without
+/// waiting for DMA or interrupts.  Returns the number of bytes actually written.
+///
+/// Suitable for short, latency-sensitive messages (e.g. MIDI clock pulses).
+/// The TX FIFO holds 16 bytes; overflow bytes are silently dropped.
+///
+/// # Safety
+/// `init` must have been called for `ch`.
+pub unsafe fn try_write_fifo(ch: usize, buf: &[u8]) -> usize {
+    let b = base(ch);
+    let in_fifo = unsafe { (rr16(b + SCFDR) >> 8) & 0x1F } as usize;
+    let space = TX_FIFO_SIZE.saturating_sub(in_fifo);
+    let to_write = buf.len().min(space);
+    for &byte in &buf[..to_write] {
+        unsafe { wr8(b + FTDR, byte) };
+    }
+    to_write
 }
 
 /// Suspend until the TX FIFO has drained below the trigger level (TDFE=1).

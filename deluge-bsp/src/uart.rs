@@ -28,6 +28,27 @@ pub async fn read_midi_byte() -> u8 {
     rza1l_hal::uart::read_byte(MIDI_CH).await
 }
 
+/// Non-blocking: read the next raw byte from the MIDI DIN RX ring buffer.
+///
+/// Returns `None` if the DMA ring buffer is currently empty.
+/// Call from a single task; not interrupt-safe.
+#[inline]
+pub fn try_read_midi() -> Option<u8> {
+    // SAFETY: init_midi must have been called; called from a single task only.
+    unsafe { rza1l_hal::uart::try_read_dma(MIDI_CH) }
+}
+
+/// Non-blocking: write bytes directly to the MIDI DIN TX FIFO.
+///
+/// Returns the number of bytes actually written (may be less than `data.len()`
+/// if the 16-byte FIFO is full).  Sufficient for short MIDI messages such as
+/// clock pulses (`0xF8`, 1 byte).
+#[inline]
+pub fn try_write_midi(data: &[u8]) -> usize {
+    // SAFETY: init_midi must have been called.
+    unsafe { rza1l_hal::uart::try_write_fifo(MIDI_CH, data) }
+}
+
 /// Initialise the MIDI DIN UART (SCIF0) with DMA-backed RX.
 ///
 /// MIDI TX uses TXI GIC interrupts; SCIF0 RX uses DMAC channel
