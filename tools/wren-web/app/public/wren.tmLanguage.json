@@ -1,0 +1,275 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Wren",
+  "scopeName": "source.wren",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#class-definition" },
+    { "include": "#method-definition" },
+    { "include": "#constants" },
+    { "include": "#fields" },
+    { "include": "#identifiers" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.wren",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.wren",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            { "include": "#comments" }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "comment": "Raw string (triple-quoted) — must come before regular string",
+          "name": "string.quoted.triple.wren",
+          "begin": "\"\"\"",
+          "end": "\"\"\""
+        },
+        {
+          "comment": "Double-quoted string with interpolation support. No top-level name so interpolation content escapes the string scope.",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": { "name": "string.quoted.double.wren punctuation.definition.string.begin.wren" }
+          },
+          "endCaptures": {
+            "0": { "name": "string.quoted.double.wren punctuation.definition.string.end.wren" }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.wren",
+              "match": "\\\\[0abefnrtv\"\\\\%]"
+            },
+            {
+              "name": "constant.character.escape.unicode.wren",
+              "match": "\\\\u[0-9a-fA-F]{4}"
+            },
+            {
+              "name": "constant.character.escape.unicode.long.wren",
+              "match": "\\\\U[0-9a-fA-F]{8}"
+            },
+            {
+              "name": "constant.character.escape.hex.wren",
+              "match": "\\\\x[0-9a-fA-F]{2}"
+            },
+            {
+              "comment": "String interpolation %(expression) — content is NOT under the string scope",
+              "begin": "%\\(",
+              "end": "\\)",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.interpolation.begin.wren" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.section.interpolation.end.wren" }
+              },
+              "name": "meta.interpolation.wren",
+              "patterns": [
+                { "include": "#nested-parens" },
+                { "include": "$self" }
+              ]
+            },
+            {
+              "comment": "Regular string content (non-escape, non-interpolation text)",
+              "name": "string.quoted.double.wren",
+              "match": "[^\"\\\\%]+"
+            },
+            {
+              "comment": "Literal percent not followed by open paren",
+              "name": "string.quoted.double.wren",
+              "match": "%"
+            },
+            {
+              "comment": "Backslash not matched by escape patterns",
+              "name": "string.quoted.double.wren",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "nested-parens": {
+      "comment": "Balanced parentheses inside string interpolation",
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        { "include": "#nested-parens" },
+        { "include": "$self" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.wren",
+          "match": "\\b0[xX][0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.wren",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9_]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.wren",
+          "match": "\\b[0-9][0-9_]*([eE][+-]?[0-9_]+)?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.wren",
+          "match": "\\b(break|continue|else|for|if|in|return|while)\\b"
+        },
+        {
+          "name": "keyword.declaration.wren",
+          "match": "\\b(class|construct|foreign|is|static|var)\\b"
+        },
+        {
+          "name": "keyword.other.import.wren",
+          "match": "\\b(import|as)\\b"
+        },
+        {
+          "name": "variable.language.this.wren",
+          "match": "\\b(this)\\b"
+        },
+        {
+          "name": "variable.language.super.wren",
+          "match": "\\b(super)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.true.wren",
+          "match": "\\btrue\\b"
+        },
+        {
+          "name": "constant.language.boolean.false.wren",
+          "match": "\\bfalse\\b"
+        },
+        {
+          "name": "constant.language.null.wren",
+          "match": "\\bnull\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.wren",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.logical.wren",
+          "match": "(&&|\\|\\||!)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.wren",
+          "match": "(\\+|-|\\*|/|%)"
+        },
+        {
+          "name": "keyword.operator.bitwise.wren",
+          "match": "(~|&|\\||\\^|<<|>>)"
+        },
+        {
+          "name": "keyword.operator.range.wren",
+          "match": "\\.\\.\\.?"
+        },
+        {
+          "name": "keyword.operator.ternary.wren",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.assignment.wren",
+          "match": "="
+        }
+      ]
+    },
+    "class-definition": {
+      "patterns": [
+        {
+          "match": "\\b(class)\\s+([A-Z][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "keyword.declaration.class.wren" },
+            "2": { "name": "entity.name.type.class.wren" }
+          }
+        },
+        {
+          "comment": "Class reference (capitalized identifier)",
+          "name": "support.class.wren",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "method-definition": {
+      "patterns": [
+        {
+          "match": "\\b(construct)\\s+([a-z][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "keyword.declaration.constructor.wren" },
+            "2": { "name": "entity.name.function.constructor.wren" }
+          }
+        }
+      ]
+    },
+    "fields": {
+      "patterns": [
+        {
+          "comment": "Static field (double underscore prefix)",
+          "name": "variable.other.static-field.wren",
+          "match": "__[A-Za-z_][A-Za-z0-9_]*\\b"
+        },
+        {
+          "comment": "Instance field (single underscore prefix)",
+          "name": "variable.other.field.wren",
+          "match": "_[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "comment": "Method call",
+          "match": "\\b([a-z][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.wren" }
+          }
+        },
+        {
+          "comment": "Attribute",
+          "match": "#(!?)([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.attribute.wren" },
+            "2": { "name": "entity.other.attribute-name.wren" }
+          }
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.wren",
+          "match": "[,:]"
+        },
+        {
+          "name": "punctuation.accessor.wren",
+          "match": "\\."
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wren · deluge</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark"></span>
+        <span class="wordmark">wren<i>·</i>deluge</span>
+        <span class="tagline">live-coding the synth in Wren</span>
+      </div>
+      <div class="controls">
+        <label class="field">
+          <span class="legend">example</span>
+          <select id="examples"></select>
+        </label>
+        <span id="status" class="status">booting…</span>
+        <button id="run" class="run">Run <kbd>⌘↵</kbd></button>
+      </div>
+    </header>
+
+    <main class="bench">
+      <section class="editor-pane">
+        <div class="pane-legend">script · main.wren</div>
+        <div id="editor"></div>
+      </section>
+
+      <section class="faceplate">
+        <div class="screen">
+          <div class="pane-legend">oled · 128×48</div>
+          <canvas id="oled"></canvas>
+        </div>
+
+        <div class="grid-wrap">
+          <div class="pane-legend">pads · 18×8</div>
+          <div id="pad-grid" class="pad-grid"></div>
+        </div>
+
+        <div id="cv-row" class="cv-row"></div>
+
+        <div class="keys-wrap">
+          <div class="pane-legend">midi in</div>
+          <div id="keyboard" class="keyboard"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="console-pane">
+      <div class="pane-legend">console · System.print</div>
+      <div id="console" class="console"></div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

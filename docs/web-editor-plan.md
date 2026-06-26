@@ -349,10 +349,17 @@ Remaining risks, lower (none gating):
    Node smoke test (`web/test.mjs`) passes — load scripts, OLED text rasterises,
    MIDI→handler→CV, metro→gate, compile errors with line numbers. `wren-sys`
    gained a wasm build branch (C against wasi-sysroot + a `clock` shim).
-4. **M3 — Editor.** Monaco + TextMate grammar + `monaco-languageclient` → analyzer
-   Worker (with prelude seeded) + VM `compile_check` markers.
-5. **M4 — Panel UI.** OLED canvas, pad grid, CV/gate scope, LEDs, encoders/buttons,
-   MIDI monitor + keyboard. Wire input injection and output draining.
+4. **M3 — Editor. ✅ DONE (first cut).** `tools/wren-web/app`: Vite + TS + Monaco
+   with Wren highlighting + a prelude-seeded completion provider, the wasm loaded
+   via a browser WASI shim (`@bjorn3/browser_wasi_shim`), Run (⌘↵) + VM errors as
+   editor markers. Verified in a real browser (playwright). *Still to do:* swap the
+   Monarch tokenizer for the reused TextMate grammar, and add the `wren-analyzer`
+   LSP worker (prelude-seeded) — the editor-intelligence upgrade.
+5. **M4 — Panel UI. ✅ DONE (first cut).** A live faceplate: emissive OLED canvas,
+   18×8 pad grid (click → pad press), CV/gate readouts, mini MIDI keyboard, and a
+   `System.print`/error console, driven by a `requestAnimationFrame` tick loop.
+   Verified live: MIDI key → handler → CV 4.58 V; metro → CV sweep + gate + OLED
+   text. *Still to do:* CV/gate scope over time, encoders/buttons/LEDs, MIDI monitor.
 6. **M5 — Audio.** AudioWorklet + SAB rings; `Out.patch(...)` makes sound; audio
    scope. Cross-origin isolation in place.
 7. **M6 — Polish.** Web MIDI input, example loader, shareable permalinks, mobile/

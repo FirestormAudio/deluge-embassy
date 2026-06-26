@@ -22,3 +22,5 @@ Thumbs.db
 vendor/
 **target/
 /rtt-flasher.log
+**/node_modules/*
+.playwright-mcp/
