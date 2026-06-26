@@ -51,6 +51,13 @@ fn main() {
     // default host compiler so the VM runs in-process. `CARGO_CFG_TARGET_OS` is
     // "none" only for the embedded triple.
     let embedded = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none");
+    // The web simulator builds the VM to wasm. The Rust crate targets
+    // `wasm32-unknown-unknown` (for wasm-bindgen), but the C VM needs a libc —
+    // so the C is compiled against a wasi-sdk sysroot and wasi-libc/libm are
+    // linked into the final module (its only host imports are four WASI stdio
+    // calls; see docs/web-editor-plan.md §5). Point `WASI_SYSROOT` at an
+    // extracted wasi-sysroot.
+    let wasm = env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32");
 
     let mut build = cc::Build::new();
 
@@ -94,6 +101,27 @@ fn main() {
             .flag("-fno-common")
             .compiler("arm-none-eabi-gcc")
             .archiver("arm-none-eabi-ar");
+    }
+
+    if wasm {
+        let sysroot = env::var("WASI_SYSROOT").expect(
+            "wasm build of wren-sys needs WASI_SYSROOT pointing at a wasi-sdk \
+             sysroot (see docs/web-editor-plan.md §5)",
+        );
+        // Override cc's `--target=wasm32-unknown-unknown` (no libc) with the wasi
+        // triple so the C resolves `<string.h>`/`<math.h>`/… against wasi-libc;
+        // the emitted wasm objects still link into the unknown-unknown module.
+        build
+            .flag("--target=wasm32-wasi")
+            .flag(format!("--sysroot={sysroot}"))
+            .flag("-ffunction-sections")
+            .flag("-fdata-sections");
+        // Link wasi-libc + libm for the C runtime (realloc/free, memcpy, the math
+        // intrinsics, and the stdio used by wren_debug / error formatting).
+        println!("cargo:rustc-link-search=native={sysroot}/lib/wasm32-wasi");
+        println!("cargo:rustc-link-lib=static=c");
+        println!("cargo:rustc-link-lib=static=m");
+        println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
     }
 
     build.compile("wrencore");

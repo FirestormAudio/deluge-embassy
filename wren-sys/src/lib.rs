@@ -140,6 +140,15 @@ unsafe extern "C" {
     pub fn wrenSetSlotHandle(vm: *mut WrenVM, slot: c_int, handle: *mut WrenHandle);
 }
 
+// wasm: wasi-libc provides `time`/`clock_getres` but not `clock()`, which
+// `wren_opt_random` calls once to seed its RNG. A constant is fine for the
+// simulator (deterministic `Random`); a real clock can be wired later.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+extern "C" fn clock() -> core::ffi::c_long {
+    0
+}
+
 // ── Host hooks (provided by the firmware) ────────────────────────────────────
 
 unsafe extern "C" {
