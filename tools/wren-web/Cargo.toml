@@ -1,0 +1,28 @@
+# The web simulator's wasm core: implements `deluge_wren_core::Host` against
+# in-memory buffers and exposes a small C-ABI surface to JS. Built for
+# `wasm32-unknown-unknown`; the wren C VM is compiled+linked against a wasi-sdk
+# sysroot (set `WASI_SYSROOT`), so the module has a handful of WASI imports a
+# tiny JS shim satisfies. Excluded from the no_std cross-compiled workspace, like
+# the other host-side tools.
+[package]
+name = "wren-web"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Wasm core for the Deluge Wren web editor/simulator: a Host impl over in-memory buffers + a C-ABI surface for JS."
+
+[lib]
+name = "wren_web"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The portable runtime (bindings + DSP engine + Host trait), shared with the
+# firmware. The web `Host` impl here is the browser counterpart of `FwHost`.
+deluge-wren-core = { path = "../../crates/deluge-wren-core" }
+# The VM, compiled to wasm against wasi-libc (see this crate's build note).
+wren-sys = { path = "../../wren-sys" }
+
+[profile.release]
+opt-level = "s"
+lto = true

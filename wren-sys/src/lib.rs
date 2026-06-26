@@ -145,7 +145,8 @@ unsafe extern "C" {
 // simulator (deterministic `Random`); a real clock can be wired later.
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
-extern "C" fn clock() -> core::ffi::c_long {
+extern "C" fn clock() -> core::ffi::c_longlong {
+    // wasi-libc's `clock_t` is `long long`.
     0
 }
 

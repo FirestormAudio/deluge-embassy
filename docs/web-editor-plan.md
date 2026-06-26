@@ -343,9 +343,12 @@ Remaining risks, lower (none gating):
    firmware-specific transport (`src/audio.rs`: command ring + render task). Both
    the device (`armv7a-none-eabihf`) and host (`x86_64`) builds are green;
    behavior-preserving. No web code yet.
-3. **M2 — Headless runtime module.** `wren-web` with `compile_check` + `load` +
-   input/output drains, **no audio**. Prove a script can drive an in-memory OLED
-   and pad state from JS.
+3. **M2 — Headless runtime module. ✅ DONE.** `tools/wren-web`: a `Host` impl over
+   in-memory buffers + a C-ABI surface (`sim_boot`/`sim_load` + input injection +
+   output drains) + a JS loader (`web/loader.mjs`). Builds to a ~230 KB wasm; a
+   Node smoke test (`web/test.mjs`) passes — load scripts, OLED text rasterises,
+   MIDI→handler→CV, metro→gate, compile errors with line numbers. `wren-sys`
+   gained a wasm build branch (C against wasi-sysroot + a `clock` shim).
 4. **M3 — Editor.** Monaco + TextMate grammar + `monaco-languageclient` → analyzer
    Worker (with prelude seeded) + VM `compile_check` markers.
 5. **M4 — Panel UI.** OLED canvas, pad grid, CV/gate scope, LEDs, encoders/buttons,
