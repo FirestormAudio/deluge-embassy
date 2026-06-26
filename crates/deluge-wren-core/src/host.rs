@@ -1,0 +1,73 @@
+//! The `Host` seam: everything the Wren bindings need from the outside world.
+//!
+//! The foreign methods run inside the VM (a single thread per target: the
+//! firmware's `vm_task`, or the web simulator's audio worklet). They reach the
+//! hardware — CV/gate jacks, MIDI, LEDs, OLED, the audio engine — only through
+//! this trait, so the *same* bindings drive a real Deluge and a browser tab.
+//!
+//! ## Registration
+//! Because Wren's foreign methods are bare `extern "C"` callbacks with no context
+//! argument, the active host is held in a process-global. Each target constructs
+//! one `'static` host and calls [`set_host`] once at boot, before running any
+//! script. Access is single-threaded (the VM thread), matching the rest of the
+//! binding state.
+
+use core::ptr::addr_of_mut;
+
+use crate::engine::Cmd;
+
+/// Number of CV output jacks (`output[1]`, `output[2]`).
+pub const CV_CHANNELS: usize = 2;
+/// Number of gate output jacks (`gate[1]`..`gate[4]`).
+pub const GATE_CHANNELS: usize = 4;
+
+/// The outside world, as the Wren bindings see it. All control-rate / output
+/// only — input events are pushed *into* the bindings by the host's own tasks
+/// (see [`crate::midi_rx`], [`crate::input_dispatch`], [`crate::enc_turn`]).
+pub trait Host {
+    /// Current monotonic time in milliseconds (drives metro scheduling).
+    fn now_ms(&mut self) -> u64;
+
+    /// Set CV jack `ch` (0-based) to `volts`. Slew is computed in the bindings;
+    /// this receives the already-slewed value. The host maps volts → hardware
+    /// (e.g. a DAC code) or records them for display.
+    fn cv_set(&mut self, ch: u8, volts: f32);
+    /// Set gate jack `ch` (0-based) on/off.
+    fn gate_set(&mut self, ch: u8, on: bool);
+
+    /// Emit a complete DIN-MIDI message (1–3 bytes).
+    fn midi_tx(&mut self, msg: &[u8]);
+
+    /// Indicator LED by button id.
+    fn led(&mut self, id: u8, on: bool);
+
+    /// OLED frame-buffer drawing. `text` receives raw bytes (5×7 font, latin-1).
+    fn oled_clear(&mut self);
+    fn oled_text(&mut self, x: usize, y: usize, text: &[u8]);
+    fn oled_pixel(&mut self, x: usize, y: usize, on: bool);
+    fn oled_show(&mut self);
+
+    /// Submit a control-rate audio-graph command. The host transports it to its
+    /// [`Engine`](crate::Engine) (firmware: a ring drained by the audio task;
+    /// web: applied directly on the audio thread).
+    fn audio_cmd(&mut self, cmd: Cmd);
+}
+
+static mut HOST: Option<*mut (dyn Host + 'static)> = None;
+
+/// Register the process-wide host. Call once at boot, before running any script.
+pub fn set_host(host: &'static mut dyn Host) {
+    // SAFETY: single-threaded VM context; called once during setup.
+    unsafe { HOST = Some(host as *mut dyn Host) };
+}
+
+/// Borrow the registered host. Panics if [`set_host`] was never called.
+#[inline]
+pub(crate) fn host() -> &'static mut dyn Host {
+    // SAFETY: the VM thread is the sole accessor; the pointer was set from a
+    // `&'static mut` and is never reassigned, so reborrowing it is sound.
+    unsafe {
+        let p = (*addr_of_mut!(HOST)).expect("deluge_wren_core: host not registered");
+        &mut *p
+    }
+}

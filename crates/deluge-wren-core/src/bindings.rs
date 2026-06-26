@@ -1,26 +1,28 @@
-//! M2 hardware bindings: native CV/gate output (with slew) and a metro timer
-//! pool, exposed to wren as `Output`/`Gate`/`Metro` foreign classes plus a small
-//! prelude (`output[]`, `gate[]`).
+//! The Deluge Wren foreign bindings: `Output`/`Gate`/`Metro`/`Midi`/`Pads`/
+//! `Buttons`/`Enc`/`Led`/`Oled` plus the `Node` audio-graph class, and the
+//! prelude that declares them. Target-agnostic — every hardware effect goes
+//! through the [`Host`](crate::Host) trait, so these same bindings drive a real
+//! Deluge and the web simulator.
 //!
 //! ## Concurrency model
-//! All native state here is touched **only from `vm_task`**: foreign methods run
-//! inside `wrenInterpret` (called by `vm_task`), and [`tick`] runs between
-//! interprets in the same task. So plain `static mut` is sound — there is no
-//! other task or IRQ touching it. The one rule: never hold a `&mut STATE` borrow
-//! across a `wrenCall` (a metro callback can re-enter a foreign method, which
-//! would take a second `&mut STATE`). [`tick`] captures what it needs, drops the
-//! borrow, *then* fires callbacks.
+//! All native state here is touched **only from the VM thread**: foreign methods
+//! run inside `wrenInterpret`, and [`tick`] runs between interprets on the same
+//! thread. So plain `static mut` is sound — there is no other task or IRQ touching
+//! it. The one rule: never hold a `&mut STATE` borrow across a `wrenCall` (a metro
+//! callback can re-enter a foreign method, which would take a second `&mut STATE`).
+//! [`tick`] captures what it needs, drops the borrow, *then* fires callbacks.
 
 use core::ffi::c_char;
 use core::ptr::addr_of_mut;
 
-use deluge::{Cv, Gate};
 use wren_sys::{ClassEntry, MethodEntry, Vm, WrenForeign, WrenHandle, WrenType, WrenVM};
 
-use crate::audio::{self, Input};
+use crate::audio;
+use crate::engine::{Input, K_ENV, K_LPF, K_MUL, K_NOISE};
+use crate::host::{CV_CHANNELS, GATE_CHANNELS, host};
 
-const N_CV: usize = Cv::CHANNELS; // 2
-const N_GATE: usize = Gate::CHANNELS; // 4
+const N_CV: usize = CV_CHANNELS; // 2
+const N_GATE: usize = GATE_CHANNELS; // 4
 const N_METRO: usize = 8;
 
 /// One CV channel: linear slew from `current` toward `target` at `rate` V/s.
@@ -66,31 +68,19 @@ static mut STATE: State = State {
 /// of `State` so firing a metro doesn't need a `&mut STATE` borrow.
 static mut CALL_HANDLE: *mut WrenHandle = core::ptr::null_mut();
 
-/// Borrow the native state. Single-threaded (vm_task only); callers must hold at
+/// Borrow the native state. Single-threaded (VM thread only); callers must hold at
 /// most one borrow at a time and never across a `wrenCall`.
 #[allow(clippy::mut_from_ref)]
 fn state() -> &'static mut State {
-    // SAFETY: vm_task is the sole accessor; see module docs.
+    // SAFETY: the VM thread is the sole accessor; see module docs.
     unsafe { &mut *addr_of_mut!(STATE) }
 }
 
-/// Convert volts to a MAX5136 16-bit code (unipolar 0..~10 V, ~6552 codes/V).
-fn volts_to_code(v: f32) -> u16 {
-    let c = v * 6552.0;
-    if c <= 0.0 {
-        0
-    } else if c >= 65535.0 {
-        65535
-    } else {
-        c as u16
-    }
-}
-
-// ── Per-iteration tick (called by vm_task) ───────────────────────────────────
+// ── Per-iteration tick (called by the host's VM loop) ─────────────────────────
 
 /// Advance CV slew + write the DAC/gates, then fire any due metro callbacks.
-/// `now_ms` is the current Embassy millisecond tick; `dt_s` is seconds since the
-/// last tick.
+/// `now_ms` is the current millisecond tick; `dt_s` is seconds since the last
+/// tick.
 pub fn tick(vm: Vm, now_ms: u64, dt_s: f32) {
     render_cv_gate(dt_s);
 
@@ -102,7 +92,7 @@ pub fn tick(vm: Vm, now_ms: u64, dt_s: f32) {
     }
 }
 
-/// Advance slew and push every CV/gate channel to hardware. Brief state borrow,
+/// Advance slew and push every CV/gate channel to the host. Brief state borrow,
 /// no wren calls.
 fn render_cv_gate(dt_s: f32) {
     let st = state();
@@ -121,11 +111,11 @@ fn render_cv_gate(dt_s: f32) {
                 }
             }
         }
-        // Hand the target code to `cv_task` (owns the async SDK `Cv` handle).
-        crate::cv_set_target(ch as u8, volts_to_code(c.current));
+        // Hand the post-slew voltage to the host (it maps volts → hardware).
+        host().cv_set(ch as u8, c.current);
     }
     for ch in 0..N_GATE {
-        crate::gate_set_target(ch as u8, st.gate[ch]);
+        host().gate_set(ch as u8, st.gate[ch]);
     }
 }
 
@@ -145,7 +135,7 @@ fn metro_take_due(i: usize, now_ms: u64) -> Option<(*mut WrenHandle, i64)> {
 
 /// Invoke a metro callback `cb.call(stage)`. No state borrow held.
 fn fire_metro(vm: Vm, cb: *mut WrenHandle, stage: i64) {
-    // SAFETY: vm_task is the sole accessor of CALL_HANDLE.
+    // SAFETY: the VM thread is the sole accessor of CALL_HANDLE.
     let call = unsafe {
         if CALL_HANDLE.is_null() {
             CALL_HANDLE = vm.make_call_handle("call(_)");
@@ -274,7 +264,7 @@ unsafe extern "C" fn metro_start(raw: *mut WrenVM) {
     let cb = vm.get_handle(1);
     let seconds = vm.get_f64(2) as f32;
     let idx = unsafe { vm.foreign_mut::<MetroObj>(0) }.idx as usize;
-    let now_ms = embassy_time::Instant::now().as_millis();
+    let now_ms = host().now_ms();
     if idx < N_METRO {
         let m = &mut state().metro[idx];
         if !m.cb.is_null() {
@@ -316,9 +306,9 @@ unsafe extern "C" fn metro_time_set(raw: *mut WrenVM) {
 
 // ── MIDI (DIN in/out) ────────────────────────────────────────────────────────
 //
-// `Midi` is a static-only foreign class. RX messages are parsed in vm_task and
-// dispatched here to the registered callbacks; TX messages are pushed to the
-// firmware's MIDI TX ring (`crate::midi_tx_push`) and drained by `midi_tx_task`.
+// `Midi` is a static-only foreign class. RX messages are parsed by the host and
+// dispatched here to the registered callbacks; TX messages go to the host's MIDI
+// sink (`Host::midi_tx`).
 
 struct MidiState {
     on_note_on: *mut WrenHandle,
@@ -337,7 +327,7 @@ static mut MIDI: MidiState = MidiState {
 
 #[allow(clippy::mut_from_ref)]
 fn midi() -> &'static mut MidiState {
-    // SAFETY: vm_task is the sole accessor (see module docs).
+    // SAFETY: the VM thread is the sole accessor (see module docs).
     unsafe { &mut *addr_of_mut!(MIDI) }
 }
 
@@ -350,10 +340,10 @@ fn midi_len(status: u8) -> usize {
     }
 }
 
-/// Push a TX message to the firmware MIDI ring (length implied by the status).
+/// Push a TX message to the host MIDI sink (length implied by the status).
 fn tx(b1: u8, b2: u8, b3: u8) {
     let buf = [b1, b2, b3];
-    crate::midi_tx_push(&buf[..midi_len(b1)]);
+    host().midi_tx(&buf[..midi_len(b1)]);
 }
 
 /// Channel arg (wren uses 1..16) → wire status nibble.
@@ -399,9 +389,9 @@ unsafe extern "C" fn midi_set_on_cc(raw: *mut WrenVM) {
     set_cb(Vm(raw), |m| &mut m.on_cc);
 }
 
-/// Dispatch a parsed channel-voice MIDI message to the wren callbacks. Called
-/// from vm_task (not inside a foreign method), so `wrenCall` is legal. Note-on
-/// with velocity 0 is treated as note-off (MIDI convention).
+/// Dispatch a parsed channel-voice MIDI message to the wren callbacks. Called by
+/// the host's VM loop (not inside a foreign method), so `wrenCall` is legal.
+/// Note-on with velocity 0 is treated as note-off (MIDI convention).
 pub fn midi_rx(vm: Vm, status: u8, d1: u8, d2: u8) {
     let ch = (status & 0x0F) as f64 + 1.0;
     let (cb, a, b, c) = match status & 0xF0 {
@@ -434,10 +424,8 @@ pub fn midi_rx(vm: Vm, status: u8, d1: u8, d2: u8) {
 
 // ── UI: pads / buttons / encoders (in) + LEDs / OLED (out) ───────────────────
 //
-// Input events are produced by `pic_task` (pads/buttons) and the encoder poll,
-// then dispatched here from vm_task to the registered callbacks. Output (LEDs,
-// OLED) is queued to the firmware's `ui_task` via `crate::` hooks because the
-// PIC/OLED operations are async (they can't run inside a sync foreign method).
+// Input events are produced by the host (pads/buttons/encoders) and dispatched
+// here to the registered callbacks. Output (LEDs, OLED) goes to the host sinks.
 
 struct UiState {
     on_pad_press: *mut WrenHandle,
@@ -462,7 +450,7 @@ static mut UI: UiState = UiState {
 
 #[allow(clippy::mut_from_ref)]
 fn ui() -> &'static mut UiState {
-    // SAFETY: vm_task is the sole accessor (see module docs).
+    // SAFETY: the VM thread is the sole accessor (see module docs).
     unsafe { &mut *addr_of_mut!(UI) }
 }
 
@@ -507,9 +495,9 @@ fn ui_call2(vm: Vm, cb: *mut WrenHandle, a: f64, b: f64) {
     vm.call(call);
 }
 
-/// Dispatch an input event to the wren callbacks. Called from vm_task. `kind`:
+/// Dispatch an input event to the wren callbacks. Called by the host. `kind`:
 /// 0=pad press, 1=pad release (`a`=x, `b`=y); 2=button press, 3=button release
-/// (`a`=id). Pad coordinates arrive pre-decoded from the SDK `Input` stream.
+/// (`a`=id). Pad coordinates arrive pre-decoded from the host's input stream.
 pub fn input_dispatch(vm: Vm, kind: u8, a: u8, b: u8) {
     match kind {
         0 | 1 => {
@@ -524,7 +512,7 @@ pub fn input_dispatch(vm: Vm, kind: u8, a: u8, b: u8) {
     }
 }
 
-/// Dispatch an encoder detent change. Called from vm_task.
+/// Dispatch an encoder detent change. Called by the host.
 pub fn enc_turn(vm: Vm, index: u8, delta: i8) {
     ui_call2(vm, ui().on_enc, index as f64, delta as f64);
 }
@@ -558,41 +546,42 @@ unsafe extern "C" fn enc_on_turn(raw: *mut WrenVM) {
 // LEDs
 unsafe extern "C" fn led_on(raw: *mut WrenVM) {
     let vm = Vm(raw);
-    crate::led_cmd(vm.get_f64(1) as u8, true);
+    host().led(vm.get_f64(1) as u8, true);
 }
 unsafe extern "C" fn led_off(raw: *mut WrenVM) {
     let vm = Vm(raw);
-    crate::led_cmd(vm.get_f64(1) as u8, false);
+    host().led(vm.get_f64(1) as u8, false);
 }
 
 // OLED
 unsafe extern "C" fn oled_clear(_raw: *mut WrenVM) {
-    crate::oled_clear();
+    host().oled_clear();
 }
 unsafe extern "C" fn oled_text(raw: *mut WrenVM) {
     let vm = Vm(raw);
     let x = vm.get_f64(1) as usize;
     let y = vm.get_f64(2) as usize;
     let s = vm.get_str(3);
-    crate::oled_text(x, y, s.as_bytes());
+    host().oled_text(x, y, s.as_bytes());
 }
 unsafe extern "C" fn oled_pixel(raw: *mut WrenVM) {
     let vm = Vm(raw);
     let x = vm.get_f64(1) as usize;
     let y = vm.get_f64(2) as usize;
     let on = vm.get_bool(3);
-    crate::oled_pixel(x, y, on);
+    host().oled_pixel(x, y, on);
 }
 unsafe extern "C" fn oled_show(_raw: *mut WrenVM) {
-    crate::oled_show();
+    host().oled_show();
 }
 
 // ── Audio: DSP node graph (`Node` foreign class) ─────────────────────────────
 //
-// The Wren `Node` foreign object just holds a node id into the native engine
-// (`crate::audio`). Factory statics (`src_`/`env_`/…) allocate a node and return
-// a fresh `Node`; instance methods/operators mutate it via the command queue.
-// The prelude's `Osc`/`Env`/`Noise`/`Out` classes are thin wrappers over these.
+// The Wren `Node` foreign object just holds a node id into the engine
+// (`crate::audio`/`crate::engine`). Factory statics (`src_`/`env_`/…) allocate a
+// node and return a fresh `Node`; instance methods/operators mutate it via the
+// command queue. The prelude's `Osc`/`Env`/`Noise`/`Out` classes are thin
+// wrappers over these.
 
 #[derive(Clone, Copy)]
 struct NodeObj {
@@ -635,12 +624,12 @@ unsafe extern "C" fn node_env(raw: *mut WrenVM) {
     let vm = Vm(raw);
     let a = arg_input(vm, 1);
     let b = arg_input(vm, 2);
-    let id = audio::alloc_node(audio::K_ENV, a, b);
+    let id = audio::alloc_node(K_ENV, a, b);
     unsafe { return_node(vm, id) };
 }
 unsafe extern "C" fn node_noise(raw: *mut WrenVM) {
     let vm = Vm(raw);
-    let id = audio::alloc_node(audio::K_NOISE, Input::Const(0.0), Input::Const(0.0));
+    let id = audio::alloc_node(K_NOISE, Input::Const(0.0), Input::Const(0.0));
     unsafe { return_node(vm, id) };
 }
 unsafe extern "C" fn node_binop(raw: *mut WrenVM) {
@@ -648,14 +637,14 @@ unsafe extern "C" fn node_binop(raw: *mut WrenVM) {
     let op = vm.get_f64(1) as u8; // 0=mul, 1=add, 2=sub
     let a = arg_input(vm, 2);
     let b = arg_input(vm, 3);
-    let id = audio::alloc_node(audio::K_MUL + op, a, b);
+    let id = audio::alloc_node(K_MUL + op, a, b);
     unsafe { return_node(vm, id) };
 }
 unsafe extern "C" fn node_lpf(raw: *mut WrenVM) {
     let vm = Vm(raw);
     let input = arg_input(vm, 1);
     let cutoff = arg_input(vm, 2);
-    let id = audio::alloc_node(audio::K_LPF, input, cutoff);
+    let id = audio::alloc_node(K_LPF, input, cutoff);
     unsafe { return_node(vm, id) };
 }
 unsafe extern "C" fn node_patch(raw: *mut WrenVM) {
@@ -762,9 +751,9 @@ const fn static_method(
 
 // ── Wren prelude (compiled at boot, before user scripts) ─────────────────────
 
-/// The on-device prelude (declares the foreign classes + `output[]`/`gate[]`),
-/// embedded from `wren/prelude.wren` with a trailing NUL appended at compile time
-/// so it can be handed to the C VM as a C string.
+/// The prelude (declares the foreign classes + `output[]`/`gate[]`), embedded
+/// from `wren/prelude.wren` with a trailing NUL appended at compile time so it
+/// can be handed to the C VM as a C string.
 const PRELUDE: &str = concat!(include_str!("../wren/prelude.wren"), "\0");
 
 /// The prelude source as a `*const c_char` for `wren_sys::interpret`.

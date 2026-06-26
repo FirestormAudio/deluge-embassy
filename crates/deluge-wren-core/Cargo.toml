@@ -1,0 +1,18 @@
+[package]
+name = "deluge-wren-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable Deluge Wren runtime: the foreign-binding glue, native DSP engine, and a `Host` trait that the firmware (hardware) and the web simulator (wasm) each implement. `no_std`, target-agnostic — the single source of truth for the scripting surface so the two never drift."
+
+[lib]
+test = false
+
+[dependencies]
+# The upstream Wren C VM bindings (compiler + VM). Host-agnostic: builds for the
+# device, the desktop host, and (M2) wasm. The only dependency core needs — CV /
+# gate / audio / OLED are all reached through the `Host` trait, not the SDK.
+wren-sys = { path = "../../wren-sys" }

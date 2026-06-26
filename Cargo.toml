@@ -18,6 +18,7 @@ members = [
   "crates/deluge-ui-toolkit",
   "crates/deluge-grid-toolkit",
   "crates/deluge-protocol",
+  "crates/deluge-wren-core",
   "examples/blinky",
   "examples/oled_hello",
   "examples/oled_menu",

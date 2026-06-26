@@ -57,7 +57,7 @@ use embassy_usb::{Builder, Config, UsbDevice};
 use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, init_device_mode};
 
 mod audio;
-mod bindings;
+mod host;
 
 // Boot, heaps, clocks, the executor, and the panic handler are all provided by
 // `#[deluge::app]` (see `main` below); this crate owns product behaviour only.
@@ -369,10 +369,15 @@ fn setup() {
     #[cfg(not(target_os = "none"))]
     host_repl::spawn_stdin();
 
+    // Register the hardware host the portable bindings call back into (CV/gate,
+    // MIDI, LEDs, OLED, audio). Must happen before any script runs.
+    deluge_wren_core::set_host(unsafe { &mut *addr_of_mut!(host::FW_HOST) });
+
     // Boot the VM and load the prelude (declares the foreign classes + the
     // `output[]` / `gate[]` accessors). ~0.6 s; mirrors crow's ordering.
     info!("wren: booting VM...");
-    let vm = unsafe { wren_sys::boot_with_foreign(bindings::METHODS, bindings::CLASSES) };
+    let vm =
+        unsafe { wren_sys::boot_with_foreign(deluge_wren_core::METHODS, deluge_wren_core::CLASSES) };
     if vm.is_null() {
         error!("wren: wrenNewVM returned NULL — out of SDRAM?");
         loop {
@@ -386,7 +391,7 @@ fn setup() {
         wren_sys::peak_sdram_bytes()
     );
     info!("wren: loading prelude...");
-    run_source(vm, bindings::prelude_ptr(), "prelude");
+    run_source(vm, deluge_wren_core::prelude_ptr(), "prelude");
 }
 
 #[deluge::app(setup = setup)]
@@ -738,7 +743,7 @@ async fn vm_task() {
         let now = Instant::now();
         let dt_s = (now - last).as_micros() as f32 / 1_000_000.0;
         last = now;
-        bindings::tick(vmw, now.as_millis(), dt_s);
+        deluge_wren_core::tick(vmw, now.as_millis(), dt_s);
 
         // MIDI DIN RX: drain bytes staged by `midi_task`, parse, and dispatch to
         // the wren callbacks. Runs here (the VM-owning task) so it never re-enters
@@ -751,7 +756,7 @@ async fn vm_task() {
             }
             for &b in &mb[..n] {
                 if let Some((s, d1, d2)) = midi.push(b) {
-                    bindings::midi_rx(vmw, s, d1, d2);
+                    deluge_wren_core::midi_rx(vmw, s, d1, d2);
                 }
             }
         }
@@ -764,9 +769,9 @@ async fn vm_task() {
                 break;
             }
             if ev[0] == 4 {
-                bindings::enc_turn(vmw, ev[1], ev[2] as i8);
+                deluge_wren_core::enc_turn(vmw, ev[1], ev[2] as i8);
             } else {
-                bindings::input_dispatch(vmw, ev[0], ev[1], ev[2]);
+                deluge_wren_core::input_dispatch(vmw, ev[0], ev[1], ev[2]);
             }
         }
 
