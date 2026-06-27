@@ -8,6 +8,9 @@ const OLED_SCALE = 3;
 // 18x8 pad hues across the spectrum — the grid is the panel's signature.
 const padHue = (x: number, y: number) => (x / PAD_COLS) * 320 + y * 6;
 
+const HIST = 240; // ~4 s of CV/gate history at 60 fps
+const CV_MAX = 10; // volts mapped to full scope height
+
 export class Panel {
   private oledCtx: CanvasRenderingContext2D;
   private padEls: HTMLButtonElement[] = [];
@@ -16,6 +19,13 @@ export class Panel {
   private buttonEls: HTMLButtonElement[] = [];
   private encoders = document.querySelector<HTMLElement>("#encoders");
   private buttons = document.querySelector<HTMLElement>("#buttons");
+  private midiMon = document.querySelector<HTMLElement>("#midi-monitor");
+  private cvScope = document.querySelector<HTMLCanvasElement>("#cv-scope");
+  private cvScopeCtx: CanvasRenderingContext2D | null = null;
+  // Rolling CV/gate history (ring buffers).
+  private cvHist = [new Float32Array(HIST), new Float32Array(HIST)];
+  private gateHist = new Uint8Array(HIST);
+  private histPos = 0;
 
   constructor(
     oled: HTMLCanvasElement,
@@ -32,6 +42,72 @@ export class Panel {
     this.buildButtons();
     this.buildCv();
     this.buildKeyboard();
+    if (this.cvScope) {
+      this.cvScope.width = 388;
+      this.cvScope.height = 60;
+      this.cvScopeCtx = this.cvScope.getContext("2d");
+    }
+  }
+
+  /// Log a MIDI message to the monitor (called for keyboard/Web MIDI input and
+  /// drained TX). `dir`: "in" or "out".
+  logMidi(status: number, d1: number, d2: number, dir: "in" | "out") {
+    if (!this.midiMon) return;
+    const ch = (status & 0x0f) + 1;
+    let s: string;
+    switch (status & 0xf0) {
+      case 0x90: s = d2 > 0 ? `note on  ${d1}  v${d2}` : `note off ${d1}`; break;
+      case 0x80: s = `note off ${d1}`; break;
+      case 0xb0: s = `cc ${d1} ${d2}`; break;
+      case 0xc0: s = `prog ${d1}`; break;
+      case 0xe0: s = `bend ${d1 | (d2 << 7)}`; break;
+      default: s = `${(status & 0xf0).toString(16)} ${d1} ${d2}`;
+    }
+    const row = document.createElement("div");
+    row.className = `midi-row ${dir}`;
+    row.textContent = `${dir === "in" ? "▸" : "◂"} ch${ch}  ${s}`;
+    this.midiMon.appendChild(row);
+    while (this.midiMon.childElementCount > 100) this.midiMon.firstElementChild!.remove();
+    this.midiMon.scrollTop = this.midiMon.scrollHeight;
+  }
+
+  /// Parse the drained raw MIDI-TX byte stream into messages for the monitor.
+  private logMidiTx(bytes: Uint8Array) {
+    let i = 0;
+    while (i < bytes.length) {
+      const status = bytes[i];
+      if (status < 0x80) { i++; continue; }
+      const len = (status & 0xf0) === 0xc0 || (status & 0xf0) === 0xd0 ? 1 : 2;
+      this.logMidi(status, bytes[i + 1] ?? 0, len === 2 ? (bytes[i + 2] ?? 0) : 0, "out");
+      i += 1 + len;
+    }
+  }
+
+  private drawCvScope() {
+    const ctx = this.cvScopeCtx;
+    if (!ctx) return;
+    const w = this.cvScope!.width, h = this.cvScope!.height;
+    ctx.clearRect(0, 0, w, h);
+    // Gate 1 fill (background band) where it was high.
+    ctx.fillStyle = "#8fe9ff14";
+    for (let x = 0; x < w; x++) {
+      const idx = (this.histPos + Math.floor((x / w) * HIST)) % HIST;
+      if (this.gateHist[idx] & 1) ctx.fillRect(x, 0, w / HIST + 1, h);
+    }
+    // CV traces: CV1 phosphor, CV2 voltage-gold.
+    const colors = ["#8fe9ff", "#f2b549"];
+    for (let ch = 0; ch < 2; ch++) {
+      ctx.strokeStyle = colors[ch];
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      for (let x = 0; x < w; x++) {
+        const idx = (this.histPos + Math.floor((x / w) * HIST)) % HIST;
+        const v = Math.max(0, Math.min(CV_MAX, this.cvHist[ch][idx]));
+        const y = h - (v / CV_MAX) * (h - 2) - 1;
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
   }
 
   private buildEncoders() {
@@ -128,7 +204,9 @@ export class Panel {
       key.className = "key" + (isBlack(note) ? " black" : "");
       const down = (on: boolean) => {
         key.classList.toggle("down", on);
-        this.sim.midiIn(on ? 0x90 : 0x80, note, on ? 100 : 0);
+        const status = on ? 0x90 : 0x80;
+        this.sim.midiIn(status, note, on ? 100 : 0);
+        this.logMidi(status, note, on ? 100 : 0, "in");
       };
       key.addEventListener("pointerdown", (e) => { e.preventDefault(); down(true); });
       key.addEventListener("pointerup", () => down(false));
@@ -166,5 +244,16 @@ export class Panel {
     // Indicator LEDs (Led.on(id) / off(id)) light the front-panel buttons.
     const leds = this.sim.leds();
     this.buttonEls.forEach((b, id) => b.classList.toggle("lit", leds[id] !== 0));
+
+    // MIDI TX → monitor.
+    const tx = this.sim.takeMidiTx();
+    if (tx.length) this.logMidiTx(tx);
+
+    // CV/gate timeline.
+    this.cvHist[0][this.histPos] = this.sim.cv(0);
+    this.cvHist[1][this.histPos] = this.sim.cv(1);
+    this.gateHist[this.histPos] = bits;
+    this.histPos = (this.histPos + 1) % HIST;
+    this.drawCvScope();
   }
 }
