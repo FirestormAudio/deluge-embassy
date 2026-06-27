@@ -1,0 +1,25 @@
+# Wasm wrapper around wren-analyzer (from the sibling wren-rs checkout), for the
+# web editor's live diagnostics. Pure Rust → builds for wasm32-unknown-unknown
+# with no wasi-libc, so the module is import-light and runs in a plain Web Worker.
+# Excluded from the no_std cross-compiled workspace, like the other web tools.
+[package]
+name = "wren-analyzer-wasm"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Wasm core for the Deluge Wren web editor's live diagnostics (wraps wren-analyzer)."
+
+[lib]
+name = "wren_analyzer_wasm"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The static analyzer + its parser, from the sibling wren-rs repo (same pattern
+# as wren-sys reaching the wren VM sources). Default features include `std`.
+wren-analyzer = { path = "../../../wren-rs/crates/wren-analyzer" }
+wren-syntax = { path = "../../../wren-rs/crates/wren-syntax" }
+
+[profile.release]
+opt-level = "s"
+lto = true

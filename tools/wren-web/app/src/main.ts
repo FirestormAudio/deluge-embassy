@@ -1,8 +1,9 @@
 import "./style.css";
 import { loadSim } from "./sim";
-import { createEditor, setErrorMarker } from "./editor";
+import { createEditor, setErrorMarker, setAnalyzerMarkers, analyzerMarkers } from "./editor";
 import { Panel } from "./panel";
 import { Audio } from "./audio";
+import { Analyzer } from "./analyzer";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -56,6 +57,16 @@ async function boot() {
   const workletUrl = `${import.meta.env.BASE_URL}wren-dsp.js`;
   const audio = new Audio(sim, wasmUrl, workletUrl);
   const audioState = $("#audio-state");
+
+  // Live static analysis (off-thread). Squiggles update as you type, separate
+  // from the VM's run-time errors (which appear on Run).
+  const analyzer = new Analyzer(`${import.meta.env.BASE_URL}wren-analyzer.wasm`);
+  let editVersion = 0;
+  analyzer.onDiagnostics = (version, diags) => {
+    if (version === editVersion) setAnalyzerMarkers(editor.getModel()!, diags);
+  };
+  const reanalyze = () => analyzer.analyze(editor.getValue(), ++editVersion);
+  editor.onDidChangeModelContent(reanalyze);
   const scope = $<HTMLCanvasElement>("#scope");
   const scopeCtx = scope.getContext("2d")!;
 
@@ -128,7 +139,14 @@ async function boot() {
   };
 
   run();
+  reanalyze(); // initial diagnostics for the starting script
   requestAnimationFrame(tick);
+
+  // Small inspection hook (handy in the console / for verification).
+  (window as unknown as { wren: unknown }).wren = {
+    setSource: (s: string) => editor.setValue(s),
+    markers: () => analyzerMarkers(editor.getModel()!),
+  };
 }
 
 boot().catch((e) => {

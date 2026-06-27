@@ -50,6 +50,38 @@ export function createEditor(host: HTMLElement, value: string) {
   return { editor, monaco };
 }
 
+/// Current analyzer markers on the model (for inspection/testing).
+export function analyzerMarkers(model: monaco.editor.ITextModel) {
+  return monaco.editor.getModelMarkers({ owner: "wren-analyzer", resource: model.uri });
+}
+
+/// Replace the analyzer's diagnostics on the model (owner "wren-analyzer", kept
+/// separate from the VM's run-time errors). `diags` use 1-based line/col.
+export function setAnalyzerMarkers(
+  model: monaco.editor.ITextModel,
+  diags: { startLine: number; startCol: number; endLine: number; endCol: number; severity: number; message: string }[],
+) {
+  const sev = [
+    monaco.MarkerSeverity.Error,
+    monaco.MarkerSeverity.Warning,
+    monaco.MarkerSeverity.Info,
+    monaco.MarkerSeverity.Hint,
+  ];
+  monaco.editor.setModelMarkers(
+    model,
+    "wren-analyzer",
+    diags.map((d) => ({
+      severity: sev[d.severity] ?? monaco.MarkerSeverity.Info,
+      message: d.message,
+      startLineNumber: d.startLine,
+      startColumn: d.startCol,
+      endLineNumber: d.endLine,
+      // Ensure a visible range even for zero-width spans.
+      endColumn: d.endLine === d.startLine && d.endCol <= d.startCol ? d.startCol + 1 : d.endCol,
+    })),
+  );
+}
+
 /// Show (or clear) a VM error as a marker on the editor model.
 export function setErrorMarker(model: monaco.editor.ITextModel, line: number, message: string) {
   if (line < 0 || !message) {

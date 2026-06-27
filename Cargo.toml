@@ -48,6 +48,7 @@ exclude = [
   "tools/cargo-deluge",
   "tools/deluge-simulator",
   "tools/wren-web",
+  "tools/wren-analyzer-wasm",
   "crates/deluge-sim-link",
 ]
 resolver = "2"

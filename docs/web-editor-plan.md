@@ -349,12 +349,18 @@ Remaining risks, lower (none gating):
    Node smoke test (`web/test.mjs`) passes — load scripts, OLED text rasterises,
    MIDI→handler→CV, metro→gate, compile errors with line numbers. `wren-sys`
    gained a wasm build branch (C against wasi-sysroot + a `clock` shim).
-4. **M3 — Editor. ✅ DONE (first cut).** `tools/wren-web/app`: Vite + TS + Monaco
-   with Wren highlighting + a prelude-seeded completion provider, the wasm loaded
-   via a browser WASI shim (`@bjorn3/browser_wasi_shim`), Run (⌘↵) + VM errors as
-   editor markers. Verified in a real browser (playwright). *Still to do:* swap the
-   Monarch tokenizer for the reused TextMate grammar, and add the `wren-analyzer`
-   LSP worker (prelude-seeded) — the editor-intelligence upgrade.
+4. **M3 — Editor. ✅ DONE.** `tools/wren-web/app`: Vite + TS + Monaco with Wren
+   highlighting + a prelude-seeded completion provider, the wasm loaded via a
+   browser WASI shim (`@bjorn3/browser_wasi_shim`), Run (⌘↵) + VM errors as editor
+   markers. **Live static analysis** now runs off-thread: `tools/wren-analyzer-wasm`
+   wraps `wren-analyzer` (from the sibling wren-rs checkout) into an import-free
+   144 KB wasm; a Web Worker (`analyzer-worker.ts`) analyzes on each edit
+   (debounced) and the diagnostics become Monaco markers (`owner: wren-analyzer`,
+   separate from the VM's run-time errors). Verified in a real browser: a bad
+   script yields a syntax error + unused-var warnings at correct lines; clean
+   scripts and the Deluge prelude API produce no false positives. *Optional:* swap
+   the Monarch tokenizer for the reused TextMate grammar; add hover/go-to-def from
+   the analyzer's `SymbolIndex`.
 5. **M4 — Panel UI. ✅ DONE (first cut).** A live faceplate: emissive OLED canvas,
    18×8 pad grid (click → pad press), CV/gate readouts, mini MIDI keyboard, and a
    `System.print`/error console, driven by a `requestAnimationFrame` tick loop.
