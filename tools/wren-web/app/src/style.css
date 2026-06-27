@@ -115,7 +115,7 @@ select {
   min-height: 0;
 }
 .editor-pane, .faceplate {
-  display: flex; flex-direction: column; min-height: 0;
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
   background: var(--panel);
 }
 .faceplate {
@@ -298,6 +298,14 @@ select {
   flex: 1; overflow-y: auto; padding: 8px 14px;
   font-family: "IBM Plex Mono", monospace; font-size: 12.5px; line-height: 1.6;
 }
+.console:empty::before {
+  content: "— run a script to see System.print output —";
+  color: var(--ink-faint); font-style: italic;
+}
+.midi-monitor:empty::before {
+  content: "— play a note or send MIDI —";
+  color: var(--ink-faint); font-style: italic;
+}
 .line { white-space: pre-wrap; }
 .line.out { color: var(--ink); }
 .line.out::before { content: "› "; color: var(--phosphor); }
@@ -310,6 +318,9 @@ select {
   .bench { grid-template-columns: 1fr; }
   .faceplate { border-left: none; border-top: 1px solid var(--hairline); }
   #editor { height: 50vh; }
+  .topbar { height: auto; flex-wrap: wrap; gap: 8px; padding: 8px 14px; }
+  .tagline { display: none; }
+  .console-pane { height: 120px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

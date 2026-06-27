@@ -1,6 +1,9 @@
 // Monaco editor wiring: worker env (Vite), a dark theme tuned to the chassis
 // palette, the Wren language, and a helper to surface VM errors as markers.
-import * as monaco from "monaco-editor";
+// The core editor API only — not the `monaco-editor` barrel, which bundles every
+// built-in language's tokenizer + the TS/HTML/CSS/JSON language services (~3 MB).
+// We register Wren ourselves, so none of that is needed.
+import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { registerWren, WREN_ID } from "./wren-lang";
 import type { Analyzer } from "./analyzer";

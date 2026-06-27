@@ -115,6 +115,9 @@ export class Panel {
     for (let i = 0; i < 6; i++) {
       const enc = document.createElement("div");
       enc.className = "enc";
+      enc.tabIndex = 0;
+      enc.setAttribute("role", "slider");
+      enc.setAttribute("aria-label", `encoder ${i + 1}`);
       enc.innerHTML = `<div class="enc-knob"><span class="enc-tick"></span></div><span class="enc-legend">${i + 1}</span>`;
       const knob = enc.querySelector<HTMLElement>(".enc-knob")!;
       let angle = 0;
@@ -123,8 +126,12 @@ export class Panel {
         knob.style.transform = `rotate(${angle}deg)`;
         this.sim.enc(i, delta);
       };
-      // Wheel = detents; vertical drag = detents (8 px each).
+      // Wheel / vertical drag / arrow keys = detents (8 px per detent on drag).
       enc.addEventListener("wheel", (e) => { e.preventDefault(); turn(e.deltaY < 0 ? 1 : -1); }, { passive: false });
+      enc.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowUp" || e.key === "ArrowRight") { e.preventDefault(); turn(1); }
+        else if (e.key === "ArrowDown" || e.key === "ArrowLeft") { e.preventDefault(); turn(-1); }
+      });
       let dragging = false, lastY = 0, accum = 0;
       enc.addEventListener("pointerdown", (e) => { dragging = true; lastY = e.clientY; enc.setPointerCapture(e.pointerId); });
       enc.addEventListener("pointermove", (e) => {
@@ -146,6 +153,7 @@ export class Panel {
       const b = document.createElement("button");
       b.className = "fbtn";
       b.textContent = String(id);
+      b.setAttribute("aria-label", `button ${id}`);
       const press = (down: boolean) => { b.classList.toggle("pressed", down); this.sim.button(id, down); };
       b.addEventListener("pointerdown", (e) => { e.preventDefault(); press(true); });
       b.addEventListener("pointerup", () => press(false));
@@ -160,6 +168,7 @@ export class Panel {
       for (let x = 0; x < PAD_COLS; x++) {
         const pad = document.createElement("button");
         pad.className = "pad";
+        pad.setAttribute("aria-label", `pad ${x + 1}, ${y + 1}`);
         pad.style.setProperty("--hue", String(padHue(x, y)));
         const press = (down: boolean) => {
           pad.classList.toggle("lit", down);
@@ -198,10 +207,13 @@ export class Panel {
     // One octave from C3 (MIDI 48), enough to drive the synth examples.
     const base = 48;
     const isBlack = (n: number) => [1, 3, 6, 8, 10].includes(n % 12);
+    const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    const noteName = (n: number) => `${names[n % 12]}${Math.floor(n / 12) - 1}`;
     for (let i = 0; i <= 16; i++) {
       const note = base + i;
       const key = document.createElement("button");
       key.className = "key" + (isBlack(note) ? " black" : "");
+      key.setAttribute("aria-label", `note ${noteName(note)}`);
       const down = (on: boolean) => {
         key.classList.toggle("down", on);
         const status = on ? 0x90 : 0x80;

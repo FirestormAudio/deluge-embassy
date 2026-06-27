@@ -5,7 +5,7 @@
 // run the reused TextMate grammar (public/wren.tmLanguage.json) through
 // vscode-textmate for byte-identical highlighting to the VSCode extension; this
 // Monarch grammar keeps the editor self-contained until that pipeline lands.
-import * as monaco from "monaco-editor";
+import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 export const WREN_ID = "wren";
 
