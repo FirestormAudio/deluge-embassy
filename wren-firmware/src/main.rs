@@ -331,6 +331,14 @@ extern "C" fn wren_host_debug(tag: i32, value: usize) {
     error!("wren-dbg: tag={} value=0x{:x} ({})", tag, value, value);
 }
 
+/// Module-import resolver. The device runs a single `MAIN.WREN`; cross-file
+/// imports aren't supported here yet, so report "not found" (NULL). The web
+/// simulator implements this against its in-memory project. See wren-sys.
+#[unsafe(no_mangle)]
+extern "C" fn wren_host_load_module(_name: *const c_char) -> *const c_char {
+    core::ptr::null()
+}
+
 // ── USB device static buffers (need 'static for embassy_usb::Builder) ───────
 
 #[cfg(target_os = "none")]

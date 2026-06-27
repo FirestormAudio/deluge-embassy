@@ -30,6 +30,13 @@ const SRC_CAP: usize = 64 * 1024;
 const OUT_CAP: usize = 8 * 1024;
 const ERR_CAP: usize = 1024;
 const MIDI_TX_CAP: usize = 512;
+// Module registry for multi-file projects: packed names + sources (each
+// NUL-terminated) addressed by a small table. Populated before a run; the wren
+// `import` host hook resolves names against it (see wren_host_load_module).
+const MAX_MODULES: usize = 64;
+const MOD_NAME_CAP: usize = 8 * 1024;
+const MOD_SRC_CAP: usize = 512 * 1024;
+const MOD_NAME_BUF_CAP: usize = 512;
 /// Serialized audio-graph command FIFO: main VM → AudioWorklet engine.
 const CMD_CAP: usize = 512 * codec::REC;
 
@@ -144,6 +151,16 @@ static mut CMD_OUT_LEN: usize = 0;
 static mut WORKLET_ENGINE: Engine = Engine::new();
 static mut ECMD: [u8; CMD_CAP] = [0; CMD_CAP];
 
+// Module registry (see MAX_MODULES). MOD_NAME_BUF is a scratch input for one
+// module name; sources arrive via the shared SRC buffer.
+static mut MOD_NAME_BUF: [u8; MOD_NAME_BUF_CAP] = [0; MOD_NAME_BUF_CAP];
+static mut MOD_NAMES: [u8; MOD_NAME_CAP] = [0; MOD_NAME_CAP];
+static mut MOD_SRC: [u8; MOD_SRC_CAP] = [0; MOD_SRC_CAP];
+static mut MOD_TABLE: [(u32, u32); MAX_MODULES] = [(0, 0); MAX_MODULES]; // (name_off, src_off)
+static mut MOD_COUNT: usize = 0;
+static mut MOD_NAMES_POS: usize = 0;
+static mut MOD_SRC_POS: usize = 0;
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
@@ -190,6 +207,42 @@ extern "C" fn wren_host_error(line: c_int, message: *const c_char) {
             e[*el] = b'\n';
             *el += 1;
         }
+    }
+}
+
+/// Resolve an `import "name"` against the module registry (multi-file projects).
+/// Returns the imported file's NUL-terminated source, or NULL if not registered.
+#[unsafe(no_mangle)]
+extern "C" fn wren_host_load_module(name: *const c_char) -> *const c_char {
+    if name.is_null() {
+        return core::ptr::null();
+    }
+    // SAFETY: VM thread is the sole accessor; registry buffers outlive the run.
+    unsafe {
+        let names = &*addr_of_mut!(MOD_NAMES);
+        let srcs = &*addr_of_mut!(MOD_SRC);
+        let table = &*addr_of_mut!(MOD_TABLE);
+        for &(noff, soff) in &table[..MOD_COUNT] {
+            if cstr_eq(name, names.as_ptr().add(noff as usize) as *const c_char) {
+                return srcs.as_ptr().add(soff as usize) as *const c_char;
+            }
+        }
+    }
+    core::ptr::null()
+}
+
+/// Compare two NUL-terminated C strings for equality.
+unsafe fn cstr_eq(a: *const c_char, b: *const c_char) -> bool {
+    let mut i = 0;
+    loop {
+        let (ca, cb) = unsafe { (*a.add(i), *b.add(i)) };
+        if ca != cb {
+            return false;
+        }
+        if ca == 0 {
+            return true;
+        }
+        i += 1;
     }
 }
 
@@ -242,6 +295,58 @@ pub extern "C" fn sim_src_ptr() -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn sim_src_cap() -> usize {
     SRC_CAP
+}
+
+// ── Module registry (multi-file projects) ────────────────────────────────────
+// Before running, JS clears then registers each project file: write the module
+// name into the name buffer + the source into the SRC buffer, then sim_add_module.
+
+/// Empty the module registry (call before re-registering a project's files).
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_clear_modules() {
+    unsafe {
+        MOD_COUNT = 0;
+        MOD_NAMES_POS = 0;
+        MOD_SRC_POS = 0;
+    }
+}
+/// Name-input buffer for [`sim_add_module`] (one module name at a time).
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_mod_name_ptr() -> *mut u8 {
+    addr_of_mut!(MOD_NAME_BUF) as *mut u8
+}
+/// Register a module: name = `MOD_NAME_BUF[..name_len]`, source = `SRC[..src_len]`.
+/// Both are stored NUL-terminated. Returns 1 on success, 0 if the registry is full.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_add_module(name_len: usize, src_len: usize) -> i32 {
+    unsafe {
+        let name_len = name_len.min(MOD_NAME_BUF_CAP);
+        let src_len = src_len.min(SRC_CAP);
+        if MOD_COUNT >= MAX_MODULES
+            || MOD_NAMES_POS + name_len + 1 > MOD_NAME_CAP
+            || MOD_SRC_POS + src_len + 1 > MOD_SRC_CAP
+        {
+            return 0;
+        }
+        let nbuf = &*addr_of_mut!(MOD_NAME_BUF);
+        let sbuf = &*addr_of_mut!(SRC);
+        let names = &mut *addr_of_mut!(MOD_NAMES);
+        let srcs = &mut *addr_of_mut!(MOD_SRC);
+
+        let noff = MOD_NAMES_POS;
+        names[noff..noff + name_len].copy_from_slice(&nbuf[..name_len]);
+        names[noff + name_len] = 0;
+        MOD_NAMES_POS += name_len + 1;
+
+        let soff = MOD_SRC_POS;
+        srcs[soff..soff + src_len].copy_from_slice(&sbuf[..src_len]);
+        srcs[soff + src_len] = 0;
+        MOD_SRC_POS += src_len + 1;
+
+        (*addr_of_mut!(MOD_TABLE))[MOD_COUNT] = (noff as u32, soff as u32);
+        MOD_COUNT += 1;
+    }
+    1
 }
 
 /// Interpret `SRC[..len]` in the `main` module. Clears print/error capture first.

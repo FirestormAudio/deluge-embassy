@@ -161,6 +161,29 @@ unsafe extern "C" {
     /// device SDRAM heap reports through this (runaway-size OOM); unused on host.
     #[cfg(target_os = "none")]
     fn wren_host_debug(tag: c_int, value: usize);
+    /// Resolve an `import "name"` to the module's NUL-terminated source, or NULL
+    /// if not found. The returned buffer must stay valid until the next VM reset
+    /// (the host owns it — no `onComplete` free). Enables multi-file projects.
+    fn wren_host_load_module(name: *const c_char) -> *const c_char;
+}
+
+/// Result of a `loadModuleFn` call (mirrors `WrenLoadModuleResult` in `wren.h`).
+#[repr(C)]
+pub struct WrenLoadModuleResult {
+    pub source: *const c_char,
+    pub on_complete:
+        Option<unsafe extern "C" fn(*mut WrenVM, *const c_char, WrenLoadModuleResult)>,
+    pub user_data: *mut c_void,
+}
+
+/// `loadModuleFn`: hand an imported module's source to the VM. The host registry
+/// owns the buffer (valid until reset), so `on_complete` is NULL.
+unsafe extern "C" fn load_module_trampoline(
+    _vm: *mut WrenVM,
+    name: *const c_char,
+) -> WrenLoadModuleResult {
+    let source = if name.is_null() { ptr::null() } else { unsafe { wren_host_load_module(name) } };
+    WrenLoadModuleResult { source, on_complete: None, user_data: ptr::null_mut() }
 }
 
 unsafe extern "C" fn write_trampoline(_vm: *mut WrenVM, text: *const c_char) {
@@ -409,6 +432,8 @@ fn make_config() -> WrenConfiguration {
     cfg.error_fn = Some(error_trampoline);
     cfg.bind_foreign_method_fn = Some(foreign::bind_method);
     cfg.bind_foreign_class_fn = Some(foreign::bind_class);
+    // Module imports resolve through the host registry (multi-file projects).
+    cfg.load_module_fn = load_module_trampoline as *const c_void;
     // Modest GC thresholds for the embedded heap (defaults are 10 MB / 1 MB).
     cfg.initial_heap_size = 1 << 20; // 1 MB
     cfg.min_heap_size = 1 << 18; //    256 KB
