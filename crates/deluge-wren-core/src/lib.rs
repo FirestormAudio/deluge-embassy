@@ -21,7 +21,7 @@ mod bindings;
 mod engine;
 mod host;
 
-pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, tick};
+pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, reset, tick};
 pub use engine::{
     Cmd, Engine, Input, K_ADD, K_ENV, K_LPF, K_MUL, K_NOISE, K_SAW, K_SINE, K_SQUARE, K_SUB, K_TRI,
     MAX_NODES,

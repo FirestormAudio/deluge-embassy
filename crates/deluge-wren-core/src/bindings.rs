@@ -33,6 +33,9 @@ struct CvCh {
     rate: f32,
     slew_s: f32,
 }
+impl CvCh {
+    const EMPTY: CvCh = CvCh { current: 0.0, target: 0.0, rate: 0.0, slew_s: 0.0 };
+}
 
 /// One metro pool slot.
 #[derive(Clone, Copy)]
@@ -44,25 +47,28 @@ struct Metro {
     stage: i64,
     cb: *mut WrenHandle,
 }
-
-struct State {
-    cv: [CvCh; N_CV],
-    gate: [bool; N_GATE],
-    metro: [Metro; N_METRO],
-}
-
-static mut STATE: State = State {
-    cv: [CvCh { current: 0.0, target: 0.0, rate: 0.0, slew_s: 0.0 }; N_CV],
-    gate: [false; N_GATE],
-    metro: [Metro {
+impl Metro {
+    const EMPTY: Metro = Metro {
         used: false,
         active: false,
         interval_s: 0.0,
         next_ms: 0,
         stage: 0,
         cb: core::ptr::null_mut(),
-    }; N_METRO],
-};
+    };
+}
+
+struct State {
+    cv: [CvCh; N_CV],
+    gate: [bool; N_GATE],
+    metro: [Metro; N_METRO],
+}
+impl State {
+    const EMPTY: State =
+        State { cv: [CvCh::EMPTY; N_CV], gate: [false; N_GATE], metro: [Metro::EMPTY; N_METRO] };
+}
+
+static mut STATE: State = State::EMPTY;
 
 /// Reusable `Fn.call(_)` handle, made lazily on the first metro fire. Kept out
 /// of `State` so firing a metro doesn't need a `&mut STATE` borrow.
@@ -759,4 +765,33 @@ const PRELUDE: &str = concat!(include_str!("../wren/prelude.wren"), "\0");
 /// The prelude source as a `*const c_char` for `wren_sys::interpret`.
 pub fn prelude_ptr() -> *const c_char {
     PRELUDE.as_ptr() as *const c_char
+}
+
+/// Tear down all VM-referencing binding state. A host calls this when it frees
+/// the VM to run a script fresh (e.g. the web "Run" button): handles are nulled
+/// rather than released — the VM that owned them is gone — and CV/gate/metro
+/// state plus the audio-graph node-id allocator are reset. Not used on the device
+/// (its VM lives for the session).
+pub fn reset() {
+    *state() = State::EMPTY;
+
+    let m = midi();
+    m.on_note_on = core::ptr::null_mut();
+    m.on_note_off = core::ptr::null_mut();
+    m.on_cc = core::ptr::null_mut();
+    m.call3 = core::ptr::null_mut();
+
+    let u = ui();
+    u.on_pad_press = core::ptr::null_mut();
+    u.on_pad_release = core::ptr::null_mut();
+    u.on_button_press = core::ptr::null_mut();
+    u.on_button_release = core::ptr::null_mut();
+    u.on_enc = core::ptr::null_mut();
+    u.call1 = core::ptr::null_mut();
+    u.call2 = core::ptr::null_mut();
+
+    // SAFETY: VM thread is the sole accessor.
+    unsafe { CALL_HANDLE = core::ptr::null_mut() };
+
+    crate::audio::reset_ids();
 }

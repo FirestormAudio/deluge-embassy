@@ -24,6 +24,7 @@ mod oled;
 use oled::Oled;
 
 const N_LED: usize = 64;
+const AUDIO_CAP: usize = 8192;
 const SRC_CAP: usize = 64 * 1024;
 const OUT_CAP: usize = 8 * 1024;
 const ERR_CAP: usize = 1024;
@@ -113,6 +114,7 @@ static mut OUT_LEN: usize = 0;
 static mut ERR: [u8; ERR_CAP] = [0; ERR_CAP];
 static mut ERR_LEN: usize = 0;
 static mut ERR_LINE: i32 = -1;
+static mut AUDIO: [f32; AUDIO_CAP] = [0.0; AUDIO_CAP];
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -179,6 +181,24 @@ pub extern "C" fn sim_boot() -> i32 {
     unsafe { VM = vm };
     let r = unsafe { wren_sys::interpret(vm, c"main".as_ptr(), deluge_wren_core::prelude_ptr()) };
     (r == wren_sys::WREN_RESULT_SUCCESS) as i32
+}
+
+/// Rebuild the VM and clear all simulated state, so the next [`sim_load`] runs a
+/// script fresh (no leftover module vars, metros, patches, OLED, or CV). Returns
+/// 1 on success. The web "Run" calls this so each run starts from a clean
+/// instrument, unlike the device's persistent REPL.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_reset() -> i32 {
+    unsafe {
+        if !VM.is_null() {
+            wren_sys::wrenFreeVM(VM);
+            VM = core::ptr::null_mut();
+        }
+        // Drop all VM-referencing binding handles before the fresh boot.
+        deluge_wren_core::reset();
+        *addr_of_mut!(HOST) = WebHost::new();
+    }
+    sim_boot()
 }
 
 /// Pointer to the source-input buffer: JS writes up to `sim_src_cap()` bytes here,
@@ -313,4 +333,30 @@ pub extern "C" fn sim_midi_tx_len() -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn sim_midi_tx_clear() {
     unsafe { (*addr_of_mut!(HOST)).midi_tx_len = 0 };
+}
+
+// ── Audio render ─────────────────────────────────────────────────────────────
+// The DSP graph renders on demand: `sim_render(n)` advances the engine `n` mono
+// samples (at 44.1 kHz) into the audio buffer, which JS copies into a Web Audio
+// block. The host's AudioContext must run at 44.1 kHz to match the engine.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_audio_ptr() -> *const f32 {
+    addr_of_mut!(AUDIO) as *const f32
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_audio_cap() -> usize {
+    AUDIO_CAP
+}
+/// Render `n` (clamped to `sim_audio_cap`) mono samples into the audio buffer;
+/// returns the count rendered.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_render(n: usize) -> usize {
+    let host = unsafe { &mut *addr_of_mut!(HOST) };
+    let buf = unsafe { &mut *addr_of_mut!(AUDIO) };
+    let n = n.min(AUDIO_CAP);
+    for s in buf.iter_mut().take(n) {
+        *s = host.engine.render_frame().clamp(-1.0, 1.0);
+    }
+    n
 }

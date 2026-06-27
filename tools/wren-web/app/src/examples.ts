@@ -7,6 +7,16 @@ export interface Example {
 
 export const EXAMPLES: Example[] = [
   {
+    name: "drone",
+    source: `// A continuous filtered-saw drone with a slow vibrato LFO. Press Run to hear it.
+var lfo = Osc.sine(5)
+var voice = Osc.saw(110)
+voice.freq = lfo * 4 + 110   // Node first: 110 + lfo would be Num + Node (undefined)
+Out.patch(voice.lpf(900))
+System.print("drone patched - you should hear a tone")
+`,
+  },
+  {
     name: "hello oled",
     source: `// Draw to the 128x48 OLED.
 Oled.clear()

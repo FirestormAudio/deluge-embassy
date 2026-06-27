@@ -360,8 +360,15 @@ Remaining risks, lower (none gating):
    `System.print`/error console, driven by a `requestAnimationFrame` tick loop.
    Verified live: MIDI key → handler → CV 4.58 V; metro → CV sweep + gate + OLED
    text. *Still to do:* CV/gate scope over time, encoders/buttons/LEDs, MIDI monitor.
-6. **M5 — Audio.** AudioWorklet + SAB rings; `Out.patch(...)` makes sound; audio
-   scope. Cross-origin isolation in place.
+6. **M5 — Audio. ✅ DONE (first cut).** `Out.patch(...)` makes sound: a
+   `sim_render(n)` export advances the DSP graph; `src/audio.ts` schedules blocks
+   into an `AudioContext` (44.1 kHz) via lookahead scheduling, with a phosphor
+   waveform scope. Run rebuilds the VM fresh (`sim_reset` + `deluge_wren_core::reset`)
+   so re-running a script with module `var`s no longer collides. Verified live
+   (playwright): a filtered-saw drone renders a real waveform to the scope, audio
+   stays `live` across re-runs. *Still to do (M5 proper):* move the engine into an
+   AudioWorklet with SharedArrayBuffer rings (glitch-free, off the main thread;
+   needs COOP/COEP) — the main-thread render is a first cut.
 7. **M6 — Polish.** Web MIDI input, example loader, shareable permalinks, mobile/
    responsive layout, error UX.
 

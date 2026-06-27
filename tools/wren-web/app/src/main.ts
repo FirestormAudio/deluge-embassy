@@ -2,6 +2,7 @@ import "./style.css";
 import { loadSim } from "./sim";
 import { createEditor, setErrorMarker } from "./editor";
 import { Panel } from "./panel";
+import { Audio } from "./audio";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -13,7 +14,7 @@ async function boot() {
   const status = $("#status");
   const consoleEl = $("#console");
 
-  const { editor } = createEditor($("#editor"), EXAMPLES[1].source);
+  const { editor } = createEditor($("#editor"), EXAMPLES[0].source);
 
   // Examples menu.
   const select = $<HTMLSelectElement>("#examples");
@@ -23,7 +24,7 @@ async function boot() {
     opt.textContent = ex.name;
     select.appendChild(opt);
   }
-  select.value = EXAMPLES[1].name;
+  select.value = EXAMPLES[0].name;
   select.addEventListener("change", () => {
     const ex = EXAMPLES.find((e) => e.name === select.value);
     if (ex) editor.setValue(ex.source);
@@ -52,9 +53,13 @@ async function boot() {
     consoleEl.scrollTop = consoleEl.scrollHeight;
   };
 
+  const audio = new Audio(sim);
+  const audioState = $("#audio-state");
+  const scope = $<HTMLCanvasElement>("#scope");
+  const scopeCtx = scope.getContext("2d")!;
+
   const run = () => {
-    sim.clearOutput();
-    const res = sim.load(editor.getValue());
+    const res = sim.run(editor.getValue()); // fresh VM each run
     const model = editor.getModel()!;
     if (res.ok) {
       setErrorMarker(model, -1, "");
@@ -66,13 +71,40 @@ async function boot() {
     }
   };
 
-  $("#run").addEventListener("click", run);
+  // Running is a user gesture, so it's also where we (re)start audio.
+  const runWithAudio = async () => {
+    run();
+    await audio.start();
+    audioState.textContent = "live";
+    audioState.classList.add("on");
+  };
+
+  $("#run").addEventListener("click", runWithAudio);
   // Cmd/Ctrl-Enter to run.
-  editor.addCommand(
-    // KeyMod.CtrlCmd | KeyCode.Enter
-    2048 | 3,
-    run,
-  );
+  editor.addCommand(2048 | 3 /* KeyMod.CtrlCmd | KeyCode.Enter */, runWithAudio);
+
+  // Audio scope.
+  scope.width = 388;
+  scope.height = 64;
+  const drawScope = () => {
+    const w = scope.width, h = scope.height, mid = h / 2;
+    const data = audio.latest;
+    scopeCtx.clearRect(0, 0, w, h);
+    scopeCtx.strokeStyle = "#23323a";
+    scopeCtx.beginPath(); scopeCtx.moveTo(0, mid); scopeCtx.lineTo(w, mid); scopeCtx.stroke();
+    scopeCtx.strokeStyle = "#8fe9ff";
+    scopeCtx.lineWidth = 1.25;
+    scopeCtx.shadowColor = "#8fe9ff";
+    scopeCtx.shadowBlur = 5;
+    scopeCtx.beginPath();
+    const step = data.length / w;
+    for (let x = 0; x < w; x++) {
+      const y = mid - data[Math.floor(x * step)] * mid * 0.92;
+      x === 0 ? scopeCtx.moveTo(x, y) : scopeCtx.lineTo(x, y);
+    }
+    scopeCtx.stroke();
+    scopeCtx.shadowBlur = 0;
+  };
 
   // Per-frame: advance control-rate state, capture any callback output, repaint.
   let last = performance.now();
@@ -82,6 +114,7 @@ async function boot() {
     last = now;
     log(sim.output(), "out");
     panel.frame();
+    drawScope();
     requestAnimationFrame(tick);
   };
 

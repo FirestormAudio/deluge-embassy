@@ -39,3 +39,9 @@ pub fn reset() {
     NEXT_ID.store(0, Ordering::Relaxed);
     host().audio_cmd(Cmd::Reset);
 }
+
+/// Reset only the node-id allocator, without touching any host. Used by
+/// [`crate::reset`] when a host rebuilds the VM (the engine is rebuilt too).
+pub fn reset_ids() {
+    NEXT_ID.store(0, Ordering::Relaxed);
+}

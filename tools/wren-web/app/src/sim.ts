@@ -13,6 +13,7 @@ export const PAD_ROWS = 8;
 interface SimExports {
   memory: WebAssembly.Memory;
   sim_boot(): number;
+  sim_reset(): number;
   sim_src_ptr(): number;
   sim_src_cap(): number;
   sim_load(len: number): number;
@@ -37,7 +38,12 @@ interface SimExports {
   sim_midi_tx_ptr(): number;
   sim_midi_tx_len(): number;
   sim_midi_tx_clear(): void;
+  sim_audio_ptr(): number;
+  sim_audio_cap(): number;
+  sim_render(n: number): number;
 }
+
+export const SAMPLE_RATE = 44100;
 
 export interface LoadResult {
   ok: boolean;
@@ -76,6 +82,13 @@ export class Sim {
     return new TextDecoder().decode(this.bytes(ptr, len));
   }
 
+  /// Rebuild the VM + clear all state, then run `source` fresh (no leftover
+  /// module vars, metros, patches). This is "Run" semantics.
+  run(source: string): LoadResult {
+    this.x.sim_reset();
+    return this.load(source);
+  }
+
   load(source: string): LoadResult {
     const enc = new TextEncoder().encode(source);
     if (enc.length > this.x.sim_src_cap()) throw new Error("script too large");
@@ -104,5 +117,13 @@ export class Sim {
     const out = this.bytes(this.x.sim_midi_tx_ptr(), this.x.sim_midi_tx_len()).slice();
     this.x.sim_midi_tx_clear();
     return out;
+  }
+
+  /// Render `n` mono samples from the DSP graph into `dst` (length >= n).
+  render(dst: Float32Array, n: number): number {
+    const got = this.x.sim_render(n);
+    const view = new Float32Array(this.x.memory.buffer, this.x.sim_audio_ptr(), got);
+    dst.set(view.subarray(0, got));
+    return got;
   }
 }
