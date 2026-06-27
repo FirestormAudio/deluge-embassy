@@ -53,7 +53,8 @@ async function boot() {
     consoleEl.scrollTop = consoleEl.scrollHeight;
   };
 
-  const audio = new Audio(sim);
+  const workletUrl = `${import.meta.env.BASE_URL}wren-dsp.js`;
+  const audio = new Audio(sim, wasmUrl, workletUrl);
   const audioState = $("#audio-state");
   const scope = $<HTMLCanvasElement>("#scope");
   const scopeCtx = scope.getContext("2d")!;
@@ -83,12 +84,16 @@ async function boot() {
   // Cmd/Ctrl-Enter to run.
   editor.addCommand(2048 | 3 /* KeyMod.CtrlCmd | KeyCode.Enter */, runWithAudio);
 
-  // Audio scope.
+  // Audio scope — rendered from the main engine (audio itself plays in the
+  // worklet). One block per frame; advancing the main engine for the waveform is
+  // cheap and independent of the worklet's render.
   scope.width = 388;
   scope.height = 64;
+  const scopeBuf = new Float32Array(1024);
   const drawScope = () => {
+    sim.render(scopeBuf, scopeBuf.length);
     const w = scope.width, h = scope.height, mid = h / 2;
-    const data = audio.latest;
+    const data = scopeBuf;
     scopeCtx.clearRect(0, 0, w, h);
     scopeCtx.strokeStyle = "#23323a";
     scopeCtx.beginPath(); scopeCtx.moveTo(0, mid); scopeCtx.lineTo(w, mid); scopeCtx.stroke();
@@ -113,6 +118,10 @@ async function boot() {
     sim.tick(now, (now - last) / 1000);
     last = now;
     log(sim.output(), "out");
+    audio.forward(); // ship queued graph commands to the worklet engine
+    if (audio.running) {
+      audioState.textContent = audio.peak > 0.001 ? "live" : "idle";
+    }
     panel.frame();
     drawScope();
     requestAnimationFrame(tick);

@@ -41,6 +41,9 @@ interface SimExports {
   sim_audio_ptr(): number;
   sim_audio_cap(): number;
   sim_render(n: number): number;
+  sim_audio_cmds_ptr(): number;
+  sim_audio_cmds_len(): number;
+  sim_audio_cmds_clear(): void;
 }
 
 export const SAMPLE_RATE = 44100;
@@ -119,7 +122,17 @@ export class Sim {
     return out;
   }
 
-  /// Render `n` mono samples from the DSP graph into `dst` (length >= n).
+  /// Drain the queued audio-graph commands (serialized) for forwarding to the
+  /// AudioWorklet engine, and clear the queue.
+  takeAudioCmds(): Uint8Array {
+    const len = this.x.sim_audio_cmds_len();
+    if (len === 0) return new Uint8Array(0);
+    const out = this.bytes(this.x.sim_audio_cmds_ptr(), len).slice();
+    this.x.sim_audio_cmds_clear();
+    return out;
+  }
+
+  /// Render `n` mono samples from the *main* engine into `dst` (for the scope).
   render(dst: Float32Array, n: number): number {
     const got = this.x.sim_render(n);
     const view = new Float32Array(this.x.memory.buffer, this.x.sim_audio_ptr(), got);

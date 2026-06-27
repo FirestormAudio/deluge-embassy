@@ -20,6 +20,7 @@ use core::ptr::addr_of_mut;
 use deluge_wren_core::{CV_CHANNELS, Cmd, Engine, GATE_CHANNELS, Host};
 use wren_sys::{Vm, WrenVM};
 
+mod codec;
 mod oled;
 use oled::Oled;
 
@@ -29,6 +30,8 @@ const SRC_CAP: usize = 64 * 1024;
 const OUT_CAP: usize = 8 * 1024;
 const ERR_CAP: usize = 1024;
 const MIDI_TX_CAP: usize = 512;
+/// Serialized audio-graph command FIFO: main VM → AudioWorklet engine.
+const CMD_CAP: usize = 512 * codec::REC;
 
 // ── Host state ───────────────────────────────────────────────────────────────
 
@@ -98,8 +101,23 @@ impl Host for WebHost {
         // The pixel buffer is always current; JS reads it each frame.
     }
     fn audio_cmd(&mut self, cmd: Cmd) {
-        // Single-threaded: apply straight to the engine (rendering comes later).
+        // Apply to the local engine (used to render the on-screen scope) and also
+        // queue the serialized command for the AudioWorklet's render engine.
         self.engine.apply(cmd);
+        push_cmd_out(cmd);
+    }
+}
+
+/// Append a serialized command to the main→worklet FIFO (best effort).
+fn push_cmd_out(cmd: Cmd) {
+    // SAFETY: VM thread is the sole accessor.
+    unsafe {
+        let buf = &mut *addr_of_mut!(CMD_OUT);
+        let len = &mut *addr_of_mut!(CMD_OUT_LEN);
+        if *len + codec::REC <= CMD_CAP {
+            buf[*len..*len + codec::REC].copy_from_slice(&codec::encode(cmd));
+            *len += codec::REC;
+        }
     }
 }
 
@@ -115,6 +133,16 @@ static mut ERR: [u8; ERR_CAP] = [0; ERR_CAP];
 static mut ERR_LEN: usize = 0;
 static mut ERR_LINE: i32 = -1;
 static mut AUDIO: [f32; AUDIO_CAP] = [0.0; AUDIO_CAP];
+
+// main→worklet audio-graph command FIFO (serialized).
+static mut CMD_OUT: [u8; CMD_CAP] = [0; CMD_CAP];
+static mut CMD_OUT_LEN: usize = 0;
+
+// The AudioWorklet instance's render engine + its incoming-command buffer. These
+// statics are exercised only by the worklet copy of this module (a second wasm
+// instance with its own memory); the main copy never touches them.
+static mut WORKLET_ENGINE: Engine = Engine::new();
+static mut ECMD: [u8; CMD_CAP] = [0; CMD_CAP];
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -197,7 +225,11 @@ pub extern "C" fn sim_reset() -> i32 {
         // Drop all VM-referencing binding handles before the fresh boot.
         deluge_wren_core::reset();
         *addr_of_mut!(HOST) = WebHost::new();
+        // Tell the worklet engine to clear its graph too (it's a separate
+        // instance that won't see the host reset otherwise).
+        CMD_OUT_LEN = 0;
     }
+    push_cmd_out(Cmd::Reset);
     sim_boot()
 }
 
@@ -348,8 +380,10 @@ pub extern "C" fn sim_audio_ptr() -> *const f32 {
 pub extern "C" fn sim_audio_cap() -> usize {
     AUDIO_CAP
 }
-/// Render `n` (clamped to `sim_audio_cap`) mono samples into the audio buffer;
-/// returns the count rendered.
+/// Render `n` (clamped to `sim_audio_cap`) mono samples from the *main* engine
+/// into the audio buffer; returns the count. Used to draw the on-screen scope —
+/// actual audio output is rendered off the main thread (see the worklet engine
+/// API below).
 #[unsafe(no_mangle)]
 pub extern "C" fn sim_render(n: usize) -> usize {
     let host = unsafe { &mut *addr_of_mut!(HOST) };
@@ -357,6 +391,60 @@ pub extern "C" fn sim_render(n: usize) -> usize {
     let n = n.min(AUDIO_CAP);
     for s in buf.iter_mut().take(n) {
         *s = host.engine.render_frame().clamp(-1.0, 1.0);
+    }
+    n
+}
+
+// ── main → worklet: audio-graph command drain ────────────────────────────────
+// Each animation frame the main thread drains these serialized commands and
+// posts them to the AudioWorklet, whose engine applies + renders them.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_audio_cmds_ptr() -> *const u8 {
+    addr_of_mut!(CMD_OUT) as *const u8
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_audio_cmds_len() -> usize {
+    unsafe { CMD_OUT_LEN }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_audio_cmds_clear() {
+    unsafe { CMD_OUT_LEN = 0 };
+}
+
+// ── worklet engine: render off the main thread ───────────────────────────────
+// These run in the AudioWorklet's *own* wasm instance. It writes forwarded
+// command bytes at `sim_engine_cmd_ptr`, calls `sim_engine_apply`, then
+// `sim_engine_render` each audio block and reads the result from `sim_audio_ptr`.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_engine_cmd_ptr() -> *mut u8 {
+    addr_of_mut!(ECMD) as *mut u8
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_engine_cmd_cap() -> usize {
+    CMD_CAP
+}
+/// Apply the `len` bytes of serialized commands now in the engine command buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_engine_apply(len: usize) {
+    let buf = unsafe { &*addr_of_mut!(ECMD) };
+    let eng = unsafe { &mut *addr_of_mut!(WORKLET_ENGINE) };
+    let len = len.min(CMD_CAP);
+    let mut off = 0;
+    while off + codec::REC <= len {
+        eng.apply(codec::decode(&buf[off..off + codec::REC]));
+        off += codec::REC;
+    }
+}
+/// Render `n` mono samples from the worklet engine into the audio buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_engine_render(n: usize) -> usize {
+    let eng = unsafe { &mut *addr_of_mut!(WORKLET_ENGINE) };
+    let buf = unsafe { &mut *addr_of_mut!(AUDIO) };
+    let n = n.min(AUDIO_CAP);
+    for s in buf.iter_mut().take(n) {
+        *s = eng.render_frame().clamp(-1.0, 1.0);
     }
     n
 }

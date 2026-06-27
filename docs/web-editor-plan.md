@@ -360,15 +360,18 @@ Remaining risks, lower (none gating):
    `System.print`/error console, driven by a `requestAnimationFrame` tick loop.
    Verified live: MIDI key → handler → CV 4.58 V; metro → CV sweep + gate + OLED
    text. *Still to do:* CV/gate scope over time, encoders/buttons/LEDs, MIDI monitor.
-6. **M5 — Audio. ✅ DONE (first cut).** `Out.patch(...)` makes sound: a
-   `sim_render(n)` export advances the DSP graph; `src/audio.ts` schedules blocks
-   into an `AudioContext` (44.1 kHz) via lookahead scheduling, with a phosphor
-   waveform scope. Run rebuilds the VM fresh (`sim_reset` + `deluge_wren_core::reset`)
-   so re-running a script with module `var`s no longer collides. Verified live
-   (playwright): a filtered-saw drone renders a real waveform to the scope, audio
-   stays `live` across re-runs. *Still to do (M5 proper):* move the engine into an
-   AudioWorklet with SharedArrayBuffer rings (glitch-free, off the main thread;
-   needs COOP/COEP) — the main-thread render is a first cut.
+6. **M5 — Audio. ✅ DONE.** `Out.patch(...)` makes sound, rendered **off the main
+   thread in an AudioWorklet**. The worklet owns a second wasm instance (engine
+   only); the main VM serializes audio-graph commands (16-byte records, `codec.rs`)
+   and forwards them via `port.postMessage`, drained per audio block — the
+   firmware's vm_task→audio_task split, with the port as the command ring (so no
+   COOP/COEP/SAB needed). Run rebuilds the VM fresh (`sim_reset` +
+   `deluge_wren_core::reset`, which also Resets the worklet graph). A phosphor
+   waveform scope renders from the main engine. Verified live (playwright): the
+   worklet reports non-zero peak for a drone (`live`), goes silent on a no-audio
+   script (`idle`), and back — proving command forwarding + Reset reach the
+   worklet. *Optional refinement:* swap `postMessage` for a SharedArrayBuffer
+   command ring to shave control→audio jitter (needs cross-origin isolation).
 7. **M6 — Polish.** Web MIDI input, example loader, shareable permalinks, mobile/
    responsive layout, error UX.
 
