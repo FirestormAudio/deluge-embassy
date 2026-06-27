@@ -364,11 +364,13 @@ Remaining risks, lower (none gating):
    prelude symbols hover as builtins and don't offer a jump). Verified in-browser.
    *Optional:* swap the Monarch tokenizer for the reused TextMate grammar;
    member-aware (post-`.`) completion from the analyzer.
-5. **M4 — Panel UI. ✅ DONE (first cut).** A live faceplate: emissive OLED canvas,
-   18×8 pad grid (click → pad press), CV/gate readouts, mini MIDI keyboard, and a
-   `System.print`/error console, driven by a `requestAnimationFrame` tick loop.
-   Verified live: MIDI key → handler → CV 4.58 V; metro → CV sweep + gate + OLED
-   text. *Still to do:* CV/gate scope over time, encoders/buttons/LEDs, MIDI monitor.
+5. **M4 — Panel UI. ✅ DONE.** A live faceplate: emissive OLED canvas, 18×8 pad
+   grid, CV/gate readouts, mini MIDI keyboard, `System.print`/error console, **6
+   encoders, 16 buttons + indicator LEDs, a CV/gate timeline scope, and a MIDI
+   monitor** — the full binding surface — driven by a `requestAnimationFrame` tick
+   loop. Verified live: MIDI key → CV; metro → CV/gate/OLED; encoder → `Enc.onTurn`;
+   `Led.on` lights a button; the timeline draws CV sweeps; the monitor decodes
+   in/out MIDI.
 6. **M5 — Audio. ✅ DONE.** `Out.patch(...)` makes sound, rendered **off the main
    thread in an AudioWorklet**. The worklet owns a second wasm instance (engine
    only); the main VM serializes audio-graph commands (16-byte records, `codec.rs`)
@@ -381,8 +383,12 @@ Remaining risks, lower (none gating):
    script (`idle`), and back — proving command forwarding + Reset reach the
    worklet. *Optional refinement:* swap `postMessage` for a SharedArrayBuffer
    command ring to shave control→audio jitter (needs cross-origin isolation).
-7. **M6 — Polish.** Web MIDI input, example loader, shareable permalinks, mobile/
-   responsive layout, error UX.
+7. **M6 — Polish (partial).** ✅ **Web MIDI input** (real keyboard/controller →
+   `sim.midiIn` + monitor; device picker) and ✅ **localStorage autosave +
+   shareable `#s=` permalinks** are done and verified. *Remaining (Phase 5,
+   secondary):* build the committed wasms in CI instead of checking them in;
+   TextMate grammar; SAB audio ring (COOP/COEP); Monaco bundle trim; responsive
+   layout / error-UX / a11y polish. See `~/.claude/plans/zippy-marinating-balloon.md`.
 
 ## 11. Crate / repo layout
 
