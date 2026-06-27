@@ -6,6 +6,7 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { registerWren, WREN_ID } from "./wren-lang";
+import { registerWrenTextMate } from "./textmate";
 import type { Analyzer } from "./analyzer";
 
 self.MonacoEnvironment = {
@@ -15,13 +16,23 @@ self.MonacoEnvironment = {
 monaco.editor.defineTheme("chassis", {
   base: "vs-dark",
   inherit: true,
+  // Rules key on TextMate scopes (see src/textmate.ts); Monaco matches by
+  // dotted-prefix, longest wins.
   rules: [
     { token: "comment", foreground: "5a6470", fontStyle: "italic" },
     { token: "keyword", foreground: "f2b549" },
-    { token: "type.identifier", foreground: "8fe9ff" },
+    { token: "keyword.operator", foreground: "7c8794" },
     { token: "string", foreground: "b6d98a" },
-    { token: "number", foreground: "e08f6a" },
-    { token: "delimiter.interpolation", foreground: "f2b549" },
+    { token: "constant.numeric", foreground: "e08f6a" },
+    { token: "constant.language", foreground: "e0a86a" },
+    { token: "constant.character.escape", foreground: "6ad0e0" },
+    { token: "entity.name.type", foreground: "8fe9ff" },
+    { token: "support.class", foreground: "8fe9ff" },
+    { token: "entity.name.function", foreground: "9fd6c4" },
+    { token: "variable.language", foreground: "8fe9ff", fontStyle: "italic" },
+    { token: "variable.other", foreground: "c9d2dd" },
+    { token: "entity.other.attribute-name", foreground: "e0a86a" },
+    { token: "punctuation.section.interpolation", foreground: "f2b549" },
   ],
   colors: {
     "editor.background": "#15171c",
@@ -37,6 +48,9 @@ monaco.editor.defineTheme("chassis", {
 
 export function createEditor(host: HTMLElement, value: string) {
   registerWren(monaco);
+  // Replace the Monarch highlighter with the reused TextMate grammar (async:
+  // loads oniguruma wasm + the grammar; Monaco re-tokenizes once ready).
+  void registerWrenTextMate(WREN_ID, `${import.meta.env.BASE_URL}wren.tmLanguage.json`);
   const editor = monaco.editor.create(host, {
     value,
     language: WREN_ID,

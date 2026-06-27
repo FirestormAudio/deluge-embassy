@@ -44,43 +44,7 @@ export function registerWren(m: typeof monaco) {
     ],
   });
 
-  m.languages.setMonarchTokensProvider(WREN_ID, {
-    keywords: [
-      "break", "class", "construct", "continue", "else", "false", "for", "foreign",
-      "if", "import", "in", "is", "null", "return", "static", "super", "this", "true",
-      "var", "while",
-    ],
-    builtins: Object.keys(PRELUDE_API).concat(["System", "Fn", "List", "Map", "Num", "String", "Bool", "Range", "Fiber", "Random"]),
-    operators: ["+", "-", "*", "/", "%", "=", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "!", "..", "...", "?", ":"],
-    tokenizer: {
-      root: [
-        [/\/\/.*$/, "comment"],
-        [/\/\*/, "comment", "@comment"],
-        [/"/, "string", "@string"],
-        [/[A-Z][A-Za-z0-9_]*/, { cases: { "@builtins": "type.identifier", "@default": "type.identifier" } }],
-        [/[a-z_][A-Za-z0-9_]*/, { cases: { "@keywords": "keyword", "@default": "identifier" } }],
-        [/0x[0-9a-fA-F]+|\d+\.?\d*([eE][-+]?\d+)?/, "number"],
-        [/%\(/, "delimiter.interpolation", "@interp"],
-        [/[{}()\[\]]/, "@brackets"],
-        [/[-+*/%=<>!&|?:.]+/, { cases: { "@operators": "operator", "@default": "" } }],
-      ],
-      comment: [
-        [/[^/*]+/, "comment"],
-        [/\*\//, "comment", "@pop"],
-        [/[/*]/, "comment"],
-      ],
-      string: [
-        [/%\(/, "delimiter.interpolation", "@interp"],
-        [/[^"%]+/, "string"],
-        [/%/, "string"],
-        [/"/, "string", "@pop"],
-      ],
-      interp: [
-        [/\)/, "delimiter.interpolation", "@pop"],
-        { include: "root" },
-      ],
-    },
-  });
+  // Highlighting is provided by the TextMate grammar (see src/textmate.ts).
 
   m.languages.registerCompletionItemProvider(WREN_ID, {
     triggerCharacters: ["."],

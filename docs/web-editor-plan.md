@@ -362,8 +362,9 @@ Remaining risks, lower (none gating):
    go-to-definition, and symbol completion** also run through the worker against a
    `SymbolIndex` built over the prelude + source (so `Osc`/`output[]`/… resolve;
    prelude symbols hover as builtins and don't offer a jump). Verified in-browser.
-   *Optional:* swap the Monarch tokenizer for the reused TextMate grammar;
-   member-aware (post-`.`) completion from the analyzer.
+   Highlighting uses the **reused VSCode TextMate grammar** (`vscode-textmate` +
+   `vscode-oniguruma` over `wren.tmLanguage.json`), byte-identical to the wren-rs
+   extension. *Optional:* member-aware (post-`.`) completion from the analyzer.
 5. **M4 — Panel UI. ✅ DONE.** A live faceplate: emissive OLED canvas, 18×8 pad
    grid, CV/gate readouts, mini MIDI keyboard, `System.print`/error console, **6
    encoders, 16 buttons + indicator LEDs, a CV/gate timeline scope, and a MIDI
