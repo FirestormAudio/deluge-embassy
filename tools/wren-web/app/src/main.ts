@@ -49,11 +49,22 @@ async function boot() {
 
   const panel = new Panel(
     $<HTMLCanvasElement>("#oled"),
-    $("#pad-grid"),
+    $("#face-overlay"),
     $("#cv-row"),
     $("#keyboard"),
     sim,
   );
+
+  // Faceplate theme (hardware art / dark chassis / emissive recreation).
+  const faceplate = $("#faceplate");
+  const faceTheme = $<HTMLSelectElement>("#face-theme");
+  const savedTheme = localStorage.getItem("wren-deluge:face") ?? "hardware";
+  faceplate.dataset.faceTheme = savedTheme;
+  faceTheme.value = savedTheme;
+  faceTheme.addEventListener("change", () => {
+    faceplate.dataset.faceTheme = faceTheme.value;
+    try { localStorage.setItem("wren-deluge:face", faceTheme.value); } catch { /* ignore */ }
+  });
 
   // Web MIDI input: a real keyboard/controller drives the same path as the
   // on-screen keys (sim.midiIn + the monitor).

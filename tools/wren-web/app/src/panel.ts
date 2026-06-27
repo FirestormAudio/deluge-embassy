@@ -1,35 +1,42 @@
-// The instrument faceplate: OLED, 18x8 pad grid, CV/gate readouts, mini MIDI
-// keyboard. Input widgets call into the Sim; output widgets read from it each
-// frame. Pads and the keyboard are input surfaces (the binding set exposes pad
-// presses and MIDI in); they light locally on press for feedback.
-import { Sim, OLED_W, OLED_H, PAD_COLS, PAD_ROWS } from "./sim";
+// The instrument: a faithful Deluge faceplate (pads, named buttons + LEDs, named
+// encoders placed at their real positions, see deluge-layout.ts), a separate
+// large OLED, and a "rack" of sim-only instruments (CV/gate timeline, MIDI
+// monitor, keyboard). Input widgets call the Sim; output widgets read it each
+// frame. The visual surface is theme-switched in CSS via #faceplate's
+// data-face-theme; this module is theme-agnostic.
+import { Sim, OLED_W, OLED_H, PAD_ROWS } from "./sim";
+import { BUTTONS, ENCODERS, PAD, FACE_W, FACE_H } from "./deluge-layout";
 
 const OLED_SCALE = 3;
-// 18x8 pad hues across the spectrum — the grid is the panel's signature.
-const padHue = (x: number, y: number) => (x / PAD_COLS) * 320 + y * 6;
-
 const HIST = 240; // ~4 s of CV/gate history at 60 fps
 const CV_MAX = 10; // volts mapped to full scope height
 
+/// Place an element centered at SVG (cx, cy) with SVG size (w, h), as a
+/// percentage of the faceplate box (which has aspect-ratio FACE_W/FACE_H, so
+/// equal-scaled width/height keep circles round).
+function place(el: HTMLElement, cx: number, cy: number, w: number, h: number) {
+  el.style.left = `${(cx / FACE_W) * 100}%`;
+  el.style.top = `${(cy / FACE_H) * 100}%`;
+  el.style.width = `${(w / FACE_W) * 100}%`;
+  el.style.height = `${(h / FACE_H) * 100}%`;
+}
+
 export class Panel {
   private oledCtx: CanvasRenderingContext2D;
-  private padEls: HTMLButtonElement[] = [];
   private cvEls: HTMLElement[] = [];
   private gateEls: HTMLElement[] = [];
-  private buttonEls: HTMLButtonElement[] = [];
-  private encoders = document.querySelector<HTMLElement>("#encoders");
-  private buttons = document.querySelector<HTMLElement>("#buttons");
+  private ledEls = new Map<number, HTMLElement>(); // rawId → button element
+
   private midiMon = document.querySelector<HTMLElement>("#midi-monitor");
   private cvScope = document.querySelector<HTMLCanvasElement>("#cv-scope");
   private cvScopeCtx: CanvasRenderingContext2D | null = null;
-  // Rolling CV/gate history (ring buffers).
   private cvHist = [new Float32Array(HIST), new Float32Array(HIST)];
   private gateHist = new Uint8Array(HIST);
   private histPos = 0;
 
   constructor(
     oled: HTMLCanvasElement,
-    private padGrid: HTMLElement,
+    private faceOverlay: HTMLElement,
     private cvRow: HTMLElement,
     private keyboard: HTMLElement,
     private sim: Sim,
@@ -38,8 +45,8 @@ export class Panel {
     oled.height = OLED_H * OLED_SCALE;
     this.oledCtx = oled.getContext("2d")!;
     this.buildPads();
-    this.buildEncoders();
     this.buildButtons();
+    this.buildEncoders();
     this.buildCv();
     this.buildKeyboard();
     if (this.cvScope) {
@@ -49,139 +56,96 @@ export class Panel {
     }
   }
 
-  /// Log a MIDI message to the monitor (called for keyboard/Web MIDI input and
-  /// drained TX). `dir`: "in" or "out".
-  logMidi(status: number, d1: number, d2: number, dir: "in" | "out") {
-    if (!this.midiMon) return;
-    const ch = (status & 0x0f) + 1;
-    let s: string;
-    switch (status & 0xf0) {
-      case 0x90: s = d2 > 0 ? `note on  ${d1}  v${d2}` : `note off ${d1}`; break;
-      case 0x80: s = `note off ${d1}`; break;
-      case 0xb0: s = `cc ${d1} ${d2}`; break;
-      case 0xc0: s = `prog ${d1}`; break;
-      case 0xe0: s = `bend ${d1 | (d2 << 7)}`; break;
-      default: s = `${(status & 0xf0).toString(16)} ${d1} ${d2}`;
-    }
-    const row = document.createElement("div");
-    row.className = `midi-row ${dir}`;
-    row.textContent = `${dir === "in" ? "▸" : "◂"} ch${ch}  ${s}`;
-    this.midiMon.appendChild(row);
-    while (this.midiMon.childElementCount > 100) this.midiMon.firstElementChild!.remove();
-    this.midiMon.scrollTop = this.midiMon.scrollHeight;
-  }
+  // ── Faceplate (placed at real coordinates) ──────────────────────────────────
 
-  /// Parse the drained raw MIDI-TX byte stream into messages for the monitor.
-  private logMidiTx(bytes: Uint8Array) {
-    let i = 0;
-    while (i < bytes.length) {
-      const status = bytes[i];
-      if (status < 0x80) { i++; continue; }
-      const len = (status & 0xf0) === 0xc0 || (status & 0xf0) === 0xd0 ? 1 : 2;
-      this.logMidi(status, bytes[i + 1] ?? 0, len === 2 ? (bytes[i + 2] ?? 0) : 0, "out");
-      i += 1 + len;
-    }
-  }
-
-  private drawCvScope() {
-    const ctx = this.cvScopeCtx;
-    if (!ctx) return;
-    const w = this.cvScope!.width, h = this.cvScope!.height;
-    ctx.clearRect(0, 0, w, h);
-    // Gate 1 fill (background band) where it was high.
-    ctx.fillStyle = "#8fe9ff14";
-    for (let x = 0; x < w; x++) {
-      const idx = (this.histPos + Math.floor((x / w) * HIST)) % HIST;
-      if (this.gateHist[idx] & 1) ctx.fillRect(x, 0, w / HIST + 1, h);
-    }
-    // CV traces: CV1 phosphor, CV2 voltage-gold.
-    const colors = ["#8fe9ff", "#f2b549"];
-    for (let ch = 0; ch < 2; ch++) {
-      ctx.strokeStyle = colors[ch];
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-      for (let x = 0; x < w; x++) {
-        const idx = (this.histPos + Math.floor((x / w) * HIST)) % HIST;
-        const v = Math.max(0, Math.min(CV_MAX, this.cvHist[ch][idx]));
-        const y = h - (v / CV_MAX) * (h - 2) - 1;
-        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  private buildPads() {
+    const cols = PAD.colOffsets.length;
+    for (let svgRow = 0; svgRow < PAD.rowOffsets.length; svgRow++) {
+      for (let col = 0; col < cols; col++) {
+        const wy = PAD_ROWS - 1 - svgRow; // hardware: bottom-left = (0,0)
+        const pad = document.createElement("button");
+        pad.className = "pad";
+        pad.setAttribute("aria-label", `pad ${col + 1}, ${wy + 1}`);
+        const hue = (col / cols) * 320 + svgRow * 6;
+        pad.style.setProperty("--hue", String(hue));
+        place(
+          pad,
+          PAD.baseX + PAD.colOffsets[col] + PAD.size / 2,
+          PAD.baseY + PAD.rowOffsets[svgRow] + PAD.size / 2,
+          PAD.size,
+          PAD.size,
+        );
+        const press = (down: boolean) => { pad.classList.toggle("lit", down); this.sim.pad(col, wy, down); };
+        pad.addEventListener("pointerdown", (e) => { e.preventDefault(); press(true); });
+        pad.addEventListener("pointerup", () => press(false));
+        pad.addEventListener("pointerleave", () => pad.classList.contains("lit") && press(false));
+        this.faceOverlay.appendChild(pad);
       }
-      ctx.stroke();
-    }
-  }
-
-  private buildEncoders() {
-    if (!this.encoders) return;
-    for (let i = 0; i < 6; i++) {
-      const enc = document.createElement("div");
-      enc.className = "enc";
-      enc.tabIndex = 0;
-      enc.setAttribute("role", "slider");
-      enc.setAttribute("aria-label", `encoder ${i + 1}`);
-      enc.innerHTML = `<div class="enc-knob"><span class="enc-tick"></span></div><span class="enc-legend">${i + 1}</span>`;
-      const knob = enc.querySelector<HTMLElement>(".enc-knob")!;
-      let angle = 0;
-      const turn = (delta: number) => {
-        angle += delta * 20;
-        knob.style.transform = `rotate(${angle}deg)`;
-        this.sim.enc(i, delta);
-      };
-      // Wheel / vertical drag / arrow keys = detents (8 px per detent on drag).
-      enc.addEventListener("wheel", (e) => { e.preventDefault(); turn(e.deltaY < 0 ? 1 : -1); }, { passive: false });
-      enc.addEventListener("keydown", (e) => {
-        if (e.key === "ArrowUp" || e.key === "ArrowRight") { e.preventDefault(); turn(1); }
-        else if (e.key === "ArrowDown" || e.key === "ArrowLeft") { e.preventDefault(); turn(-1); }
-      });
-      let dragging = false, lastY = 0, accum = 0;
-      enc.addEventListener("pointerdown", (e) => { dragging = true; lastY = e.clientY; enc.setPointerCapture(e.pointerId); });
-      enc.addEventListener("pointermove", (e) => {
-        if (!dragging) return;
-        accum += lastY - e.clientY;
-        lastY = e.clientY;
-        while (accum >= 8) { accum -= 8; turn(1); }
-        while (accum <= -8) { accum += 8; turn(-1); }
-      });
-      enc.addEventListener("pointerup", () => { dragging = false; });
-      this.encoders.appendChild(enc);
     }
   }
 
   private buildButtons() {
-    if (!this.buttons) return;
-    // Generic front-panel buttons by id (0..15); they light from Led.on(id).
-    for (let id = 0; id < 16; id++) {
-      const b = document.createElement("button");
-      b.className = "fbtn";
-      b.textContent = String(id);
-      b.setAttribute("aria-label", `button ${id}`);
-      const press = (down: boolean) => { b.classList.toggle("pressed", down); this.sim.button(id, down); };
-      b.addEventListener("pointerdown", (e) => { e.preventDefault(); press(true); });
-      b.addEventListener("pointerup", () => press(false));
-      b.addEventListener("pointerleave", () => b.classList.contains("pressed") && press(false));
-      this.buttons.appendChild(b);
-      this.buttonEls.push(b);
+    for (const b of BUTTONS) {
+      const el = document.createElement("button");
+      el.className = "fbtn" + (b.fn ? " fn" : "");
+      el.setAttribute("aria-label", b.name);
+      el.title = b.name;
+      place(el, b.cx, b.cy, b.r * 2, b.r * 2);
+      const press = (down: boolean) => { el.classList.toggle("pressed", down); this.sim.button(b.rawId, down); };
+      el.addEventListener("pointerdown", (e) => { e.preventDefault(); press(true); });
+      el.addEventListener("pointerup", () => press(false));
+      el.addEventListener("pointerleave", () => el.classList.contains("pressed") && press(false));
+      this.faceOverlay.appendChild(el);
+      this.ledEls.set(b.rawId, el);
     }
   }
 
-  private buildPads() {
-    for (let y = 0; y < PAD_ROWS; y++) {
-      for (let x = 0; x < PAD_COLS; x++) {
-        const pad = document.createElement("button");
-        pad.className = "pad";
-        pad.setAttribute("aria-label", `pad ${x + 1}, ${y + 1}`);
-        pad.style.setProperty("--hue", String(padHue(x, y)));
-        const press = (down: boolean) => {
-          pad.classList.toggle("lit", down);
-          this.sim.pad(x, y, down);
-        };
-        pad.addEventListener("pointerdown", (e) => { e.preventDefault(); press(true); });
-        pad.addEventListener("pointerup", () => press(false));
-        pad.addEventListener("pointerleave", () => pad.classList.contains("lit") && press(false));
-        this.padGrid.appendChild(pad);
-        this.padEls.push(pad);
+  private buildEncoders() {
+    for (const e of ENCODERS) {
+      const enc = document.createElement("div");
+      enc.className = "enc" + (e.gold ? " gold" : "") + (e.index < 0 ? " inert" : "");
+      const interactive = e.index >= 0;
+      if (interactive) {
+        enc.tabIndex = 0;
+        enc.setAttribute("role", "slider");
       }
+      enc.setAttribute("aria-label", `${e.name} encoder`);
+      enc.title = e.name;
+      // The bezel (.enc-knob) stays static; only .enc-dial (holding the tick)
+      // rotates, so the knob's shadow/highlight doesn't spin with it.
+      enc.innerHTML = `<div class="enc-knob"><div class="enc-dial"><span class="enc-tick"></span></div></div>`;
+      place(enc, e.cx, e.cy, e.r * 2, e.r * 2);
+      const dial = enc.querySelector<HTMLElement>(".enc-dial")!;
+      this.faceOverlay.appendChild(enc);
+      if (!interactive) continue;
+
+      let angle = 0;
+      const turn = (d: number) => { angle += d * 20; dial.style.transform = `rotate(${angle}deg)`; this.sim.enc(e.index, d); };
+      enc.addEventListener("wheel", (ev) => { ev.preventDefault(); turn(ev.deltaY < 0 ? 1 : -1); }, { passive: false });
+      enc.addEventListener("keydown", (ev) => {
+        if (ev.key === "ArrowUp" || ev.key === "ArrowRight") { ev.preventDefault(); turn(1); }
+        else if (ev.key === "ArrowDown" || ev.key === "ArrowLeft") { ev.preventDefault(); turn(-1); }
+      });
+      // Vertical drag = detents; a small drag (treated as a click) = shaft press.
+      let dragging = false, lastY = 0, accum = 0, moved = 0;
+      enc.addEventListener("pointerdown", (ev) => { dragging = true; lastY = ev.clientY; accum = 0; moved = 0; enc.setPointerCapture(ev.pointerId); });
+      enc.addEventListener("pointermove", (ev) => {
+        if (!dragging) return;
+        const dy = lastY - ev.clientY; lastY = ev.clientY; accum += dy; moved += Math.abs(dy);
+        while (accum >= 8) { accum -= 8; turn(1); }
+        while (accum <= -8) { accum += 8; turn(-1); }
+      });
+      enc.addEventListener("pointerup", () => {
+        dragging = false;
+        if (moved < 4 && e.pushId >= 0) { // a tap on the shaft
+          this.sim.button(e.pushId, true);
+          this.sim.button(e.pushId, false);
+        }
+      });
     }
   }
+
+  // ── Rack (sim-only instruments) ─────────────────────────────────────────────
 
   private buildCv() {
     for (let ch = 0; ch < 2; ch++) {
@@ -204,7 +168,6 @@ export class Panel {
   }
 
   private buildKeyboard() {
-    // One octave from C3 (MIDI 48), enough to drive the synth examples.
     const base = 48;
     const isBlack = (n: number) => [1, 3, 6, 8, 10].includes(n % 12);
     const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -227,9 +190,66 @@ export class Panel {
     }
   }
 
-  /// Redraw output-driven widgets from current sim state.
+  logMidi(status: number, d1: number, d2: number, dir: "in" | "out") {
+    if (!this.midiMon) return;
+    const ch = (status & 0x0f) + 1;
+    let s: string;
+    switch (status & 0xf0) {
+      case 0x90: s = d2 > 0 ? `note on  ${d1}  v${d2}` : `note off ${d1}`; break;
+      case 0x80: s = `note off ${d1}`; break;
+      case 0xb0: s = `cc ${d1} ${d2}`; break;
+      case 0xc0: s = `prog ${d1}`; break;
+      case 0xe0: s = `bend ${d1 | (d2 << 7)}`; break;
+      default: s = `${(status & 0xf0).toString(16)} ${d1} ${d2}`;
+    }
+    const row = document.createElement("div");
+    row.className = `midi-row ${dir}`;
+    row.textContent = `${dir === "in" ? "▸" : "◂"} ch${ch}  ${s}`;
+    this.midiMon.appendChild(row);
+    while (this.midiMon.childElementCount > 100) this.midiMon.firstElementChild!.remove();
+    this.midiMon.scrollTop = this.midiMon.scrollHeight;
+  }
+
+  private logMidiTx(bytes: Uint8Array) {
+    let i = 0;
+    while (i < bytes.length) {
+      const status = bytes[i];
+      if (status < 0x80) { i++; continue; }
+      const len = (status & 0xf0) === 0xc0 || (status & 0xf0) === 0xd0 ? 1 : 2;
+      this.logMidi(status, bytes[i + 1] ?? 0, len === 2 ? (bytes[i + 2] ?? 0) : 0, "out");
+      i += 1 + len;
+    }
+  }
+
+  private drawCvScope() {
+    const ctx = this.cvScopeCtx;
+    if (!ctx) return;
+    const w = this.cvScope!.width, h = this.cvScope!.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#8fe9ff14";
+    for (let x = 0; x < w; x++) {
+      const idx = (this.histPos + Math.floor((x / w) * HIST)) % HIST;
+      if (this.gateHist[idx] & 1) ctx.fillRect(x, 0, w / HIST + 1, h);
+    }
+    const colors = ["#8fe9ff", "#f2b549"];
+    for (let ch = 0; ch < 2; ch++) {
+      ctx.strokeStyle = colors[ch];
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      for (let x = 0; x < w; x++) {
+        const idx = (this.histPos + Math.floor((x / w) * HIST)) % HIST;
+        const v = Math.max(0, Math.min(CV_MAX, this.cvHist[ch][idx]));
+        const y = h - (v / CV_MAX) * (h - 2) - 1;
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ── Per-frame output ────────────────────────────────────────────────────────
+
   frame() {
-    // OLED: phosphor pixels with a soft additive bloom.
+    // OLED phosphor render.
     const px = this.sim.oled();
     const ctx = this.oledCtx;
     ctx.fillStyle = "#0a0e10";
@@ -239,9 +259,7 @@ export class Panel {
     ctx.shadowBlur = OLED_SCALE * 1.5;
     for (let y = 0; y < OLED_H; y++) {
       for (let x = 0; x < OLED_W; x++) {
-        if (px[y * OLED_W + x]) {
-          ctx.fillRect(x * OLED_SCALE, y * OLED_SCALE, OLED_SCALE - 0.5, OLED_SCALE - 0.5);
-        }
+        if (px[y * OLED_W + x]) ctx.fillRect(x * OLED_SCALE, y * OLED_SCALE, OLED_SCALE - 0.5, OLED_SCALE - 0.5);
       }
     }
     ctx.shadowBlur = 0;
@@ -253,9 +271,9 @@ export class Panel {
     const bits = this.sim.gateBits();
     this.gateEls.forEach((el, g) => el.classList.toggle("on", (bits & (1 << g)) !== 0));
 
-    // Indicator LEDs (Led.on(id) / off(id)) light the front-panel buttons.
+    // Indicator LEDs light their front-panel buttons (Led.on(id)).
     const leds = this.sim.leds();
-    this.buttonEls.forEach((b, id) => b.classList.toggle("lit", leds[id] !== 0));
+    for (const [rawId, el] of this.ledEls) el.classList.toggle("lit", leds[rawId] !== 0);
 
     // MIDI TX → monitor.
     const tx = this.sim.takeMidiTx();

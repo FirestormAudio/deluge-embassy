@@ -19,6 +19,14 @@
           <span class="legend">example</span>
           <select id="examples" aria-label="load example script"></select>
         </label>
+        <label class="field">
+          <span class="legend">face</span>
+          <select id="face-theme" aria-label="faceplate theme">
+            <option value="hardware">hardware</option>
+            <option value="chassis">chassis</option>
+            <option value="emissive">emissive</option>
+          </select>
+        </label>
         <span id="status" class="status">booting…</span>
         <button id="share" class="ghost-btn" aria-label="copy a shareable link to this script">Share</button>
         <button id="run" class="run">Run <kbd>⌘↵</kbd></button>
@@ -31,53 +39,48 @@
         <div id="editor"></div>
       </section>
 
-      <section class="faceplate">
+      <section class="instrument-pane">
         <div class="screen">
           <div class="pane-legend">oled · 128×48</div>
           <canvas id="oled" role="img" aria-label="OLED display, 128 by 48 pixels"></canvas>
         </div>
 
-        <div class="grid-wrap">
-          <div class="pane-legend">pads · 18×8</div>
-          <div id="pad-grid" class="pad-grid"></div>
-        </div>
-
-        <div class="enc-wrap">
-          <div class="pane-legend">encoders</div>
-          <div id="encoders" class="encoders"></div>
-        </div>
-
-        <div class="btn-wrap">
-          <div class="pane-legend">buttons · leds</div>
-          <div id="buttons" class="buttons"></div>
-        </div>
-
-        <div id="cv-row" class="cv-row"></div>
-
-        <div class="cvscope-wrap">
-          <div class="pane-legend">cv · gate · timeline</div>
-          <canvas id="cv-scope" role="img" aria-label="CV and gate timeline"></canvas>
-        </div>
-
-        <div class="scope-wrap">
-          <div class="pane-legend">audio · out <span id="audio-state" class="audio-state">muted</span></div>
-          <canvas id="scope" role="img" aria-label="audio output waveform"></canvas>
-        </div>
-
-        <div class="keys-wrap">
-          <div class="pane-legend">
-            midi in
-            <span class="midi-ctrl">
-              <button id="midi-enable" aria-label="connect a MIDI input device">connect device</button>
-              <select id="midi-device" hidden aria-label="MIDI input device"></select>
-            </span>
+        <div class="face-wrap">
+          <div class="pane-legend">deluge</div>
+          <div id="faceplate" class="faceplate" data-face-theme="hardware">
+            <img class="face-svg" src="./deluge.svg" alt="" aria-hidden="true" />
+            <div id="face-overlay" class="face-overlay"></div>
           </div>
-          <div id="keyboard" class="keyboard"></div>
         </div>
 
-        <div class="midimon-wrap">
-          <div class="pane-legend">midi · monitor</div>
-          <div id="midi-monitor" class="midi-monitor" role="log" aria-live="polite" aria-label="MIDI monitor"></div>
+        <div class="rack">
+          <div id="cv-row" class="cv-row"></div>
+
+          <div class="cvscope-wrap">
+            <div class="pane-legend">cv · gate · timeline</div>
+            <canvas id="cv-scope" role="img" aria-label="CV and gate timeline"></canvas>
+          </div>
+
+          <div class="scope-wrap">
+            <div class="pane-legend">audio · out <span id="audio-state" class="audio-state">muted</span></div>
+            <canvas id="scope" role="img" aria-label="audio output waveform"></canvas>
+          </div>
+
+          <div class="keys-wrap">
+            <div class="pane-legend">
+              midi in
+              <span class="midi-ctrl">
+                <button id="midi-enable" aria-label="connect a MIDI input device">connect device</button>
+                <select id="midi-device" hidden aria-label="MIDI input device"></select>
+              </span>
+            </div>
+            <div id="keyboard" class="keyboard"></div>
+          </div>
+
+          <div class="midimon-wrap">
+            <div class="pane-legend">midi · monitor</div>
+            <div id="midi-monitor" class="midi-monitor" role="log" aria-live="polite" aria-label="MIDI monitor"></div>
+          </div>
         </div>
       </section>
     </main>

@@ -371,7 +371,12 @@ Remaining risks, lower (none gating):
    monitor** — the full binding surface — driven by a `requestAnimationFrame` tick
    loop. Verified live: MIDI key → CV; metro → CV/gate/OLED; encoder → `Enc.onTurn`;
    `Led.on` lights a button; the timeline draws CV sweeps; the monitor decodes
-   in/out MIDI.
+   in/out MIDI. **Faithful faceplate:** controls are placed at their real Deluge
+   coordinates (from the native simulator's SVG-derived tables + `controls.rs` id
+   bridge — `src/deluge-layout.ts`), with named buttons (PLAY/RECORD/SHIFT/…),
+   gold MOD encoders, and indicator LEDs, switchable across three themes
+   (hardware SVG art / dark-filtered chassis / emissive recreation). OLED + the
+   sim-only "rack" (CV scope, MIDI monitor, keyboard) sit alongside.
 6. **M5 — Audio. ✅ DONE.** `Out.patch(...)` makes sound, rendered **off the main
    thread in an AudioWorklet**. The worklet owns a second wasm instance (engine
    only); the main VM serializes audio-graph commands (16-byte records, `codec.rs`)
