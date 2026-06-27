@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.1",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/space-grotesk": "^5.2.10",
     "monaco-editor": "^0.52.2",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"

@@ -15,26 +15,53 @@ const WASI_STUB = {
   clock_time_get: () => 0,
 };
 
+// Command ring layout (shared with src/audio.ts): 16-byte records, an 8-byte
+// header of two Int32 (write count, read count).
+const REC = 16;
+const RING_RECORDS = 1024;
+
 class WrenDsp extends AudioWorkletProcessor {
   constructor(options) {
     super();
-    const { module } = options.processorOptions;
+    const { module, ring } = options.processorOptions;
     this.inst = new WebAssembly.Instance(module, { wasi_snapshot_preview1: WASI_STUB });
     this.x = this.inst.exports;
     if (this.x._initialize) this.x._initialize(); // apply data segments if it's a reactor
     this.mem = this.x.memory;
-    this.pending = [];
     this.frames = 0;
-    this.port.onmessage = (e) => this.pending.push(new Uint8Array(e.data));
+    // SharedArrayBuffer command ring (preferred), or a postMessage queue.
+    if (ring) {
+      this.ctrl = new Int32Array(ring, 0, 2);
+      this.ringData = new Uint8Array(ring, 8);
+    } else {
+      this.pending = [];
+      this.port.onmessage = (e) => this.pending.push(new Uint8Array(e.data));
+    }
+  }
+
+  applyCmd(bytes, len) {
+    const n = Math.min(len, this.x.sim_engine_cmd_cap());
+    new Uint8Array(this.mem.buffer, this.x.sim_engine_cmd_ptr(), n).set(bytes.subarray(0, n));
+    this.x.sim_engine_apply(n);
   }
 
   process(_inputs, outputs) {
     // Apply any forwarded graph commands before rendering this block.
-    while (this.pending.length) {
-      const bytes = this.pending.shift();
-      const n = Math.min(bytes.length, this.x.sim_engine_cmd_cap());
-      new Uint8Array(this.mem.buffer, this.x.sim_engine_cmd_ptr(), n).set(bytes.subarray(0, n));
-      this.x.sim_engine_apply(n);
+    if (this.ctrl) {
+      // Drain the SAB ring (single consumer).
+      let r = Atomics.load(this.ctrl, 1);
+      const w = Atomics.load(this.ctrl, 0);
+      while (r < w) {
+        const slot = (r % RING_RECORDS) * REC;
+        this.applyCmd(this.ringData.subarray(slot, slot + REC), REC);
+        r++;
+      }
+      Atomics.store(this.ctrl, 1, r);
+    } else {
+      while (this.pending.length) {
+        const bytes = this.pending.shift();
+        this.applyCmd(bytes, bytes.length);
+      }
     }
 
     const out = outputs[0];

@@ -382,8 +382,11 @@ Remaining risks, lower (none gating):
    waveform scope renders from the main engine. Verified live (playwright): the
    worklet reports non-zero peak for a drone (`live`), goes silent on a no-audio
    script (`idle`), and back — proving command forwarding + Reset reach the
-   worklet. *Optional refinement:* swap `postMessage` for a SharedArrayBuffer
-   command ring to shave control→audio jitter (needs cross-origin isolation).
+   worklet. The command transport is a **lock-free SharedArrayBuffer SPSC ring**
+   when the page is cross-origin isolated (COOP/COEP `require-corp`, fonts
+   self-hosted via `@fontsource`), falling back to `postMessage` otherwise.
+   Verified in-browser: `crossOriginIsolated` true, the ring path active, audio
+   plays + Reset propagates through the ring.
 7. **M6 — Polish (partial).** ✅ **Web MIDI input** (real keyboard/controller →
    `sim.midiIn` + monitor; device picker) and ✅ **localStorage autosave +
    shareable `#s=` permalinks** are done and verified. *Remaining (Phase 5,

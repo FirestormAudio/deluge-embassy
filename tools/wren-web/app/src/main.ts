@@ -1,3 +1,4 @@
+import "./fonts";
 import "./style.css";
 import { loadSim } from "./sim";
 import { createEditor, setErrorMarker, setAnalyzerMarkers, analyzerMarkers, registerIntelligence } from "./editor";
@@ -213,6 +214,7 @@ async function boot() {
     setSource: (s: string) => editor.setValue(s),
     getSource: () => editor.getValue(),
     permalink: () => permalink(editor.getValue()),
+    audioUsingSab: () => audio.usingSab,
     markers: () => analyzerMarkers(editor.getModel()!),
     hover: (off: number) => analyzer.hover(editor.getValue(), off),
     definition: (off: number) => analyzer.definition(editor.getValue(), off),
