@@ -251,6 +251,18 @@ select {
   box-shadow: inset 0 0 0 1px #000, inset 0 0 14px #04141a;
 }
 
+/* ── MIDI device control ────────────────────────────────────────────────── */
+.midi-ctrl { float: right; display: inline-flex; gap: 6px; }
+#midi-enable, #midi-device {
+  background: var(--panel-raised); color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 4px;
+  font: 10px/1 "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: 0.1em;
+  padding: 3px 7px; cursor: pointer;
+}
+#midi-enable:hover:not(:disabled) { color: var(--phosphor); border-color: #8fe9ff44; }
+#midi-enable:disabled { opacity: 0.5; cursor: default; }
+#midi-device { color: var(--phosphor); text-transform: none; }
+
 /* ── Mini keyboard ──────────────────────────────────────────────────────── */
 .keys-wrap { display: flex; flex-direction: column; margin-top: 6px; }
 .keyboard {

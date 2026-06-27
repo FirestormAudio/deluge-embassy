@@ -68,7 +68,13 @@
         </div>
 
         <div class="keys-wrap">
-          <div class="pane-legend">midi in</div>
+          <div class="pane-legend">
+            midi in
+            <span class="midi-ctrl">
+              <button id="midi-enable">connect device</button>
+              <select id="midi-device" hidden></select>
+            </span>
+          </div>
           <div id="keyboard" class="keyboard"></div>
         </div>
 

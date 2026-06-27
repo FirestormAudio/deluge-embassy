@@ -4,6 +4,7 @@ import { createEditor, setErrorMarker, setAnalyzerMarkers, analyzerMarkers, regi
 import { Panel } from "./panel";
 import { Audio } from "./audio";
 import { Analyzer } from "./analyzer";
+import { WebMidi } from "./midi";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -42,6 +43,37 @@ async function boot() {
     $("#keyboard"),
     sim,
   );
+
+  // Web MIDI input: a real keyboard/controller drives the same path as the
+  // on-screen keys (sim.midiIn + the monitor).
+  const webmidi = new WebMidi();
+  webmidi.onMessage = (s, d1, d2) => { sim.midiIn(s, d1, d2); panel.logMidi(s, d1, d2, "in"); };
+  const midiEnable = $<HTMLButtonElement>("#midi-enable");
+  const midiDevice = $<HTMLSelectElement>("#midi-device");
+  if (!webmidi.supported) {
+    midiEnable.textContent = "no web midi";
+    midiEnable.disabled = true;
+  } else {
+    midiEnable.addEventListener("click", async () => {
+      try {
+        const inputs = await webmidi.enable();
+        if (inputs.length === 0) { midiEnable.textContent = "no devices"; return; }
+        midiDevice.innerHTML = "";
+        for (const inp of inputs) {
+          const opt = document.createElement("option");
+          opt.value = inp.id;
+          opt.textContent = inp.name ?? inp.id;
+          midiDevice.appendChild(opt);
+        }
+        midiEnable.hidden = true;
+        midiDevice.hidden = false;
+        webmidi.select(inputs[0].id);
+        midiDevice.addEventListener("change", () => webmidi.select(midiDevice.value));
+      } catch {
+        midiEnable.textContent = "access denied";
+      }
+    });
+  }
 
   const log = (text: string, kind = "out") => {
     if (!text) return;
