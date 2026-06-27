@@ -13,6 +13,9 @@ export class Panel {
   private padEls: HTMLButtonElement[] = [];
   private cvEls: HTMLElement[] = [];
   private gateEls: HTMLElement[] = [];
+  private buttonEls: HTMLButtonElement[] = [];
+  private encoders = document.querySelector<HTMLElement>("#encoders");
+  private buttons = document.querySelector<HTMLElement>("#buttons");
 
   constructor(
     oled: HTMLCanvasElement,
@@ -25,8 +28,55 @@ export class Panel {
     oled.height = OLED_H * OLED_SCALE;
     this.oledCtx = oled.getContext("2d")!;
     this.buildPads();
+    this.buildEncoders();
+    this.buildButtons();
     this.buildCv();
     this.buildKeyboard();
+  }
+
+  private buildEncoders() {
+    if (!this.encoders) return;
+    for (let i = 0; i < 6; i++) {
+      const enc = document.createElement("div");
+      enc.className = "enc";
+      enc.innerHTML = `<div class="enc-knob"><span class="enc-tick"></span></div><span class="enc-legend">${i + 1}</span>`;
+      const knob = enc.querySelector<HTMLElement>(".enc-knob")!;
+      let angle = 0;
+      const turn = (delta: number) => {
+        angle += delta * 20;
+        knob.style.transform = `rotate(${angle}deg)`;
+        this.sim.enc(i, delta);
+      };
+      // Wheel = detents; vertical drag = detents (8 px each).
+      enc.addEventListener("wheel", (e) => { e.preventDefault(); turn(e.deltaY < 0 ? 1 : -1); }, { passive: false });
+      let dragging = false, lastY = 0, accum = 0;
+      enc.addEventListener("pointerdown", (e) => { dragging = true; lastY = e.clientY; enc.setPointerCapture(e.pointerId); });
+      enc.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        accum += lastY - e.clientY;
+        lastY = e.clientY;
+        while (accum >= 8) { accum -= 8; turn(1); }
+        while (accum <= -8) { accum += 8; turn(-1); }
+      });
+      enc.addEventListener("pointerup", () => { dragging = false; });
+      this.encoders.appendChild(enc);
+    }
+  }
+
+  private buildButtons() {
+    if (!this.buttons) return;
+    // Generic front-panel buttons by id (0..15); they light from Led.on(id).
+    for (let id = 0; id < 16; id++) {
+      const b = document.createElement("button");
+      b.className = "fbtn";
+      b.textContent = String(id);
+      const press = (down: boolean) => { b.classList.toggle("pressed", down); this.sim.button(id, down); };
+      b.addEventListener("pointerdown", (e) => { e.preventDefault(); press(true); });
+      b.addEventListener("pointerup", () => press(false));
+      b.addEventListener("pointerleave", () => b.classList.contains("pressed") && press(false));
+      this.buttons.appendChild(b);
+      this.buttonEls.push(b);
+    }
   }
 
   private buildPads() {
@@ -112,5 +162,9 @@ export class Panel {
     }
     const bits = this.sim.gateBits();
     this.gateEls.forEach((el, g) => el.classList.toggle("on", (bits & (1 << g)) !== 0));
+
+    // Indicator LEDs (Led.on(id) / off(id)) light the front-panel buttons.
+    const leds = this.sim.leds();
+    this.buttonEls.forEach((b, id) => b.classList.toggle("lit", leds[id] !== 0));
   }
 }
