@@ -3,6 +3,7 @@
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { registerWren, WREN_ID } from "./wren-lang";
+import type { Analyzer } from "./analyzer";
 
 self.MonacoEnvironment = {
   getWorker: () => new EditorWorker(),
@@ -48,6 +49,65 @@ export function createEditor(host: HTMLElement, value: string) {
     automaticLayout: true,
   });
   return { editor, monaco };
+}
+
+/// Register analyzer-backed language intelligence (hover, go-to-definition, and
+/// symbol completion) for Wren. Queries run in the analyzer worker; results merge
+/// with the static prelude completion from `registerWren`.
+export function registerIntelligence(analyzer: Analyzer) {
+  const completionKind = [
+    monaco.languages.CompletionItemKind.Class,
+    monaco.languages.CompletionItemKind.Method,
+    monaco.languages.CompletionItemKind.Field,
+    monaco.languages.CompletionItemKind.Variable,
+    monaco.languages.CompletionItemKind.Module,
+  ];
+
+  monaco.languages.registerHoverProvider(WREN_ID, {
+    async provideHover(model, position) {
+      const md = await analyzer.hover(model.getValue(), model.getOffsetAt(position));
+      if (!md) return null;
+      return { contents: [{ value: md }] };
+    },
+  });
+
+  monaco.languages.registerDefinitionProvider(WREN_ID, {
+    async provideDefinition(model, position) {
+      const def = await analyzer.definition(model.getValue(), model.getOffsetAt(position));
+      if (!def || def.inPrelude) return null; // builtins have no in-file location
+      return {
+        uri: model.uri,
+        range: {
+          startLineNumber: def.startLine,
+          startColumn: def.startCol,
+          endLineNumber: def.endLine,
+          endColumn: def.endCol,
+        },
+      };
+    },
+  });
+
+  monaco.languages.registerCompletionItemProvider(WREN_ID, {
+    async provideCompletionItems(model, position) {
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+      const items = await analyzer.completions(model.getValue());
+      return {
+        suggestions: items.map((it) => ({
+          label: it.label,
+          kind: completionKind[it.kind] ?? monaco.languages.CompletionItemKind.Variable,
+          detail: it.detail,
+          insertText: it.label,
+          range,
+        })),
+      };
+    },
+  });
 }
 
 /// Current analyzer markers on the model (for inspection/testing).

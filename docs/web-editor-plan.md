@@ -358,9 +358,12 @@ Remaining risks, lower (none gating):
    (debounced) and the diagnostics become Monaco markers (`owner: wren-analyzer`,
    separate from the VM's run-time errors). Verified in a real browser: a bad
    script yields a syntax error + unused-var warnings at correct lines; clean
-   scripts and the Deluge prelude API produce no false positives. *Optional:* swap
-   the Monarch tokenizer for the reused TextMate grammar; add hover/go-to-def from
-   the analyzer's `SymbolIndex`.
+   scripts and the Deluge prelude API produce no false positives. **Hover,
+   go-to-definition, and symbol completion** also run through the worker against a
+   `SymbolIndex` built over the prelude + source (so `Osc`/`output[]`/… resolve;
+   prelude symbols hover as builtins and don't offer a jump). Verified in-browser.
+   *Optional:* swap the Monarch tokenizer for the reused TextMate grammar;
+   member-aware (post-`.`) completion from the analyzer.
 5. **M4 — Panel UI. ✅ DONE (first cut).** A live faceplate: emissive OLED canvas,
    18×8 pad grid (click → pad press), CV/gate readouts, mini MIDI keyboard, and a
    `System.print`/error console, driven by a `requestAnimationFrame` tick loop.

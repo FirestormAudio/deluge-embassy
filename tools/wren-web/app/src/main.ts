@@ -1,6 +1,6 @@
 import "./style.css";
 import { loadSim } from "./sim";
-import { createEditor, setErrorMarker, setAnalyzerMarkers, analyzerMarkers } from "./editor";
+import { createEditor, setErrorMarker, setAnalyzerMarkers, analyzerMarkers, registerIntelligence } from "./editor";
 import { Panel } from "./panel";
 import { Audio } from "./audio";
 import { Analyzer } from "./analyzer";
@@ -61,6 +61,7 @@ async function boot() {
   // Live static analysis (off-thread). Squiggles update as you type, separate
   // from the VM's run-time errors (which appear on Run).
   const analyzer = new Analyzer(`${import.meta.env.BASE_URL}wren-analyzer.wasm`);
+  registerIntelligence(analyzer); // hover, go-to-def, symbol completion
   let editVersion = 0;
   analyzer.onDiagnostics = (version, diags) => {
     if (version === editVersion) setAnalyzerMarkers(editor.getModel()!, diags);
@@ -146,6 +147,9 @@ async function boot() {
   (window as unknown as { wren: unknown }).wren = {
     setSource: (s: string) => editor.setValue(s),
     markers: () => analyzerMarkers(editor.getModel()!),
+    hover: (off: number) => analyzer.hover(editor.getValue(), off),
+    definition: (off: number) => analyzer.definition(editor.getValue(), off),
+    completions: () => analyzer.completions(editor.getValue()),
   };
 }
 
