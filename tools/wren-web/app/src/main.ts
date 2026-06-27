@@ -5,6 +5,7 @@ import { Panel } from "./panel";
 import { Audio } from "./audio";
 import { Analyzer } from "./analyzer";
 import { WebMidi } from "./midi";
+import { saveLocal, loadLocal, loadPermalink, permalink } from "./persistence";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -16,17 +17,26 @@ async function boot() {
   const status = $("#status");
   const consoleEl = $("#console");
 
-  const { editor } = createEditor($("#editor"), EXAMPLES[0].source);
+  // Initial script: a #s= permalink wins over the autosaved script, which wins
+  // over the default example.
+  const initial = loadPermalink() ?? loadLocal() ?? EXAMPLES[0].source;
+  const { editor } = createEditor($("#editor"), initial);
 
-  // Examples menu.
+  // Examples menu (+ a hidden "(custom)" entry for restored/shared scripts).
   const select = $<HTMLSelectElement>("#examples");
+  const customOpt = document.createElement("option");
+  customOpt.value = "__custom";
+  customOpt.textContent = "(custom)";
+  customOpt.hidden = true;
+  select.appendChild(customOpt);
   for (const ex of EXAMPLES) {
     const opt = document.createElement("option");
     opt.value = ex.name;
     opt.textContent = ex.name;
     select.appendChild(opt);
   }
-  select.value = EXAMPLES[0].name;
+  const matching = EXAMPLES.find((e) => e.source === initial);
+  select.value = matching ? matching.name : "__custom";
   select.addEventListener("change", () => {
     const ex = EXAMPLES.find((e) => e.name === select.value);
     if (ex) editor.setValue(ex.source);
@@ -99,7 +109,30 @@ async function boot() {
     if (version === editVersion) setAnalyzerMarkers(editor.getModel()!, diags);
   };
   const reanalyze = () => analyzer.analyze(editor.getValue(), ++editVersion);
-  editor.onDidChangeModelContent(reanalyze);
+  let saveTimer = 0;
+  editor.onDidChangeModelContent(() => {
+    reanalyze();
+    // Edited content no longer matches a named example; autosave (debounced).
+    if (select.value !== "__custom" && !EXAMPLES.some((e) => e.source === editor.getValue())) {
+      select.value = "__custom";
+    }
+    clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => saveLocal(editor.getValue()), 400);
+  });
+
+  // Share: copy a permalink whose hash encodes the current script.
+  const shareBtn = $("#share");
+  shareBtn.addEventListener("click", async () => {
+    const url = permalink(editor.getValue());
+    try {
+      await navigator.clipboard.writeText(url);
+      const prev = shareBtn.textContent;
+      shareBtn.textContent = "Copied!";
+      setTimeout(() => (shareBtn.textContent = prev), 1200);
+    } catch {
+      location.hash = url.slice(url.indexOf("#")); // fall back to updating the URL
+    }
+  });
   const scope = $<HTMLCanvasElement>("#scope");
   const scopeCtx = scope.getContext("2d")!;
 
@@ -178,6 +211,8 @@ async function boot() {
   // Small inspection hook (handy in the console / for verification).
   (window as unknown as { wren: unknown }).wren = {
     setSource: (s: string) => editor.setValue(s),
+    getSource: () => editor.getValue(),
+    permalink: () => permalink(editor.getValue()),
     markers: () => analyzerMarkers(editor.getModel()!),
     hover: (off: number) => analyzer.hover(editor.getValue(), off),
     definition: (off: number) => analyzer.definition(editor.getValue(), off),

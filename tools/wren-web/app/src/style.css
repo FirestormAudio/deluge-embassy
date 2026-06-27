@@ -95,6 +95,14 @@ select {
 }
 .run:hover { filter: brightness(1.08); }
 .run:active { transform: translateY(1px); }
+.ghost-btn {
+  background: transparent; color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 6px;
+  font-family: "Space Grotesk"; font-weight: 500; font-size: 12px;
+  padding: 7px 13px; cursor: pointer;
+}
+.ghost-btn:hover { color: var(--phosphor); border-color: #8fe9ff44; }
+
 .run kbd {
   font-family: "IBM Plex Mono"; font-size: 10px; background: #00000026;
   padding: 2px 5px; border-radius: 3px;
