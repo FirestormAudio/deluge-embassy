@@ -35,13 +35,17 @@
 
     <main class="bench">
       <section class="file-browser" id="file-browser">
-        <div class="pane-legend">files <button id="fb-new" title="new file" aria-label="new file">＋</button></div>
+        <div class="pane-legend">files <button id="fb-new" title="new file" aria-label="new file">+</button></div>
         <div id="fb-tree" class="fb-tree"></div>
       </section>
 
       <section class="editor-pane">
         <div id="tab-bar" class="tab-bar" role="tablist"></div>
         <div id="editor"></div>
+        <footer class="console-pane">
+          <div class="pane-legend">console · System.print</div>
+          <div id="console" class="console" role="log" aria-live="polite" aria-label="script output"></div>
+        </footer>
       </section>
 
       <section class="instrument-pane">
@@ -49,6 +53,8 @@
           <div class="pane-legend">oled · 128×48</div>
           <canvas id="oled" role="img" aria-label="OLED display, 128 by 48 pixels"></canvas>
         </div>
+
+        <div id="cv-row" class="cv-row"></div>
 
         <div class="face-wrap">
           <div class="pane-legend">deluge</div>
@@ -59,8 +65,6 @@
         </div>
 
         <div class="rack">
-          <div id="cv-row" class="cv-row"></div>
-
           <div class="cvscope-wrap">
             <div class="pane-legend">cv · gate · timeline</div>
             <canvas id="cv-scope" role="img" aria-label="CV and gate timeline"></canvas>
@@ -89,11 +93,6 @@
         </div>
       </section>
     </main>
-
-    <footer class="console-pane">
-      <div class="pane-legend">console · System.print</div>
-      <div id="console" class="console" role="log" aria-live="polite" aria-label="script output"></div>
-    </footer>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
