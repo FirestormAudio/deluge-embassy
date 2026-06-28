@@ -150,13 +150,6 @@ export class Panel {
   // ── Rack (sim-only instruments) ─────────────────────────────────────────────
 
   private buildCv() {
-    for (let ch = 0; ch < 2; ch++) {
-      const jack = document.createElement("div");
-      jack.className = "jack";
-      jack.innerHTML = `<span class="jack-led"></span><span class="jack-legend">CV${ch + 1}</span><span class="jack-val">0.00<i>V</i></span>`;
-      this.cvRow.appendChild(jack);
-      this.cvEls.push(jack.querySelector(".jack-val")!);
-    }
     const gates = document.createElement("div");
     gates.className = "gates";
     gates.innerHTML = `<span class="jack-legend">GATE</span>`;
@@ -167,6 +160,17 @@ export class Panel {
       this.gateEls.push(el);
     }
     this.cvRow.appendChild(gates);
+
+    const cvJacks = document.createElement("div");
+    cvJacks.className = "cv-jacks";
+    for (let ch = 0; ch < 2; ch++) {
+      const jack = document.createElement("div");
+      jack.className = "jack";
+      jack.innerHTML = `<span class="jack-led"></span><span class="jack-legend">CV${ch + 1}</span><span class="jack-val">0.00<i>V</i></span>`;
+      cvJacks.appendChild(jack);
+      this.cvEls.push(jack.querySelector(".jack-val")!);
+    }
+    this.cvRow.appendChild(cvJacks);
   }
 
   /// Wire octave −/+ buttons (in the MIDI-in legend) to shift the keyboard range.
