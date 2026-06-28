@@ -169,13 +169,14 @@ export class Panel {
 
   private buildKeyboard() {
     const base = 48;
+    const count = 17; // notes base..base+16
     const isBlack = (n: number) => [1, 3, 6, 8, 10].includes(n % 12);
     const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     const noteName = (n: number) => `${names[n % 12]}${Math.floor(n / 12) - 1}`;
-    for (let i = 0; i <= 16; i++) {
-      const note = base + i;
+
+    const makeKey = (note: number, black: boolean) => {
       const key = document.createElement("button");
-      key.className = "key" + (isBlack(note) ? " black" : "");
+      key.className = "key" + (black ? " black" : "");
       key.setAttribute("aria-label", `note ${noteName(note)}`);
       const down = (on: boolean) => {
         key.classList.toggle("down", on);
@@ -186,8 +187,34 @@ export class Panel {
       key.addEventListener("pointerdown", (e) => { e.preventDefault(); down(true); });
       key.addEventListener("pointerup", () => down(false));
       key.addEventListener("pointerleave", () => key.classList.contains("down") && down(false));
-      this.keyboard.appendChild(key);
+      return key;
+    };
+
+    // Split into a flush row of white keys + black keys overlaid on the white
+    // boundaries (`before` = number of white keys to the black key's left).
+    const whites: number[] = [];
+    const blacks: { note: number; before: number }[] = [];
+    for (let i = 0; i < count; i++) {
+      const note = base + i;
+      if (isBlack(note)) blacks.push({ note, before: whites.length });
+      else whites.push(note);
     }
+    const whiteW = 100 / whites.length;
+    const blackW = whiteW * 0.62;
+
+    const inner = document.createElement("div");
+    inner.className = "kb-inner";
+    const row = document.createElement("div");
+    row.className = "key-row";
+    for (const note of whites) row.appendChild(makeKey(note, false));
+    inner.appendChild(row);
+    for (const b of blacks) {
+      const key = makeKey(b.note, true);
+      key.style.width = `${blackW}%`;
+      key.style.left = `${b.before * whiteW - blackW / 2}%`;
+      inner.appendChild(key);
+    }
+    this.keyboard.appendChild(inner);
   }
 
   logMidi(status: number, d1: number, d2: number, dir: "in" | "out") {
