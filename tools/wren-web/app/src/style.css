@@ -32,6 +32,23 @@ body {
   overflow: hidden;
 }
 
+/* ── Scrollbars (match the chassis) ──────────────────────────────────────── */
+* {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: #313945 transparent;
+}
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #2c333d;
+  border: 3px solid transparent; /* padding via transparent border + clip */
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #3b4654; }
+::-webkit-scrollbar-thumb:active { background: var(--phosphor); }
+::-webkit-scrollbar-corner { background: transparent; }
+
 .pane-legend {
   font: var(--legend);
   letter-spacing: 0.18em;

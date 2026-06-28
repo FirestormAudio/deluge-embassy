@@ -43,6 +43,11 @@ monaco.editor.defineTheme("chassis", {
     "editor.lineHighlightBackground": "#1a1d23",
     "editorCursor.foreground": "#8fe9ff",
     "editorIndentGuide.background1": "#23272e",
+    // Match the app's native scrollbars (see style.css).
+    "scrollbar.shadow": "#00000000",
+    "scrollbarSlider.background": "#2c333d99",
+    "scrollbarSlider.hoverBackground": "#3b4654",
+    "scrollbarSlider.activeBackground": "#8fe9ffaa",
   },
 });
 
