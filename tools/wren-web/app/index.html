@@ -34,8 +34,13 @@
     </header>
 
     <main class="bench">
+      <section class="file-browser" id="file-browser">
+        <div class="pane-legend">files <button id="fb-new" title="new file" aria-label="new file">＋</button></div>
+        <div id="fb-tree" class="fb-tree"></div>
+      </section>
+
       <section class="editor-pane">
-        <div class="pane-legend">script · main.wren</div>
+        <div id="tab-bar" class="tab-bar" role="tablist"></div>
         <div id="editor"></div>
       </section>
 

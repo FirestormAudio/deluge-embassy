@@ -108,13 +108,13 @@ select {
   padding: 2px 5px; border-radius: 3px;
 }
 
-/* ── Bench: editor | instrument pane ─────────────────────────────────────── */
+/* ── Bench: files | editor | instrument pane ─────────────────────────────── */
 .bench {
   display: grid;
-  grid-template-columns: 1fr 620px;
+  grid-template-columns: 210px 1fr 600px;
   min-height: 0;
 }
-.editor-pane, .instrument-pane {
+.file-browser, .editor-pane, .instrument-pane {
   display: flex; flex-direction: column; min-height: 0; min-width: 0;
   background: var(--panel);
 }
@@ -124,6 +124,55 @@ select {
   overflow-y: auto;
 }
 #editor { flex: 1; min-height: 0; }
+
+/* ── File browser ─────────────────────────────────────────────────────────── */
+.file-browser { border-right: 1px solid var(--hairline); }
+.file-browser .pane-legend { display: flex; align-items: center; justify-content: space-between; }
+#fb-new {
+  background: var(--panel-raised); color: var(--ink-dim); border: 1px solid var(--hairline);
+  border-radius: 4px; width: 18px; height: 18px; line-height: 1; cursor: pointer; font-size: 13px;
+}
+#fb-new:hover { color: var(--phosphor); border-color: #8fe9ff44; }
+.fb-tree { flex: 1; overflow-y: auto; padding: 4px 0; font-size: 12.5px; }
+.fb-folder, .fb-file {
+  display: flex; align-items: center; gap: 4px; height: 24px; cursor: pointer;
+  color: var(--ink-dim); padding-right: 6px;
+}
+.fb-folder:hover, .fb-file:hover { background: #ffffff08; color: var(--ink); }
+.fb-twisty { width: 12px; color: var(--ink-faint); font-size: 9px; flex: none; }
+.fb-folder .fb-label { font-weight: 600; letter-spacing: 0.02em; }
+.fb-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "IBM Plex Mono", monospace; }
+.fb-file.is-active { color: var(--ink); background: #8fe9ff10; }
+.fb-file.is-entry .fb-label { color: var(--phosphor); }
+.fb-entry { background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 11px; width: 16px; flex: none; }
+.fb-file.is-entry .fb-entry { color: var(--phosphor); }
+.fb-add, .fb-act {
+  background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 12px;
+  opacity: 0; flex: none; padding: 0 2px;
+}
+.fb-folder:hover .fb-add, .fb-file:hover .fb-act { opacity: 1; }
+.fb-act:hover, .fb-add:hover { color: var(--phosphor); }
+.fb-del:hover { color: #ff6b6b; }
+
+/* ── Editor tab strip ─────────────────────────────────────────────────────── */
+.tab-bar {
+  display: flex; align-items: stretch; gap: 1px; height: 34px; flex: none;
+  background: var(--chassis); border-bottom: 1px solid var(--hairline); overflow-x: auto;
+}
+.tab {
+  display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px; cursor: pointer;
+  background: var(--panel); color: var(--ink-dim); border-right: 1px solid var(--hairline);
+  font-size: 12px; white-space: nowrap;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); background: var(--panel-raised); box-shadow: inset 0 -2px 0 var(--phosphor); }
+.tab.entry .tab-name::before { content: "▶ "; color: var(--phosphor); font-size: 9px; }
+.tab-name { font-family: "IBM Plex Mono", monospace; }
+.tab-close {
+  background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 14px;
+  width: 16px; border-radius: 3px;
+}
+.tab-close:hover { color: var(--ink); background: #ffffff14; }
 
 /* ── OLED screen (separate + readable) ───────────────────────────────────── */
 .screen { display: flex; flex-direction: column; }
@@ -339,6 +388,7 @@ select {
 @media (max-width: 880px) {
   body { overflow: auto; height: auto; }
   .bench { grid-template-columns: 1fr; }
+  .file-browser { display: none; } /* collapse the tree on narrow screens */
   .instrument-pane { border-left: none; border-top: 1px solid var(--hairline); }
   #editor { height: 50vh; }
   .topbar { height: auto; flex-wrap: wrap; gap: 8px; padding: 8px 14px; }

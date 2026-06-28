@@ -6,7 +6,9 @@ import { Panel } from "./panel";
 import { Audio } from "./audio";
 import { Analyzer } from "./analyzer";
 import { WebMidi } from "./midi";
-import { saveLocal, loadLocal, loadPermalink, permalink } from "./persistence";
+import { ProjectStore, loadInitialProject, projectFromExample } from "./project";
+import { Tabs } from "./tabs";
+import { FileBrowser } from "./filebrowser";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -18,29 +20,34 @@ async function boot() {
   const status = $("#status");
   const consoleEl = $("#console");
 
-  // Initial script: a #s= permalink wins over the autosaved script, which wins
-  // over the default example.
-  const initial = loadPermalink() ?? loadLocal() ?? EXAMPLES[0].source;
-  const { editor } = createEditor($("#editor"), initial);
+  // Project: a virtual filesystem with tabs + a file tree. The active file's
+  // Monaco model is shown in the shared editor (a #p= permalink wins over the
+  // saved project, which wins over the default example).
+  const { editor } = createEditor($("#editor"), "");
+  const store = new ProjectStore(loadInitialProject());
+  const tabs = new Tabs(editor, $("#tab-bar"), store);
+  const browser = new FileBrowser($("#file-browser"), store);
+  tabs.render();
+  browser.render();
 
-  // Examples menu (+ a hidden "(custom)" entry for restored/shared scripts).
+  // Examples menu loads a whole project.
   const select = $<HTMLSelectElement>("#examples");
-  const customOpt = document.createElement("option");
-  customOpt.value = "__custom";
-  customOpt.textContent = "(custom)";
-  customOpt.hidden = true;
-  select.appendChild(customOpt);
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "load…";
+  placeholder.hidden = true;
+  select.appendChild(placeholder);
   for (const ex of EXAMPLES) {
     const opt = document.createElement("option");
     opt.value = ex.name;
     opt.textContent = ex.name;
     select.appendChild(opt);
   }
-  const matching = EXAMPLES.find((e) => e.source === initial);
-  select.value = matching ? matching.name : "__custom";
+  select.value = "";
   select.addEventListener("change", () => {
     const ex = EXAMPLES.find((e) => e.name === select.value);
-    if (ex) editor.setValue(ex.source);
+    if (ex) store.replace(projectFromExample(ex));
+    select.value = "";
   });
 
   const sim = await loadSim(wasmUrl);
@@ -121,21 +128,22 @@ async function boot() {
     if (version === editVersion) setAnalyzerMarkers(editor.getModel()!, diags);
   };
   const reanalyze = () => analyzer.analyze(editor.getValue(), ++editVersion);
-  let saveTimer = 0;
   editor.onDidChangeModelContent(() => {
+    store.writeQuiet(store.project.active, editor.getValue()); // mirror + autosave
     reanalyze();
-    // Edited content no longer matches a named example; autosave (debounced).
-    if (select.value !== "__custom" && !EXAMPLES.some((e) => e.source === editor.getValue())) {
-      select.value = "__custom";
-    }
-    clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => saveLocal(editor.getValue()), 400);
   });
+  // Structural changes (open/close/create/rename/delete/load) re-render the tree
+  // + tabs and re-analyze the (possibly new) active file.
+  store.onChange = () => {
+    browser.render();
+    tabs.render();
+    reanalyze();
+  };
 
-  // Share: copy a permalink whose hash encodes the current script.
+  // Share: copy a permalink whose hash encodes the whole project.
   const shareBtn = $("#share");
   shareBtn.addEventListener("click", async () => {
-    const url = permalink(editor.getValue());
+    const url = store.permalink();
     try {
       await navigator.clipboard.writeText(url);
       const prev = shareBtn.textContent;
@@ -149,16 +157,12 @@ async function boot() {
   const scopeCtx = scope.getContext("2d")!;
 
   const run = () => {
-    const res = sim.run(editor.getValue()); // fresh VM each run
-    const model = editor.getModel()!;
-    if (res.ok) {
-      setErrorMarker(model, -1, "");
-      log(res.output, "out");
-    } else {
-      setErrorMarker(model, res.errorLine, res.error.split("\n")[0] ?? "error");
-      log(res.output, "out");
-      log(res.error, "err");
-    }
+    // Run the project's entry file; imports resolve from the other files.
+    const res = sim.runProject(store.project.files, store.project.entry);
+    const entryModel = tabs.model(store.project.entry);
+    setErrorMarker(entryModel, res.ok ? -1 : res.errorLine, res.ok ? "" : res.error.split("\n")[0] ?? "error");
+    log(res.output, "out");
+    if (!res.ok) log(res.error, "err");
   };
 
   // Running is a user gesture, so it's also where we (re)start audio.
@@ -224,12 +228,21 @@ async function boot() {
   (window as unknown as { wren: unknown }).wren = {
     setSource: (s: string) => editor.setValue(s),
     getSource: () => editor.getValue(),
-    permalink: () => permalink(editor.getValue()),
+    permalink: () => store.permalink(),
     audioUsingSab: () => audio.usingSab,
     markers: () => analyzerMarkers(editor.getModel()!),
     hover: (off: number) => analyzer.hover(editor.getValue(), off),
     definition: (off: number) => analyzer.definition(editor.getValue(), off),
     completions: () => analyzer.completions(editor.getValue()),
+    // Project helpers for testing.
+    files: () => ({ ...store.project.files }),
+    entry: () => store.project.entry,
+    open: () => [...store.project.open],
+    active: () => store.project.active,
+    createFile: (p: string, c = "") => store.create(p, c),
+    activate: (p: string) => store.activate(p),
+    setEntry: (p: string) => store.setEntry(p),
+    run: () => run(),
   };
 }
 

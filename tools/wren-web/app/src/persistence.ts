@@ -4,17 +4,21 @@
 
 const KEY = "wren-deluge:script";
 
-// Unicode-safe base64 (btoa only handles latin1).
-function b64encode(s: string): string {
+// Unicode-safe base64url (btoa only handles latin1). Shared with the project
+// store (src/project.ts).
+export function b64encode(s: string): string {
   return btoa(String.fromCharCode(...new TextEncoder().encode(s)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 }
-function b64decode(s: string): string {
+export function b64decode(s: string): string {
   const b = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
   return new TextDecoder().decode(Uint8Array.from(b, (c) => c.charCodeAt(0)));
 }
+
+/// The legacy single-script localStorage key (for migration to projects).
+export const LEGACY_SCRIPT_KEY = KEY;
 
 export function saveLocal(content: string) {
   try {

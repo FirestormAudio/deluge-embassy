@@ -44,9 +44,17 @@ interface SimExports {
   sim_audio_cmds_ptr(): number;
   sim_audio_cmds_len(): number;
   sim_audio_cmds_clear(): void;
+  sim_clear_modules(): void;
+  sim_mod_name_ptr(): number;
+  sim_add_module(nameLen: number, srcLen: number): number;
 }
 
 export const SAMPLE_RATE = 44100;
+
+/// The Deluge prelude's public names, auto-imported into every non-entry module
+/// (see runProject). Mirrors crates/deluge-wren-core/wren/prelude.wren.
+const PRELUDE_IMPORT =
+  'import "main" for Output, Gate, Metro, Midi, Pads, Buttons, Enc, Led, Oled, Node, Osc, Env, Noise, Out, output, gate\n';
 
 export interface LoadResult {
   ok: boolean;
@@ -90,6 +98,33 @@ export class Sim {
   run(source: string): LoadResult {
     this.x.sim_reset();
     return this.load(source);
+  }
+
+  /// Run a multi-file project: reset, register every non-entry file as an
+  /// importable module (name = path without `.wren`), then run the entry.
+  /// `import "lib/x"` resolves against the registry at compile time.
+  ///
+  /// The Deluge prelude (Osc/Env/Output/…) lives in the `main` module (the entry
+  /// runs there), and Wren modules are isolated — so each imported module gets an
+  /// auto-prepended `import "main" for <prelude names>` to make the API available
+  /// (this shifts that module's runtime error lines by 1).
+  runProject(files: Record<string, string>, entry: string): LoadResult {
+    this.x.sim_reset();
+    this.x.sim_clear_modules();
+    for (const [path, content] of Object.entries(files)) {
+      if (path === entry) continue; // the entry runs raw in `main`, with the prelude
+      this.addModule(path.replace(/\.wren$/, ""), PRELUDE_IMPORT + content);
+    }
+    return this.load(files[entry] ?? "");
+  }
+
+  private addModule(name: string, content: string) {
+    const nb = new TextEncoder().encode(name);
+    new Uint8Array(this.x.memory.buffer, this.x.sim_mod_name_ptr(), nb.length).set(nb);
+    const sb = new TextEncoder().encode(content);
+    if (sb.length > this.x.sim_src_cap()) return;
+    new Uint8Array(this.x.memory.buffer, this.x.sim_src_ptr(), sb.length).set(sb);
+    this.x.sim_add_module(nb.length, sb.length);
   }
 
   load(source: string): LoadResult {
