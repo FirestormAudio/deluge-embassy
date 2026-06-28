@@ -11,8 +11,8 @@
     <header class="topbar">
       <div class="brand">
         <span class="mark"></span>
-        <span class="wordmark">wren<i>·</i>deluge</span>
-        <span class="tagline">live-coding the synth in Wren</span>
+        <span class="wordmark">deluge<i>/</i>wren</span>
+        <span class="tagline">coding enviroment</span>
       </div>
       <div class="controls">
         <label class="field">
@@ -65,14 +65,16 @@
         </div>
 
         <div class="rack">
-          <div class="cvscope-wrap">
-            <div class="pane-legend">cv · gate · timeline</div>
-            <canvas id="cv-scope" role="img" aria-label="CV and gate timeline"></canvas>
-          </div>
+          <div class="scopes-row">
+            <div class="cvscope-wrap">
+              <div class="pane-legend">cv · gate · timeline</div>
+              <canvas id="cv-scope" role="img" aria-label="CV and gate timeline"></canvas>
+            </div>
 
-          <div class="scope-wrap">
-            <div class="pane-legend">audio · out <span id="audio-state" class="audio-state">muted</span></div>
-            <canvas id="scope" role="img" aria-label="audio output waveform"></canvas>
+            <div class="scope-wrap">
+              <div class="pane-legend">audio · out <span id="audio-state" class="audio-state">muted</span></div>
+              <canvas id="scope" role="img" aria-label="audio output waveform"></canvas>
+            </div>
           </div>
 
           <div class="keys-wrap">
