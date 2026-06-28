@@ -81,7 +81,7 @@ body {
 .tagline { color: var(--ink-dim); font-size: 12px; letter-spacing: 0.02em; }
 
 .controls { display: flex; align-items: center; gap: 14px; }
-.field { display: flex; flex-direction: column; gap: 3px; }
+.field { display: flex; flex-direction: row; align-items: center; gap: 7px; }
 .field .legend {
   font: var(--legend); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-faint);
 }
