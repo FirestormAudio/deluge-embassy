@@ -354,6 +354,18 @@ select {
 
 /* ── MIDI device control ────────────────────────────────────────────────── */
 .midi-ctrl { float: right; display: inline-flex; gap: 6px; }
+.oct-ctrl { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; vertical-align: middle; }
+.oct-ctrl button {
+  display: inline-grid; place-items: center; padding: 0;
+  width: 20px; height: 18px; line-height: 1; font-size: 14px; cursor: pointer;
+  background: var(--panel-raised); color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 4px;
+}
+.oct-ctrl button:hover { color: var(--phosphor); border-color: #8fe9ff44; }
+#oct-label {
+  font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink);
+  min-width: 24px; text-align: center; letter-spacing: 0;
+}
 #midi-enable, #midi-device {
   background: var(--panel-raised); color: var(--ink-dim);
   border: 1px solid var(--hairline); border-radius: 4px;

@@ -33,6 +33,7 @@ export class Panel {
   private cvHist = [new Float32Array(HIST), new Float32Array(HIST)];
   private gateHist = new Uint8Array(HIST);
   private histPos = 0;
+  private keyBase = 48; // lowest MIDI note on the on-screen keyboard (octave-shiftable)
 
   constructor(
     oled: HTMLCanvasElement,
@@ -49,6 +50,7 @@ export class Panel {
     this.buildEncoders();
     this.buildCv();
     this.buildKeyboard();
+    this.initOctaveControls();
     if (this.cvScope) {
       this.cvScope.width = 388;
       this.cvScope.height = 60;
@@ -167,12 +169,27 @@ export class Panel {
     this.cvRow.appendChild(gates);
   }
 
+  /// Wire octave −/+ buttons (in the MIDI-in legend) to shift the keyboard range.
+  private initOctaveControls() {
+    const down = document.querySelector<HTMLButtonElement>("#oct-down");
+    const up = document.querySelector<HTMLButtonElement>("#oct-up");
+    const shift = (delta: number) => {
+      this.keyBase = Math.min(108, Math.max(12, this.keyBase + delta));
+      this.keyboard.replaceChildren();
+      this.buildKeyboard();
+    };
+    down?.addEventListener("click", () => shift(-12));
+    up?.addEventListener("click", () => shift(12));
+  }
+
   private buildKeyboard() {
-    const base = 48;
+    const base = this.keyBase;
     const count = 17; // notes base..base+16
     const isBlack = (n: number) => [1, 3, 6, 8, 10].includes(n % 12);
     const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     const noteName = (n: number) => `${names[n % 12]}${Math.floor(n / 12) - 1}`;
+    const octLabel = document.querySelector("#oct-label");
+    if (octLabel) octLabel.textContent = noteName(base);
 
     const makeKey = (note: number, black: boolean) => {
       const key = document.createElement("button");
