@@ -20,6 +20,8 @@ mod audio;
 mod bindings;
 mod engine;
 mod host;
+mod slotapi;
+mod slotapi_wrensys;
 
 pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, reset, tick};
 pub use engine::{
@@ -27,3 +29,4 @@ pub use engine::{
     MAX_NODES,
 };
 pub use host::{CV_CHANNELS, GATE_CHANNELS, Host, set_host};
+pub use slotapi::{Handle, SlotApi, WrenForeign, WrenType};
