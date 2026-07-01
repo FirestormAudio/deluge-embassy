@@ -10,6 +10,10 @@
 //! `wren_sys::Vm`; later: a second debug-core backend). The registered
 //! `unsafe extern "C" fn` is a thin wrapper — `METHODS`/`CLASSES` still point at
 //! those wrappers, so the sim/device wren ABI is byte-identical to before.
+//! The wrappers (and everything else that names `wren_sys` types) live behind
+//! the default-on `wren-sys-backend` feature; the generic bodies, the foreign
+//! state structs, and their stored [`Handle`]s are backend-agnostic and stay
+//! available with the feature off (see `Cargo.toml`).
 //!
 //! ## Concurrency model
 //! All native state here is touched **only from the VM thread**: foreign methods
@@ -19,10 +23,13 @@
 //! callback can re-enter a foreign method, which would take a second `&mut STATE`).
 //! [`tick`] captures what it needs, drops the borrow, *then* fires callbacks.
 
-use core::ffi::{c_char, c_void};
 use core::ptr::addr_of_mut;
 
-use wren_sys::{ClassEntry, MethodEntry, Vm, WrenHandle, WrenVM};
+#[cfg(feature = "wren-sys-backend")]
+use core::ffi::c_char;
+
+#[cfg(feature = "wren-sys-backend")]
+use wren_sys::{ClassEntry, MethodEntry, Vm, WrenVM};
 
 use crate::audio;
 use crate::engine::{Input, K_ENV, K_LPF, K_MUL, K_NOISE};
@@ -53,7 +60,7 @@ struct Metro {
     interval_s: f32,
     next_ms: u64,
     stage: i64,
-    cb: *mut WrenHandle,
+    cb: Handle,
 }
 impl Metro {
     const EMPTY: Metro = Metro {
@@ -62,7 +69,7 @@ impl Metro {
         interval_s: 0.0,
         next_ms: 0,
         stage: 0,
-        cb: core::ptr::null_mut(),
+        cb: Handle(core::ptr::null_mut()),
     };
 }
 
@@ -80,7 +87,7 @@ static mut STATE: State = State::EMPTY;
 
 /// Reusable `Fn.call(_)` handle, made lazily on the first metro fire. Kept out
 /// of `State` so firing a metro doesn't need a `&mut STATE` borrow.
-static mut CALL_HANDLE: *mut WrenHandle = core::ptr::null_mut();
+static mut CALL_HANDLE: Handle = Handle(core::ptr::null_mut());
 
 /// Borrow the native state. Single-threaded (VM thread only); callers must hold at
 /// most one borrow at a time and never across a `wrenCall`.
@@ -95,6 +102,7 @@ fn state() -> &'static mut State {
 /// Advance CV slew + write the DAC/gates, then fire any due metro callbacks.
 /// `now_ms` is the current millisecond tick; `dt_s` is seconds since the last
 /// tick.
+#[cfg(feature = "wren-sys-backend")]
 pub fn tick(vm: Vm, now_ms: u64, dt_s: f32) {
     tick_impl(&vm, now_ms, dt_s);
 }
@@ -139,10 +147,10 @@ fn render_cv_gate(dt_s: f32) {
 
 /// If metro `i` is active and due at `now_ms`, advance its schedule and return
 /// its `(callback, stage)`; else `None`. Brief state borrow only.
-fn metro_take_due(i: usize, now_ms: u64) -> Option<(*mut WrenHandle, i64)> {
+fn metro_take_due(i: usize, now_ms: u64) -> Option<(Handle, i64)> {
     let st = state();
     let m = &mut st.metro[i];
-    if !m.active || m.cb.is_null() || now_ms < m.next_ms {
+    if !m.active || m.cb.0.is_null() || now_ms < m.next_ms {
         return None;
     }
     m.stage += 1;
@@ -151,24 +159,22 @@ fn metro_take_due(i: usize, now_ms: u64) -> Option<(*mut WrenHandle, i64)> {
     Some((m.cb, m.stage))
 }
 
-/// Invoke a metro callback `cb.call(stage)`. No state borrow held. Storage
-/// stays a raw `*mut WrenHandle` (see module docs); convert at the
-/// trait-call boundary.
-fn fire_metro<S: SlotApi>(vm: &S, cb: *mut WrenHandle, stage: i64) {
+/// Invoke a metro callback `cb.call(stage)`. No state borrow held.
+fn fire_metro<S: SlotApi>(vm: &S, cb: Handle, stage: i64) {
     // SAFETY: the VM thread is the sole accessor of CALL_HANDLE.
     let call = unsafe {
-        if CALL_HANDLE.is_null() {
-            CALL_HANDLE = vm.make_call_handle("call(_)").0 as *mut WrenHandle;
+        if CALL_HANDLE.0.is_null() {
+            CALL_HANDLE = vm.make_call_handle("call(_)");
         }
         CALL_HANDLE
     };
-    if call.is_null() {
+    if call.0.is_null() {
         return;
     }
     vm.ensure_slots(2);
-    vm.set_handle(0, Handle(cb as *mut c_void)); // receiver = the Fn
+    vm.set_handle(0, cb); // receiver = the Fn
     vm.set_f(1, stage as f64);
-    vm.call(Handle(call as *mut c_void)); // ignore result; a throwing callback is reported by errorFn
+    vm.call(call); // ignore result; a throwing callback is reported by errorFn
 }
 
 // ── Foreign object structs ───────────────────────────────────────────────────
@@ -218,6 +224,7 @@ pub(crate) fn output_alloc_impl<S: SlotApi>(vm: &S) {
     let ch = vm.get_f(1) as u32;
     unsafe { vm.alloc_foreign(OutputObj { ch }) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn output_alloc(raw: *mut WrenVM) {
     let vm = Vm(raw);
     output_alloc_impl(&vm);
@@ -228,6 +235,7 @@ pub(crate) fn output_volts_get_impl<S: SlotApi>(vm: &S) {
     let v = if ch < N_CV { state().cv[ch].current } else { 0.0 };
     vm.set_f(0, v as f64);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn output_volts_get(raw: *mut WrenVM) {
     let vm = Vm(raw);
     output_volts_get_impl(&vm);
@@ -245,6 +253,7 @@ pub(crate) fn output_volts_set_impl<S: SlotApi>(vm: &S) {
         }
     }
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn output_volts_set(raw: *mut WrenVM) {
     let vm = Vm(raw);
     output_volts_set_impl(&vm);
@@ -257,6 +266,7 @@ pub(crate) fn output_slew_set_impl<S: SlotApi>(vm: &S) {
         state().cv[ch].slew_s = s.max(0.0);
     }
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn output_slew_set(raw: *mut WrenVM) {
     let vm = Vm(raw);
     output_slew_set_impl(&vm);
@@ -268,6 +278,7 @@ pub(crate) fn gate_alloc_impl<S: SlotApi>(vm: &S) {
     let ch = vm.get_f(1) as u32;
     unsafe { vm.alloc_foreign(GateObj { ch }) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn gate_alloc(raw: *mut WrenVM) {
     let vm = Vm(raw);
     gate_alloc_impl(&vm);
@@ -280,6 +291,7 @@ pub(crate) fn gate_on_set_impl<S: SlotApi>(vm: &S) {
         state().gate[ch] = on;
     }
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn gate_on_set(raw: *mut WrenVM) {
     let vm = Vm(raw);
     gate_on_set_impl(&vm);
@@ -295,13 +307,14 @@ pub(crate) fn metro_alloc_impl<S: SlotApi>(vm: &S) {
         if !m.used {
             m.used = true;
             m.active = false;
-            m.cb = core::ptr::null_mut();
+            m.cb = Handle(core::ptr::null_mut());
             idx = i as u32;
             break;
         }
     }
     unsafe { vm.alloc_foreign(MetroObj { idx }) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn metro_alloc(raw: *mut WrenVM) {
     let vm = Vm(raw);
     metro_alloc_impl(&vm);
@@ -310,17 +323,15 @@ unsafe extern "C" fn metro_alloc(raw: *mut WrenVM) {
 /// `start(fn, seconds)` — store the callback and begin firing.
 pub(crate) fn metro_start_impl<S: SlotApi>(vm: &S) {
     // Take a persistent handle to the Fn in slot 1 *before* borrowing state.
-    // Storage stays a raw `*mut WrenHandle` (see module docs); convert at the
-    // trait-call boundary.
-    let cb = vm.get_handle(1).0 as *mut WrenHandle;
+    let cb = vm.get_handle(1);
     let seconds = vm.get_f(2) as f32;
     let idx = unsafe { vm.foreign_mut::<MetroObj>(0) }.idx as usize;
     let now_ms = host().now_ms();
     if idx < N_METRO {
         let m = &mut state().metro[idx];
-        if !m.cb.is_null() {
+        if !m.cb.0.is_null() {
             // Replacing an existing callback: release the old handle.
-            vm.release_handle(Handle(m.cb as *mut c_void));
+            vm.release_handle(m.cb);
         }
         m.cb = cb;
         m.interval_s = seconds.max(0.0);
@@ -329,9 +340,10 @@ pub(crate) fn metro_start_impl<S: SlotApi>(vm: &S) {
         m.next_ms = now_ms + ((seconds.max(0.0) * 1000.0) as u64).max(1);
     } else {
         // No slot: drop the handle we took.
-        vm.release_handle(Handle(cb as *mut c_void));
+        vm.release_handle(cb);
     }
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn metro_start(raw: *mut WrenVM) {
     let vm = Vm(raw);
     metro_start_impl(&vm);
@@ -342,12 +354,13 @@ pub(crate) fn metro_stop_impl<S: SlotApi>(vm: &S) {
     if idx < N_METRO {
         let m = &mut state().metro[idx];
         m.active = false;
-        if !m.cb.is_null() {
-            vm.release_handle(Handle(m.cb as *mut c_void));
-            m.cb = core::ptr::null_mut();
+        if !m.cb.0.is_null() {
+            vm.release_handle(m.cb);
+            m.cb = Handle(core::ptr::null_mut());
         }
     }
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn metro_stop(raw: *mut WrenVM) {
     let vm = Vm(raw);
     metro_stop_impl(&vm);
@@ -360,6 +373,7 @@ pub(crate) fn metro_time_set_impl<S: SlotApi>(vm: &S) {
         state().metro[idx].interval_s = s.max(0.0);
     }
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn metro_time_set(raw: *mut WrenVM) {
     let vm = Vm(raw);
     metro_time_set_impl(&vm);
@@ -372,18 +386,18 @@ unsafe extern "C" fn metro_time_set(raw: *mut WrenVM) {
 // sink (`Host::midi_tx`).
 
 struct MidiState {
-    on_note_on: *mut WrenHandle,
-    on_note_off: *mut WrenHandle,
-    on_cc: *mut WrenHandle,
+    on_note_on: Handle,
+    on_note_off: Handle,
+    on_cc: Handle,
     /// Reusable `call(_,_,_)` handle for the 3-arg callbacks.
-    call3: *mut WrenHandle,
+    call3: Handle,
 }
 
 static mut MIDI: MidiState = MidiState {
-    on_note_on: core::ptr::null_mut(),
-    on_note_off: core::ptr::null_mut(),
-    on_cc: core::ptr::null_mut(),
-    call3: core::ptr::null_mut(),
+    on_note_on: Handle(core::ptr::null_mut()),
+    on_note_off: Handle(core::ptr::null_mut()),
+    on_cc: Handle(core::ptr::null_mut()),
+    call3: Handle(core::ptr::null_mut()),
 };
 
 #[allow(clippy::mut_from_ref)]
@@ -416,6 +430,7 @@ fn status_for(kind: u8, ch_arg: f64) -> u8 {
 pub(crate) fn midi_note_on_impl<S: SlotApi>(vm: &S) {
     tx(status_for(0x90, vm.get_f(1)), vm.get_f(2) as u8, vm.get_f(3) as u8);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_note_on(raw: *mut WrenVM) {
     let vm = Vm(raw);
     midi_note_on_impl(&vm);
@@ -424,6 +439,7 @@ unsafe extern "C" fn midi_note_on(raw: *mut WrenVM) {
 pub(crate) fn midi_note_off_impl<S: SlotApi>(vm: &S) {
     tx(status_for(0x80, vm.get_f(1)), vm.get_f(2) as u8, vm.get_f(3) as u8);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_note_off(raw: *mut WrenVM) {
     let vm = Vm(raw);
     midi_note_off_impl(&vm);
@@ -432,6 +448,7 @@ unsafe extern "C" fn midi_note_off(raw: *mut WrenVM) {
 pub(crate) fn midi_cc_impl<S: SlotApi>(vm: &S) {
     tx(status_for(0xB0, vm.get_f(1)), vm.get_f(2) as u8, vm.get_f(3) as u8);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_cc(raw: *mut WrenVM) {
     let vm = Vm(raw);
     midi_cc_impl(&vm);
@@ -440,18 +457,18 @@ unsafe extern "C" fn midi_cc(raw: *mut WrenVM) {
 pub(crate) fn midi_send_impl<S: SlotApi>(vm: &S) {
     tx(vm.get_f(1) as u8, vm.get_f(2) as u8, vm.get_f(3) as u8);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_send(raw: *mut WrenVM) {
     let vm = Vm(raw);
     midi_send_impl(&vm);
 }
 
 /// Replace a stored callback handle with the Fn in slot 1 (releasing the old).
-/// Storage stays a raw `*mut WrenHandle`; convert at the trait-call boundary.
-fn set_cb<S: SlotApi>(vm: &S, which: fn(&mut MidiState) -> &mut *mut WrenHandle) {
-    let h = vm.get_handle(1).0 as *mut WrenHandle;
+fn set_cb<S: SlotApi>(vm: &S, which: fn(&mut MidiState) -> &mut Handle) {
+    let h = vm.get_handle(1);
     let slot = which(midi());
-    if !slot.is_null() {
-        vm.release_handle(Handle(*slot as *mut c_void));
+    if !slot.0.is_null() {
+        vm.release_handle(*slot);
     }
     *slot = h;
 }
@@ -459,6 +476,7 @@ fn set_cb<S: SlotApi>(vm: &S, which: fn(&mut MidiState) -> &mut *mut WrenHandle)
 pub(crate) fn midi_set_on_note_on_impl<S: SlotApi>(vm: &S) {
     set_cb(vm, |m| &mut m.on_note_on);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_set_on_note_on(raw: *mut WrenVM) {
     let vm = Vm(raw);
     midi_set_on_note_on_impl(&vm);
@@ -467,6 +485,7 @@ unsafe extern "C" fn midi_set_on_note_on(raw: *mut WrenVM) {
 pub(crate) fn midi_set_on_note_off_impl<S: SlotApi>(vm: &S) {
     set_cb(vm, |m| &mut m.on_note_off);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_set_on_note_off(raw: *mut WrenVM) {
     let vm = Vm(raw);
     midi_set_on_note_off_impl(&vm);
@@ -475,6 +494,7 @@ unsafe extern "C" fn midi_set_on_note_off(raw: *mut WrenVM) {
 pub(crate) fn midi_set_on_cc_impl<S: SlotApi>(vm: &S) {
     set_cb(vm, |m| &mut m.on_cc);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_set_on_cc(raw: *mut WrenVM) {
     let vm = Vm(raw);
     midi_set_on_cc_impl(&vm);
@@ -483,6 +503,7 @@ unsafe extern "C" fn midi_set_on_cc(raw: *mut WrenVM) {
 /// Dispatch a parsed channel-voice MIDI message to the wren callbacks. Called by
 /// the host's VM loop (not inside a foreign method), so `wrenCall` is legal.
 /// Note-on with velocity 0 is treated as note-off (MIDI convention).
+#[cfg(feature = "wren-sys-backend")]
 pub fn midi_rx(vm: Vm, status: u8, d1: u8, d2: u8) {
     midi_rx_impl(&vm, status, d1, d2);
 }
@@ -495,26 +516,26 @@ fn midi_rx_impl<S: SlotApi>(vm: &S, status: u8, d1: u8, d2: u8) {
         0xB0 => (midi().on_cc, ch, d1 as f64, d2 as f64),
         _ => return,
     };
-    if cb.is_null() {
+    if cb.0.is_null() {
         return;
     }
     // Lazily make the 3-arg call handle.
     let call = {
         let m = midi();
-        if m.call3.is_null() {
-            m.call3 = vm.make_call_handle("call(_,_,_)").0 as *mut WrenHandle;
+        if m.call3.0.is_null() {
+            m.call3 = vm.make_call_handle("call(_,_,_)");
         }
         m.call3
     };
-    if call.is_null() {
+    if call.0.is_null() {
         return;
     }
     vm.ensure_slots(4);
-    vm.set_handle(0, Handle(cb as *mut c_void));
+    vm.set_handle(0, cb);
     vm.set_f(1, a);
     vm.set_f(2, b);
     vm.set_f(3, c);
-    vm.call(Handle(call as *mut c_void));
+    vm.call(call);
 }
 
 // ── UI: pads / buttons / encoders (in) + LEDs / OLED (out) ───────────────────
@@ -523,24 +544,24 @@ fn midi_rx_impl<S: SlotApi>(vm: &S, status: u8, d1: u8, d2: u8) {
 // here to the registered callbacks. Output (LEDs, OLED) goes to the host sinks.
 
 struct UiState {
-    on_pad_press: *mut WrenHandle,
-    on_pad_release: *mut WrenHandle,
-    on_button_press: *mut WrenHandle,
-    on_button_release: *mut WrenHandle,
-    on_enc: *mut WrenHandle,
+    on_pad_press: Handle,
+    on_pad_release: Handle,
+    on_button_press: Handle,
+    on_button_release: Handle,
+    on_enc: Handle,
     /// `call(_)` / `call(_,_)` reusable handles.
-    call1: *mut WrenHandle,
-    call2: *mut WrenHandle,
+    call1: Handle,
+    call2: Handle,
 }
 
 static mut UI: UiState = UiState {
-    on_pad_press: core::ptr::null_mut(),
-    on_pad_release: core::ptr::null_mut(),
-    on_button_press: core::ptr::null_mut(),
-    on_button_release: core::ptr::null_mut(),
-    on_enc: core::ptr::null_mut(),
-    call1: core::ptr::null_mut(),
-    call2: core::ptr::null_mut(),
+    on_pad_press: Handle(core::ptr::null_mut()),
+    on_pad_release: Handle(core::ptr::null_mut()),
+    on_button_press: Handle(core::ptr::null_mut()),
+    on_button_release: Handle(core::ptr::null_mut()),
+    on_enc: Handle(core::ptr::null_mut()),
+    call1: Handle(core::ptr::null_mut()),
+    call2: Handle(core::ptr::null_mut()),
 };
 
 #[allow(clippy::mut_from_ref)]
@@ -549,52 +570,51 @@ fn ui() -> &'static mut UiState {
     unsafe { &mut *addr_of_mut!(UI) }
 }
 
-/// Storage stays a raw `*mut WrenHandle`; convert at the trait-call boundary.
-fn ui_call1<S: SlotApi>(vm: &S, cb: *mut WrenHandle, a: f64) {
-    if cb.is_null() {
+fn ui_call1<S: SlotApi>(vm: &S, cb: Handle, a: f64) {
+    if cb.0.is_null() {
         return;
     }
     let call = {
         let u = ui();
-        if u.call1.is_null() {
-            u.call1 = vm.make_call_handle("call(_)").0 as *mut WrenHandle;
+        if u.call1.0.is_null() {
+            u.call1 = vm.make_call_handle("call(_)");
         }
         u.call1
     };
-    if call.is_null() {
+    if call.0.is_null() {
         return;
     }
     vm.ensure_slots(2);
-    vm.set_handle(0, Handle(cb as *mut c_void));
+    vm.set_handle(0, cb);
     vm.set_f(1, a);
-    vm.call(Handle(call as *mut c_void));
+    vm.call(call);
 }
 
-/// Storage stays a raw `*mut WrenHandle`; convert at the trait-call boundary.
-fn ui_call2<S: SlotApi>(vm: &S, cb: *mut WrenHandle, a: f64, b: f64) {
-    if cb.is_null() {
+fn ui_call2<S: SlotApi>(vm: &S, cb: Handle, a: f64, b: f64) {
+    if cb.0.is_null() {
         return;
     }
     let call = {
         let u = ui();
-        if u.call2.is_null() {
-            u.call2 = vm.make_call_handle("call(_,_)").0 as *mut WrenHandle;
+        if u.call2.0.is_null() {
+            u.call2 = vm.make_call_handle("call(_,_)");
         }
         u.call2
     };
-    if call.is_null() {
+    if call.0.is_null() {
         return;
     }
     vm.ensure_slots(3);
-    vm.set_handle(0, Handle(cb as *mut c_void));
+    vm.set_handle(0, cb);
     vm.set_f(1, a);
     vm.set_f(2, b);
-    vm.call(Handle(call as *mut c_void));
+    vm.call(call);
 }
 
 /// Dispatch an input event to the wren callbacks. Called by the host. `kind`:
 /// 0=pad press, 1=pad release (`a`=x, `b`=y); 2=button press, 3=button release
 /// (`a`=id). Pad coordinates arrive pre-decoded from the host's input stream.
+#[cfg(feature = "wren-sys-backend")]
 pub fn input_dispatch(vm: Vm, kind: u8, a: u8, b: u8) {
     input_dispatch_impl(&vm, kind, a, b);
 }
@@ -614,6 +634,7 @@ fn input_dispatch_impl<S: SlotApi>(vm: &S, kind: u8, a: u8, b: u8) {
 }
 
 /// Dispatch an encoder detent change. Called by the host.
+#[cfg(feature = "wren-sys-backend")]
 pub fn enc_turn(vm: Vm, index: u8, delta: i8) {
     enc_turn_impl(&vm, index, delta);
 }
@@ -623,12 +644,11 @@ fn enc_turn_impl<S: SlotApi>(vm: &S, index: u8, delta: i8) {
 }
 
 /// Replace a UI callback handle with the Fn in slot 1 (releasing the old).
-/// Storage stays a raw `*mut WrenHandle`; convert at the trait-call boundary.
-fn set_ui_cb<S: SlotApi>(vm: &S, which: fn(&mut UiState) -> &mut *mut WrenHandle) {
-    let h = vm.get_handle(1).0 as *mut WrenHandle;
+fn set_ui_cb<S: SlotApi>(vm: &S, which: fn(&mut UiState) -> &mut Handle) {
+    let h = vm.get_handle(1);
     let slot = which(ui());
-    if !slot.is_null() {
-        vm.release_handle(Handle(*slot as *mut c_void));
+    if !slot.0.is_null() {
+        vm.release_handle(*slot);
     }
     *slot = h;
 }
@@ -636,6 +656,7 @@ fn set_ui_cb<S: SlotApi>(vm: &S, which: fn(&mut UiState) -> &mut *mut WrenHandle
 pub(crate) fn pads_on_press_impl<S: SlotApi>(vm: &S) {
     set_ui_cb(vm, |u| &mut u.on_pad_press);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn pads_on_press(raw: *mut WrenVM) {
     let vm = Vm(raw);
     pads_on_press_impl(&vm);
@@ -644,6 +665,7 @@ unsafe extern "C" fn pads_on_press(raw: *mut WrenVM) {
 pub(crate) fn pads_on_release_impl<S: SlotApi>(vm: &S) {
     set_ui_cb(vm, |u| &mut u.on_pad_release);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn pads_on_release(raw: *mut WrenVM) {
     let vm = Vm(raw);
     pads_on_release_impl(&vm);
@@ -652,6 +674,7 @@ unsafe extern "C" fn pads_on_release(raw: *mut WrenVM) {
 pub(crate) fn buttons_on_press_impl<S: SlotApi>(vm: &S) {
     set_ui_cb(vm, |u| &mut u.on_button_press);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn buttons_on_press(raw: *mut WrenVM) {
     let vm = Vm(raw);
     buttons_on_press_impl(&vm);
@@ -660,6 +683,7 @@ unsafe extern "C" fn buttons_on_press(raw: *mut WrenVM) {
 pub(crate) fn buttons_on_release_impl<S: SlotApi>(vm: &S) {
     set_ui_cb(vm, |u| &mut u.on_button_release);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn buttons_on_release(raw: *mut WrenVM) {
     let vm = Vm(raw);
     buttons_on_release_impl(&vm);
@@ -668,6 +692,7 @@ unsafe extern "C" fn buttons_on_release(raw: *mut WrenVM) {
 pub(crate) fn enc_on_turn_impl<S: SlotApi>(vm: &S) {
     set_ui_cb(vm, |u| &mut u.on_enc);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn enc_on_turn(raw: *mut WrenVM) {
     let vm = Vm(raw);
     enc_on_turn_impl(&vm);
@@ -677,6 +702,7 @@ unsafe extern "C" fn enc_on_turn(raw: *mut WrenVM) {
 pub(crate) fn led_on_impl<S: SlotApi>(vm: &S) {
     host().led(vm.get_f(1) as u8, true);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn led_on(raw: *mut WrenVM) {
     let vm = Vm(raw);
     led_on_impl(&vm);
@@ -685,12 +711,14 @@ unsafe extern "C" fn led_on(raw: *mut WrenVM) {
 pub(crate) fn led_off_impl<S: SlotApi>(vm: &S) {
     host().led(vm.get_f(1) as u8, false);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn led_off(raw: *mut WrenVM) {
     let vm = Vm(raw);
     led_off_impl(&vm);
 }
 
 // OLED
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn oled_clear(_raw: *mut WrenVM) {
     host().oled_clear();
 }
@@ -701,6 +729,7 @@ pub(crate) fn oled_text_impl<S: SlotApi>(vm: &S) {
     let s = vm.get_str(3);
     host().oled_text(x, y, s.as_bytes());
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn oled_text(raw: *mut WrenVM) {
     let vm = Vm(raw);
     oled_text_impl(&vm);
@@ -712,11 +741,13 @@ pub(crate) fn oled_pixel_impl<S: SlotApi>(vm: &S) {
     let on = vm.get_bool(3);
     host().oled_pixel(x, y, on);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn oled_pixel(raw: *mut WrenVM) {
     let vm = Vm(raw);
     oled_pixel_impl(&vm);
 }
 
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn oled_show(_raw: *mut WrenVM) {
     host().oled_show();
 }
@@ -768,6 +799,7 @@ pub(crate) fn node_src_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node(kind, freq, Input::Const(0.0));
     unsafe { return_node(vm, id) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_src(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_src_impl(&vm);
@@ -779,6 +811,7 @@ pub(crate) fn node_env_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node(K_ENV, a, b);
     unsafe { return_node(vm, id) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_env(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_env_impl(&vm);
@@ -788,6 +821,7 @@ pub(crate) fn node_noise_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node(K_NOISE, Input::Const(0.0), Input::Const(0.0));
     unsafe { return_node(vm, id) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_noise(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_noise_impl(&vm);
@@ -800,6 +834,7 @@ pub(crate) fn node_binop_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node(K_MUL + op, a, b);
     unsafe { return_node(vm, id) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_binop(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_binop_impl(&vm);
@@ -811,6 +846,7 @@ pub(crate) fn node_lpf_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node(K_LPF, input, cutoff);
     unsafe { return_node(vm, id) };
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_lpf(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_lpf_impl(&vm);
@@ -820,11 +856,13 @@ pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
     let id = unsafe { vm.foreign_mut::<NodeObj>(1) }.id as u16;
     audio::set_root(id);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_patch(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_patch_impl(&vm);
 }
 
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_reset(_raw: *mut WrenVM) {
     audio::reset();
 }
@@ -834,6 +872,7 @@ pub(crate) fn node_set_freq_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
     audio::set_input(self_id(vm), 0, v);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_set_freq(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_set_freq_impl(&vm);
@@ -843,6 +882,7 @@ pub(crate) fn node_set_cutoff_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
     audio::set_input(self_id(vm), 1, v);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_set_cutoff(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_set_cutoff_impl(&vm);
@@ -852,6 +892,7 @@ pub(crate) fn node_gate_impl<S: SlotApi>(vm: &S) {
     let on = vm.get_bool(1);
     audio::gate(self_id(vm), on);
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_gate(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_gate_impl(&vm);
@@ -860,6 +901,7 @@ unsafe extern "C" fn node_gate(raw: *mut WrenVM) {
 pub(crate) fn node_trigger_impl<S: SlotApi>(vm: &S) {
     audio::trigger(self_id(vm));
 }
+#[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn node_trigger(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_trigger_impl(&vm);
@@ -867,12 +909,14 @@ unsafe extern "C" fn node_trigger(raw: *mut WrenVM) {
 
 // ── Registry tables ──────────────────────────────────────────────────────────
 
+#[cfg(feature = "wren-sys-backend")]
 pub static CLASSES: &[ClassEntry] = &[
     ClassEntry { module: "main", class: "Output", allocate: output_alloc, finalize: None },
     ClassEntry { module: "main", class: "Gate", allocate: gate_alloc, finalize: None },
     ClassEntry { module: "main", class: "Metro", allocate: metro_alloc, finalize: None },
 ];
 
+#[cfg(feature = "wren-sys-backend")]
 pub static METHODS: &[MethodEntry] = &[
     // Output
     method("Output", "volts", output_volts_get),
@@ -920,6 +964,7 @@ pub static METHODS: &[MethodEntry] = &[
 ];
 
 /// Terse instance-`MethodEntry` constructor for the `main` module.
+#[cfg(feature = "wren-sys-backend")]
 const fn method(
     class: &'static str,
     signature: &'static str,
@@ -929,6 +974,7 @@ const fn method(
 }
 
 /// Terse static-`MethodEntry` constructor for the `main` module.
+#[cfg(feature = "wren-sys-backend")]
 const fn static_method(
     class: &'static str,
     signature: &'static str,
@@ -942,9 +988,11 @@ const fn static_method(
 /// The prelude (declares the foreign classes + `output[]`/`gate[]`), embedded
 /// from `wren/prelude.wren` with a trailing NUL appended at compile time so it
 /// can be handed to the C VM as a C string.
+#[cfg(feature = "wren-sys-backend")]
 const PRELUDE: &str = concat!(include_str!("../wren/prelude.wren"), "\0");
 
 /// The prelude source as a `*const c_char` for `wren_sys::interpret`.
+#[cfg(feature = "wren-sys-backend")]
 pub fn prelude_ptr() -> *const c_char {
     PRELUDE.as_ptr() as *const c_char
 }
@@ -958,22 +1006,22 @@ pub fn reset() {
     *state() = State::EMPTY;
 
     let m = midi();
-    m.on_note_on = core::ptr::null_mut();
-    m.on_note_off = core::ptr::null_mut();
-    m.on_cc = core::ptr::null_mut();
-    m.call3 = core::ptr::null_mut();
+    m.on_note_on = Handle(core::ptr::null_mut());
+    m.on_note_off = Handle(core::ptr::null_mut());
+    m.on_cc = Handle(core::ptr::null_mut());
+    m.call3 = Handle(core::ptr::null_mut());
 
     let u = ui();
-    u.on_pad_press = core::ptr::null_mut();
-    u.on_pad_release = core::ptr::null_mut();
-    u.on_button_press = core::ptr::null_mut();
-    u.on_button_release = core::ptr::null_mut();
-    u.on_enc = core::ptr::null_mut();
-    u.call1 = core::ptr::null_mut();
-    u.call2 = core::ptr::null_mut();
+    u.on_pad_press = Handle(core::ptr::null_mut());
+    u.on_pad_release = Handle(core::ptr::null_mut());
+    u.on_button_press = Handle(core::ptr::null_mut());
+    u.on_button_release = Handle(core::ptr::null_mut());
+    u.on_enc = Handle(core::ptr::null_mut());
+    u.call1 = Handle(core::ptr::null_mut());
+    u.call2 = Handle(core::ptr::null_mut());
 
     // SAFETY: VM thread is the sole accessor.
-    unsafe { CALL_HANDLE = core::ptr::null_mut() };
+    unsafe { CALL_HANDLE = Handle(core::ptr::null_mut()) };
 
     crate::audio::reset_ids();
 }

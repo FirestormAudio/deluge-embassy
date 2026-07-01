@@ -12,17 +12,28 @@ description = "Portable Deluge Wren runtime: the foreign-binding glue, native DS
 test = false
 
 [features]
+default = ["wren-sys-backend"]
+# The stock upstream C VM backend (`wren_sys::Vm` impl of `SlotApi`, the
+# `extern "C"` method/class tables, `boot`/`prelude_ptr`, and the `Vm`-typed
+# public entry points). Default-on: every existing consumer (device firmware,
+# `wren-web` sim, this crate's own tests) wants it. Off only for a second VM
+# backend (Phase 1's `wren-web-debug`, which links wren-core's own C VM and
+# must not also pull in wren-sys's copy — two upstream C VMs would double-link).
+wren-sys-backend = ["dep:wren-sys"]
 # Exposes `test_support` (a tiny in-memory Host + VM-boot helper for golden
 # tests). Off by default: `#[cfg(test)]` alone doesn't cover integration tests
 # in `tests/`, since those compile the lib as an ordinary (non-`--cfg test`)
 # dependency — so the self dev-dependency below turns this on for `cargo test`.
-test-support = []
+# Needs the wren-sys backend (boots a real wren_sys::Vm).
+test-support = ["wren-sys-backend"]
 
 [dependencies]
 # The upstream Wren C VM bindings (compiler + VM). Host-agnostic: builds for the
-# device, the desktop host, and (M2) wasm. The only dependency core needs — CV /
-# gate / audio / OLED are all reached through the `Host` trait, not the SDK.
-wren-sys = { path = "../../wren-sys" }
+# device, the desktop host, and (M2) wasm. Optional — gated behind
+# `wren-sys-backend` — so a backend-agnostic consumer (the generic `SlotApi`
+# surface + binding bodies) can depend on this crate with `default-features =
+# false` and pull in a different VM backend instead.
+wren-sys = { path = "../../wren-sys", optional = true }
 
 [dev-dependencies]
 deluge-wren-core = { path = ".", features = ["test-support"] }

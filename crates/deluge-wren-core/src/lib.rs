@@ -21,11 +21,14 @@ mod bindings;
 mod engine;
 mod host;
 mod slotapi;
+#[cfg(feature = "wren-sys-backend")]
 mod slotapi_wrensys;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "wren-sys-backend", any(test, feature = "test-support")))]
 pub mod test_support;
 
-pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, reset, tick};
+pub use bindings::reset;
+#[cfg(feature = "wren-sys-backend")]
+pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, tick};
 pub use engine::{
     Cmd, Engine, Input, K_ADD, K_ENV, K_LPF, K_MUL, K_NOISE, K_SAW, K_SINE, K_SQUARE, K_SUB, K_TRI,
     MAX_NODES,
