@@ -299,9 +299,9 @@ git commit -m "wren-core: make Engine callback dispatch generic over SlotApi"
 **Why:** `wren-web-debug` (Phase 1) links `wren-core`'s C VM; if it transitively pulls `wren-sys` (a hard dep of `deluge-wren-core`), the two upstream C VMs double-link and fail. So the `wren-sys`-specific surface must be feature-gated.
 
 **Files:**
-- Modify: `crates/deluge-wren-core/Cargo.toml` (make `wren-sys` optional; add `[features] default = ["wren-sys-backend"]`, `wren-sys-backend = ["dep:wren-sys"]`; `test-support = ["wren-sys-backend"]`)
-- Modify: `crates/deluge-wren-core/src/lib.rs`, `src/slotapi_wrensys.rs`, `src/bindings.rs`, `src/engine.rs` (gate the `Vm`-specific items behind `#[cfg(feature = "wren-sys-backend")]`)
-- Test: existing `slotapi`/`golden_sim` tests (run with default features on).
+- Modify: `crates/deluge-wren-core/Cargo.toml` (make `wren-sys` optional; add `[features] default = ["wren-sys-backend"]`, `wren-sys-backend = ["dep:wren-sys"]`; change the existing `test-support = []` to `test-support = ["wren-sys-backend"]`)
+- Modify: `crates/deluge-wren-core/src/lib.rs`, `src/slotapi_wrensys.rs`, `src/bindings.rs`, `src/test_support.rs` (gate the `Vm`-specific items behind `#[cfg(feature = "wren-sys-backend")]`). NOTE (corrected after 0.3): all VM/`Vm` dispatch — the `extern "C"` wrappers, `METHODS`/`CLASSES`, `boot*`/`prelude_ptr`, and the public entry points `tick`/`midi_rx`/`enc_turn`/`input_dispatch` — live in **`bindings.rs`**, not `engine.rs`. `engine.rs` is pure DSP (no VM code) and needs no gating.
+- Test: existing `slotapi`/`golden_sim` tests (run with default features on, `--target x86_64-unknown-linux-gnu`).
 
 **Interfaces:**
 - Always available (no feature): `SlotApi`, `WrenType`, `WrenForeign`, `Handle`, and the generic binding bodies `NAME_impl<S: SlotApi>` + generic Engine callback helpers.
@@ -316,7 +316,7 @@ Add a doc-test or `tests/no_backend.rs` gated `#![cfg(not(feature = "wren-sys-ba
 
 - [ ] **Step 2: Run to verify it fails** — `cargo build -p deluge-wren-core --no-default-features` → FAIL (unresolved `wren_sys`).
 
-- [ ] **Step 3: Implement the gating** — in `Cargo.toml`: `wren-sys = { path = "../../wren-sys", optional = true }` + the `[features]` block above. Add `#[cfg(feature = "wren-sys-backend")]` to: the `mod slotapi_wrensys;` line and the module; every `extern "C"` wrapper + `METHODS`/`CLASSES`/`boot`/`prelude_ptr` in `bindings.rs`; the `Vm` public entry points in `engine.rs`; and `test_support`. The generic bodies, `SlotApi`, and shared types stay ungated.
+- [ ] **Step 3: Implement the gating** — in `Cargo.toml`: `wren-sys = { path = "../../wren-sys", optional = true }` + the `[features]` block above. Add `#[cfg(feature = "wren-sys-backend")]` to: the `mod slotapi_wrensys;` line and the module; every `extern "C"` wrapper + `METHODS`/`CLASSES`/`boot`/`prelude_ptr` AND the public entry points `tick`/`midi_rx`/`enc_turn`/`input_dispatch` in `bindings.rs` (plus their `pub use` re-exports in `lib.rs`); and the `test_support` module. `engine.rs` (pure DSP), the generic `*_impl` bodies, `SlotApi`, and the shared types stay ungated.
 
 - [ ] **Step 4: Verify all configs**
 Run: `cargo build -p deluge-wren-core --no-default-features` (PASS — generic-only), `cargo test -p deluge-wren-core` (PASS — defaults on, golden tests green), `cargo build -p wren-web` (PASS — gets defaults), `cargo build-wren` (PASS — device, defaults on).
