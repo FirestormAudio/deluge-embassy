@@ -22,6 +22,8 @@ mod engine;
 mod host;
 mod slotapi;
 mod slotapi_wrensys;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, reset, tick};
 pub use engine::{

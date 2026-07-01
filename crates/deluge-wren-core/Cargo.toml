@@ -11,8 +11,18 @@ description = "Portable Deluge Wren runtime: the foreign-binding glue, native DS
 [lib]
 test = false
 
+[features]
+# Exposes `test_support` (a tiny in-memory Host + VM-boot helper for golden
+# tests). Off by default: `#[cfg(test)]` alone doesn't cover integration tests
+# in `tests/`, since those compile the lib as an ordinary (non-`--cfg test`)
+# dependency — so the self dev-dependency below turns this on for `cargo test`.
+test-support = []
+
 [dependencies]
 # The upstream Wren C VM bindings (compiler + VM). Host-agnostic: builds for the
 # device, the desktop host, and (M2) wasm. The only dependency core needs — CV /
 # gate / audio / OLED are all reached through the `Host` trait, not the SDK.
 wren-sys = { path = "../../wren-sys" }
+
+[dev-dependencies]
+deluge-wren-core = { path = ".", features = ["test-support"] }
