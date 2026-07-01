@@ -66,6 +66,22 @@ never runs in a plain top-to-bottom pass.
    `wren-core`'s foreign registry unchanged (it accepts raw
    `extern "C" fn(*mut WrenVM)` pointers — the exact signature deluge uses), and
    the DSP `Engine`/`Host` are reused for the harness.
+   **Bindings are made backend-generic (Option 2).** deluge's foreign bindings
+   cannot be reused *as-is* under wren-core: (a) `wren-sys` unconditionally
+   compiles its own copy of the upstream C VM (`build.rs:127`), so a crate
+   depending on both `wren-sys` and `wren-core` double-links every `wren*` C
+   symbol; and (b) wren-core's `ForeignMethodFn` hands methods a typed
+   `WrenSlotApi` with no raw `*mut WrenVM`, so deluge's
+   `extern "C" fn(*mut WrenVM)` bodies can't be thinly wrapped. Instead we
+   refactor `deluge-wren-core` so the ~41 binding bodies (and the `Engine`'s
+   callback dispatch) are written **once** against a small `SlotApi` trait, with
+   two impls: a `wren-sys`-backed one (sim + device, unchanged behavior) and a
+   `wren-core`-backed one (debug core). One source of truth, no drift, and it is
+   the groundwork the future Rust-compiler unification needs. Because the trait
+   has generic methods (`foreign_mut<T>`, `alloc_foreign<T>`, `new_foreign_in<T>`)
+   it is used via **static dispatch** (`fn body<S: SlotApi>(vm: &S)`), not `dyn`.
+   (Rejected alternatives: reimplementing the bindings only in the debug core —
+   duplication/drift; an "extern-only `wren-sys`" linking hack — fragile.)
    **Accepted cost — a fidelity risk:** the debugger compiles with the **Rust**
    compiler while the sim + device compile with the **C** compiler. Both emit
    bytecode for the *same* C VM runtime, so *valid* scripts execute identically;
@@ -89,6 +105,33 @@ never runs in a plain top-to-bottom pass.
   introducing the Rust frontend from scratch.
 
 ## Design
+
+### 0. Backend-generic bindings (Option 2 — prerequisite)
+
+Refactor `deluge-wren-core` so its foreign bindings and `Engine` callback
+dispatch target a small `SlotApi` trait instead of `wren-sys`'s `Vm` directly.
+The trait covers exactly the surface the bindings use (enumerated from
+`bindings.rs`/`engine.rs`): `ensure_slots`, `slot_type`, `get_f`/`set_f`,
+`get_bool`, `get_str`, `foreign_mut<T>`, `alloc_foreign<T>`,
+`new_foreign_in<T: WrenForeign>`, and the callback-handle set
+(`get_handle`/`set_handle`/`make_call_handle`/`call`/`release_handle`). The
+shared value types (`WrenType`, the `WrenForeign` marker, an opaque handle
+newtype) move into `deluge-wren-core` (re-exported by `wren-sys` for
+compatibility).
+
+- Binding bodies become `fn output_volts_get<S: SlotApi>(vm: &S) { … }` (static
+  dispatch — the generic `foreign_mut<T>`/`alloc_foreign<T>` methods make the
+  trait non-object-safe).
+- `wren-sys` provides the `SlotApi` impl for its `Vm` **plus** the thin
+  `extern "C" fn(*mut WrenVM)` wrappers that build a `Vm` and call the generic
+  body — so `METHODS`/`CLASSES` and the sim/device paths behave **identically**
+  (behavior-preserving refactor, guarded by the existing sim + firmware builds
+  and a golden-script run).
+- The debug core provides the `wren-core` `SlotApi` impl (over `WrenSlotApi`) and
+  registers the same generic bodies into wren-core's foreign registry.
+
+This is the only change to the firmware-shared crate; everything else is
+additive (new debug-core crate + new TS).
 
 ### 1. Architecture & data flow
 
@@ -124,13 +167,13 @@ stays on the stock C compiler). It links:
 - **`wren-core` with the `debug` feature** — the Rust compiler + the C VM with
   the `wrenDebugHook`/error-hook patches (both already implemented in
   `wren-core/build.rs`; nothing to port here).
-- **A bindings adapter** — registers deluge's existing foreign methods/classes
-  (`deluge-wren-core::{METHODS, CLASSES}`, i.e. the `extern "C" fn(*mut WrenVM)`
-  functions in `bindings.rs`) into `wren-core`'s `ForeignMethodRegistry` /
-  `ForeignClassRegistry` via `CWrenVm::with_foreign`. The slot API those
-  functions call (`wrenSetSlotDouble`, `alloc_foreign`, `WrenHandle`,
-  `wrenCall`, …) is the C VM's own — the same runtime `wren-core` drives — so the
-  bindings run unchanged.
+- **A `wren-core`-backed `SlotApi` impl + a registry adapter** — the
+  backend-generic binding bodies (now in `deluge-wren-core`, see §0) are
+  registered into `wren-core`'s `ForeignMethodRegistry` / `ForeignClassRegistry`
+  via `CWrenVm::with_foreign`, each wrapped as a `ForeignMethodFn::Plain` that
+  builds the `wren-core` `SlotApi` impl over the call's slots and invokes the
+  generic body. No `wren-sys` dependency in the debug core (avoids the
+  double-C-VM link).
 - **The deluge prelude + `Engine`/`Host`** — the prelude compiles as Wren source
   via `wren-core`; the `Engine` drives the harness's simulated events (`Cmd`,
   MIDI, encoders) exactly as in the sim.
@@ -193,7 +236,7 @@ Layer 2 lands.
 | `wren-core` + `debug` feature | debug-core dependency | used as-is (Rust compiler + patched C VM); no port |
 | `wren-core/src/vm/debug.rs` inspection | debug-agent | reuse fiber walk / scopes / variables / evaluate; replace `DebugSession` mpsc/park driver with the SAB command loop |
 | `wren-dap/src/session.rs` | request/response shapes | keep the DAP-shaped `stackTrace`/`scopes`/`variables`/`evaluate` JSON mapping; transport is SAB/postMessage, driver is main-thread TS |
-| `deluge-wren-core::{bindings, Engine, Host, prelude}` | debug core | reuse unchanged; bindings register into `wren-core`'s foreign registry via an adapter |
+| `deluge-wren-core::{bindings, Engine, Host, prelude}` | debug core | bindings refactored to a backend-generic `SlotApi` trait (Option 2, §0); wren-core `SlotApi` impl in the debug core registers them into wren-core's foreign registry |
 | `src/audio.ts` SAB pattern, `vite.config.ts` COOP/COEP, `worker:{format:"es"}` | reused directly | none |
 
 DAP-**shaped** JSON (not a literal DAP socket) keeps a future VS Code-attach
