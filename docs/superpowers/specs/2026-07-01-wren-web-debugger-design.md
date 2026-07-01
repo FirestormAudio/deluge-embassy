@@ -10,22 +10,34 @@ running Wren script.
 A near-complete DAP server already exists — **`wren-dap`** in the sibling
 `wren-rs` repo (`/home/kate/GitHub/wren-rs/crates/wren-dap`). It provides line +
 conditional breakpoints, logpoints, step over/into/out, call stack, scopes,
-expandable variable inspection (lists/maps/instances), watch/hover evaluate,
-exception breakpoints, pause, fibers-as-threads, and multi-file imports — over
-DAP's stdio/TCP framing. Its debug **backend** lives in
-`wren-core/src/vm/debug.rs` (~2.7k lines) and relies on a `debug`-feature source
-patch to the C VM that inserts a `wrenDebugHook(vm, fiber, ip)` call at each
-bytecode dispatch site (see `wren-core/build.rs`).
+expandable variable inspection (lists/maps/instances by name), watch/hover
+evaluate, exception breakpoints, pause, fibers-as-threads, and multi-file
+imports — over DAP's stdio/TCP framing. Its debug **backend** lives in
+`wren-core/src/vm/debug.rs` (~2.7k lines): a `debug`-feature source patch to the
+C VM inserts a `wrenDebugHook(vm, fiber, ip)` call at each bytecode dispatch site
+(see `wren-core/build.rs`); the backend then walks the parked fiber to serve
+stack/scopes/variables/evaluate.
 
-That backend assumes a native process with **two OS threads** sharing
-`Arc<Mutex<…>>`/`mpsc`: the VM thread runs `interpret` and **parks** on a
-breakpoint; a driver thread issues commands and reads back state. Neither the
-threading model nor the stdio/TCP transport fits a pure browser build.
+`wren-dap`/`wren-core` get **named** locals and instance fields because
+`wren-core` compiles source with its **own Rust compiler** (`compiler/emit.rs`
+emits `DebugLocal`; `codegen_class.rs` emits `DebugClass`) and serializes the
+resulting bytecode into the upstream **C VM** for execution. `wren-core` does
+**not** compile `wren_compiler.c` at all — it is *Rust frontend + C VM runtime*.
 
-The deluge-sdk simulator uses a **different VM stack** than wren-dap: the sim
-wasm (`tools/wren-web`, `wasm32-unknown-unknown`, `no_std`, C-ABI cdylib) is
-built on `deluge-wren-core` (prelude, bindings, DSP `Engine`, `Host` trait) +
-`wren-sys` (the **stock**, unpatched C VM compiled against a wasi-sdk sysroot).
+### The two VM stacks (why this matters)
+
+- **deluge-sdk (device + web sim)** compiles Wren with the **stock C compiler**.
+  The firmware calls `wren_sys::interpret` (`wren-firmware/src/main.rs:812`) —
+  i.e. C `wrenCompile` on-device — and the web sim (`tools/wren-web`,
+  `wasm32-unknown-unknown`, `no_std`) uses the same `wren-sys` stock VM. The
+  shared crate `deluge-wren-core` is only **bindings + DSP `Engine` + `Host`
+  trait**, not a compiler. The stock C VM's `FnDebug` retains only the function
+  name + per-instruction line numbers; **local and instance-field names are
+  discarded after compilation**, so the deluge stack cannot show named locals
+  without patching `wren_compiler.c`.
+- **wren-core** is the Rust frontend on the same C VM runtime, and it keeps the
+  names.
+
 A Deluge script is a **live synth**: it installs callbacks (audio render, note
 on/off, pad/enc/button handlers) that the `Engine` drives — the interesting code
 never runs in a plain top-to-bottom pass.
@@ -38,40 +50,61 @@ never runs in a plain top-to-bottom pass.
    event loop (keep the UI alive) while a synchronous wasm `interpret` call is on
    the stack. We run the debug VM in a Worker whose hook **blocks** on
    `Atomics.wait`; the main thread signals resume/step and reads state over a
-   SAB, using `Atomics.waitAsync` (allowed on the main thread) for responses.
-   (Asyncify single-thread suspend/resume was rejected: whole-VM instrumentation
-   cost + a bigger departure from wren-dap's threaded backend.)
-3. **Harness-driven debug run (load first, then callbacks).** The worker runs
-   the script's top level *and* a debug harness that fires a scripted event
-   sequence (note on/off, a few pad/enc/button events, N audio render blocks) so
+   SAB, using `Atomics.waitAsync` (allowed on the main thread; `Atomics.wait` is
+   not) for responses. (Asyncify single-thread suspend/resume was rejected.)
+3. **Harness-driven debug run (load first, then callbacks).** The worker runs the
+   script's top level *and* a debug harness that fires a scripted event sequence
+   (note on/off, a few pad/enc/button events, N audio render blocks) so
    breakpoints inside callbacks fire. Load-time debugging works first; event
-   driving layers on top. (Top-level-only MVP and "break the live main-thread
-   sim in place" were rejected.)
+   driving layers on top.
+4. **Path B — the debug core uses `wren-core`'s Rust compiler.** The debugger's
+   VM is `wren-core` (with the `debug` feature), **not** the stock C compiler.
+   This buys **named locals + named instance fields for free** and lets us reuse
+   `debug.rs`'s inspection logic and `wren-dap`'s DAP mapping nearly verbatim,
+   instead of porting ~2.7k lines to `no_std`/`alloc` *and* patching
+   `wren_compiler.c`. Deluge's existing foreign bindings register into
+   `wren-core`'s foreign registry unchanged (it accepts raw
+   `extern "C" fn(*mut WrenVM)` pointers — the exact signature deluge uses), and
+   the DSP `Engine`/`Host` are reused for the harness.
+   **Accepted cost — a fidelity risk:** the debugger compiles with the **Rust**
+   compiler while the sim + device compile with the **C** compiler. Both emit
+   bytecode for the *same* C VM runtime, so *valid* scripts execute identically;
+   the risk is confined to edge cases where one compiler accepts/rejects source
+   the other doesn't, or emits different error text. (Configurations weighed:
+   "everything C" — perfect fidelity but large port + a compiler patch;
+   "everything Rust on web" — pulls the *sim* away from the *device*, which stays
+   on C, and adds a sim migration. Both rejected. See **Future direction**.)
 
 ### De-risking already in place
 
-The app **already runs cross-origin-isolated with `SharedArrayBuffer`**:
-`vite.config.ts` sets `Cross-Origin-Opener-Policy: same-origin` +
-`Cross-Origin-Embedder-Policy: require-corp`, and `src/audio.ts` already uses a
-SAB command ring to an AudioWorklet (with a postMessage fallback when isolation
-is unavailable). The COOP/COEP headers, the SAB pattern, and the ES-module worker
-setup (`worker: { format: "es" }`) are all present and proven in this codebase.
+- The app **already runs cross-origin-isolated with `SharedArrayBuffer`**:
+  `vite.config.ts` sets COOP `same-origin` + COEP `require-corp`, and
+  `src/audio.ts` already uses a SAB command ring to an AudioWorklet (with a
+  postMessage fallback when isolation is unavailable). The headers, the SAB
+  pattern, and `worker: { format: "es" }` are all present and proven here.
+- **The Rust frontend already ships on web.** `tools/wren-analyzer-wasm` already
+  compiles `wren-analyzer` + `wren-syntax` (the Rust parser, which is already
+  `no_std`) to wasm for the editor's diagnostics — so putting `wren-core`'s
+  compiler in the web/debug path continues an existing direction rather than
+  introducing the Rust frontend from scratch.
 
 ## Design
 
 ### 1. Architecture & data flow
 
-Three actors. The two "threads" of wren-dap's design become two JS realms:
+Three actors. wren-dap's two OS threads become two JS realms:
 
 ```
-main thread                          debug worker
-───────────                          ────────────
+main thread                          debug worker (wasm32-wasi, std)
+───────────                          ──────────────────────────────
 Monaco + debug UI                    debug-core.wasm
-  │  set breakpoints, step, continue    = deluge-wren-core
-  │  request stackTrace/scopes/vars/eval   + wren-sys[debug]  (VM w/ line hook)
-  ▼                                        + debug-agent (ported debug.rs)
-DebugController (TS)  ◄──── SAB ────►     + harness (drives events)
-  await via Atomics.waitAsync          hook blocks on Atomics.wait
+  │  set breakpoints, step, continue    = wren-core[debug]  (Rust compiler + C VM
+  │  request stackTrace/scopes/vars/eval    + wrenDebugHook)
+  ▼                                      + deluge bindings (into wren-core registry)
+DebugController (TS)  ◄──── SAB ────►     + deluge Engine/Host (harness)
+  await via Atomics.waitAsync            + debug-agent (debug.rs inspection,
+                                            SAB transport instead of mpsc)
+                                       hook blocks on Atomics.wait
 ```
 
 - The debug worker owns its **own** VM instance, separate from the main-thread
@@ -79,38 +112,43 @@ DebugController (TS)  ◄──── SAB ────►     + harness (drives 
 - The SAB carries (a) the resume/step signal, so the worker can unblock while
   parked deep inside a synchronous C frame, and (b) inspection request/response
   JSON payloads.
-- The main thread never blocks: it uses `Atomics.waitAsync` for responses;
-  only the worker uses blocking `Atomics.wait`.
+- The main thread never blocks: it uses `Atomics.waitAsync` for responses; only
+  the worker uses blocking `Atomics.wait`.
 
-### 2. The debug wasm core (build)
+### 2. The debug core (build)
 
-A **second wasm artifact** — the *debug core* — built from the **same**
-`deluge-wren-core` + `wren-sys` stack as the sim, so prelude/bindings/`Engine`
-behave identically. The main sim wasm is unchanged and stays unpatched (no
-per-instruction hook cost); the debug core is fetched only when debugging starts.
-Two additions:
+A **new `wasm32-wasi` (std) cdylib** — the *debug core* — in its own crate
+(`tools/wren-web-debug`), separate from the sim wasm (which is unchanged and
+stays on the stock C compiler). It links:
 
-- **`wren-sys` gains a `debug` cargo feature** that applies the `wrenDebugHook` +
-  error-hook source patches to `wren_vm.c` inside `build.rs`. The patch text is
-  ported from the equivalent patches in `wren-core/build.rs` (a global hook
-  pointer + `shimSetDebugHook` setter; a `DEBUG_HOOK()` macro emitted after the
-  no-trace branch of the trace macro and invoked at both the computed-goto and
-  switch dispatch sites; the parallel error hook). Firmware and the plain sim
-  build without the feature and are byte-for-byte unaffected.
-- A new **`debug-agent`** module: a `no_std` + `alloc` port of the **VM-side** of
-  `wren-core/src/vm/debug.rs`. We keep the hard logic — fiber-stack walk, locals
-  + module-variable enumeration, value formatting, expandable lists/maps/
-  instances, and read-only expression evaluation — and **drop** the
-  `std::thread` / `mpsc` / `Arc<Mutex>` plumbing, replacing it with the SAB
-  command loop (§3). `std`-only collections (`HashMap`/`HashSet`) become `alloc`
-  equivalents (`hashbrown`/`BTreeMap`); `String`/`Vec`/`CStr` are already in
-  `alloc`/`core`.
+- **`wren-core` with the `debug` feature** — the Rust compiler + the C VM with
+  the `wrenDebugHook`/error-hook patches (both already implemented in
+  `wren-core/build.rs`; nothing to port here).
+- **A bindings adapter** — registers deluge's existing foreign methods/classes
+  (`deluge-wren-core::{METHODS, CLASSES}`, i.e. the `extern "C" fn(*mut WrenVM)`
+  functions in `bindings.rs`) into `wren-core`'s `ForeignMethodRegistry` /
+  `ForeignClassRegistry` via `CWrenVm::with_foreign`. The slot API those
+  functions call (`wrenSetSlotDouble`, `alloc_foreign`, `WrenHandle`,
+  `wrenCall`, …) is the C VM's own — the same runtime `wren-core` drives — so the
+  bindings run unchanged.
+- **The deluge prelude + `Engine`/`Host`** — the prelude compiles as Wren source
+  via `wren-core`; the `Engine` drives the harness's simulated events (`Cmd`,
+  MIDI, encoders) exactly as in the sim.
+- **The debug-agent** — reuses `wren-core::vm::debug`'s **inspection** (fiber
+  stack walk, scopes, variables, evaluate, value formatting, expandable
+  lists/maps/instances by name) but replaces `DebugSession`'s two-thread
+  `mpsc`/park driver with the single-thread **SAB command loop** (§3). The
+  DAP-shaped request→backend→JSON mapping in `wren-dap/src/session.rs` is reused
+  as the shape of those requests/responses (see §5).
 
-The debug core is a new `cdylib` (either a `wren-web-debug` crate or a feature/
-second `[[bin]]`-equivalent target of `tools/wren-web`) exposing a C-ABI surface:
-boot, install hook, set breakpoints, launch (compile+run entry under the
-harness), and — callable **while parked** — `stack_trace`, `scopes`,
-`variables(ref)`, `evaluate(frame, expr)`, plus resume/step controls.
+Exposed C-ABI surface (called from JS in the worker): boot + install hook, set
+breakpoints, launch (compile + run entry under the harness), and — callable
+**while parked** — `stack_trace`, `scopes`, `variables(ref)`,
+`evaluate(frame, expr)`, plus resume/step/stop controls.
+
+**Single C-VM link.** Only the debug core links `wren-core`'s C VM; the sim wasm
+links `wren-sys`'s. They are separate wasm modules, so there is no cross-module
+symbol clash. Within the debug core, `wren-core` owns the sole C-VM build.
 
 ### 3. Concurrency protocol
 
@@ -122,16 +160,17 @@ harness), and — callable **while parked** — `stack_trace`, `scopes`,
   message queue, so **while parked everything goes over the SAB**:
   1. Main writes a request (`stackTrace`/`scopes`/`variables`/`evaluate`, JSON in
      the SAB byte region) and `Atomics.notify`s the command slot.
-  2. The worker wakes, calls the synchronous inspection export, writes the JSON
-     response into the SAB, and `Atomics.notify`s the response slot.
+  2. The worker wakes, computes on the live (parked) fiber via the reused
+     inspection functions, writes the JSON response into the SAB, and
+     `Atomics.notify`s the response slot.
   3. Main was `await`ing that slot via `Atomics.waitAsync`; it resolves and reads
      the response.
   4. A `continue`/`next`/`stepIn`/`stepOut` command **exits** the loop → the hook
      returns → `interpret` resumes.
 - **Payload sizing:** DAP-style lazy expansion (`variablesReference` fetched on
   demand) keeps each request/response small, so a fixed SAB byte region (a few
-  MB) never overflows. If a single string value would exceed the region it is
-  truncated with an ellipsis marker.
+  MB) never overflows. A single oversized string value is truncated with an
+  ellipsis marker.
 
 ### 4. The harness (load → driven callbacks)
 
@@ -151,14 +190,14 @@ Layer 2 lands.
 
 | Source (wren-rs) | Target (deluge-sdk) | Transformation |
 |---|---|---|
-| `wren-core/src/vm/debug.rs` (VM-side) | `debug-agent` module | strip threads/channels; `std`→`alloc` collections |
-| `wren-core/build.rs` debug patches | `wren-sys` `debug` feature | port patch text into `wren-sys/build.rs` |
-| `wren-dap/src/session.rs` | worker message handler | transport becomes SAB/postMessage, not stdio; keep DAP-shaped request→backend→JSON mapping |
-| `src/audio.ts` SAB pattern, `vite.config.ts` COOP/COEP, `worker: {format:"es"}` | reused directly | none |
+| `wren-core` + `debug` feature | debug-core dependency | used as-is (Rust compiler + patched C VM); no port |
+| `wren-core/src/vm/debug.rs` inspection | debug-agent | reuse fiber walk / scopes / variables / evaluate; replace `DebugSession` mpsc/park driver with the SAB command loop |
+| `wren-dap/src/session.rs` | request/response shapes | keep the DAP-shaped `stackTrace`/`scopes`/`variables`/`evaluate` JSON mapping; transport is SAB/postMessage, driver is main-thread TS |
+| `deluge-wren-core::{bindings, Engine, Host, prelude}` | debug core | reuse unchanged; bindings register into `wren-core`'s foreign registry via an adapter |
+| `src/audio.ts` SAB pattern, `vite.config.ts` COOP/COEP, `worker:{format:"es"}` | reused directly | none |
 
-DAP-**shaped** JSON messages (not a literal DAP socket) are kept so
-`session.rs` lifts almost verbatim and a VS Code-attach bridge stays possible as
-a later follow-up.
+DAP-**shaped** JSON (not a literal DAP socket) keeps a future VS Code-attach
+bridge possible and mirrors `session.rs`.
 
 ### 6. UI
 
@@ -168,87 +207,103 @@ existing panel/scrollbar styling:
 - Breakpoint gutter with click-to-toggle; breakpoints persist per file.
 - A debug toolbar: Debug/Continue, Step Over, Step Into, Step Out, Stop.
 - A call-stack panel (frames → click to select, drives scopes/vars).
-- A variables tree: **Locals** and **Module** scopes, lazily expandable
-  (lists indexed `[0]…`; instance fields by Wren name incl. leading `_`; maps in
+- A variables tree: **Locals** and **Module** scopes, **by name** (locals and
+  instance fields named, via `wren-core`'s debug info), lazily expandable (lists
+  indexed `[0]…`; instance fields by Wren name incl. leading `_`; maps in
   hash-table order).
 - Current-line / current-frame highlight in the editor.
 
 ### 7. v1 scope
 
 **In v1:** line breakpoints; continue; step over/into/out; call stack; variables
-(Locals + Module, expandable); current-line highlight; program output; the
-load+harness driven run.
+(Locals + Module, **named**, expandable); current-line highlight; program output;
+the load+harness driven run.
 
-**Deferred follow-ups (each an incremental port from wren-dap, not new
+**Deferred follow-ups (each an incremental port from `wren-dap`, not new
 invention):** conditional breakpoints, logpoints, watch/hover evaluate, exception
 breakpoints, fibers-as-threads, relative-import path fidelity, and a VS
 Code-attach bridge.
 
 ## Components & boundaries
 
-- **`wren-sys` `debug` feature** — build-time VM patch only. Interface: the
-  extern `shimSetDebugHook`/`wrenDebugHook` symbols. Depends on: upstream
-  `wren_vm.c` patch anchors (asserted present at build time, as wren-core does).
-- **`debug-agent` (Rust, no_std+alloc)** — owns VM inspection. Interface: the
-  C-ABI exports (set breakpoints, launch, resume/step, stack/scopes/vars/eval).
-  Depends on: `wren-sys[debug]`, `deluge-wren-core`. Testable headless via a
-  small native/`wasm32-wasi` harness that drives a canned script.
-- **debug core wasm loader + `DebugController` (TS)** — owns the SAB protocol and
-  worker lifecycle. Interface: a typed async API the UI calls
-  (`setBreakpoints`, `launch`, `continue`, `step*`, `stackTrace`, `scopes`,
-  `variables`, `evaluate`) + an event stream (`stopped`, `output`, `terminated`).
-  Depends on: the debug worker, the SAB layout.
+- **debug-core crate (`tools/wren-web-debug`, Rust, `wasm32-wasi`)** — owns
+  compile+run+inspect. Interface: the C-ABI exports (set breakpoints, launch,
+  resume/step/stop, stack/scopes/vars/eval). Depends on: `wren-core[debug]`,
+  `deluge-wren-core`. Testable headless natively (same crate compiled for the
+  host) driving a canned script and asserting emitted state.
+- **debug-agent module (inside the debug core)** — owns the SAB command loop and
+  the reused inspection calls. Interface: a Rust command enum ↔ JSON matching
+  `session.rs`'s DAP shapes. Depends on: `wren-core::vm::debug`, the SAB layout.
+- **debug worker loader + `DebugController` (TS)** — owns the SAB protocol and
+  worker lifecycle. Interface: a typed async API the UI calls (`setBreakpoints`,
+  `launch`, `continue`, `step*`, `stackTrace`, `scopes`, `variables`,
+  `evaluate`) + an event stream (`stopped`, `output`, `terminated`). Depends on:
+  the debug worker, the SAB layout.
 - **Debug UI (TS)** — owns gutter/toolbar/panels. Depends on: `DebugController`,
   Monaco, existing styling.
-- **Harness (Rust, in the debug core)** — owns the driven event sequence.
-  Depends on: `Engine`.
+- **Harness (Rust, in the debug core)** — owns the driven event sequence. Depends
+  on: `Engine`.
 
 Each unit is understandable and testable in isolation: the agent via a canned
-script + assertions on emitted state; the SAB protocol via a fake worker; the UI
-via Playwright.
+script + assertions; the SAB protocol via a fake worker; the UI via Playwright.
 
 ## Error handling
 
 - **Missing SAB / no cross-origin isolation:** the debug feature is **disabled**
-  with a clear in-UI message (mirrors `audio.ts`'s isolation fallback). No
-  silent degradation — debugging strictly requires SAB.
+  with a clear in-UI message (mirrors `audio.ts`'s isolation fallback). No silent
+  degradation — debugging strictly requires SAB.
+- **Compiler divergence (the Path B risk):** if the debug core's Rust compiler
+  rejects source the sim's C compiler accepts (or vice versa), surface the
+  compile error verbatim in the debug console and abort the debug run — never
+  fail silently or desync from the editor. A short "compiled by the Rust
+  frontend" note in the debug panel sets expectations.
 - **Runtime error in the debugged script:** surfaced as an `output` event and
   program termination (v1); exception-*breakpoints* are a deferred follow-up.
 - **Evaluate/inspection errors while parked:** returned as an error payload and
-  shown inline (as wren-dap does), never crashing the worker.
-- **Build-time patch-anchor drift:** `wren-sys`'s `debug` build asserts each
-  patch target is found (as `wren-core/build.rs` does), failing loudly if an
-  upstream VM update moves an anchor.
+  shown inline (as `wren-dap` does), never crashing the worker.
 - **SAB payload overflow:** truncate oversized string values; keep structural
   payloads small via lazy expansion.
 
 ## Testing
 
-- **debug-agent unit/headless:** a canned multi-file script with a known
-  breakpoint; assert stopped line, frame names, a local's formatted value, an
-  expandable list child, and step results — run natively or on `wasm32-wasi`
-  without the browser.
+- **debug-agent headless (native):** the debug core compiled for the host with a
+  canned multi-file script and a known breakpoint; assert stopped line, frame
+  names, a **named** local's formatted value, an expandable list/instance child,
+  and step results — no browser.
 - **Playwright end-to-end:** set a gutter breakpoint → Debug → assert `stopped`
-  at the right line; step over/into/out; read a variable value; expand a
+  at the right line; step over/into/out; read a named variable value; expand a
   list/instance; continue to termination. A breakpoint **inside a note handler**
   fires under the harness (Layer 2). A breakpoint in an **imported** module hits
   with the right `source.path`.
 - **No regressions:** debug-core wasm + sim wasm build; `tsc --noEmit` +
   `vite build` green; the plain sim still runs single-file and multi-file
-  scripts; device `cargo build-wren` + host build stay green (firmware provides
-  the null debug hook, as it already does for `wren_host_load_module`).
+  scripts on the C compiler; device `cargo build-wren` + host build stay green.
+
+## Future direction (out of scope here)
+
+Unifying **device + sim + debugger** on `wren-core`'s Rust compiler would erase
+the Path B fidelity risk entirely (one compiler everywhere, named debug info even
+on-device). Feasibility is partly proven — `wren-syntax` is already `no_std` and
+already ships on web via `wren-analyzer-wasm`; the runtime never changes (still
+the upstream C VM). The gap is a `no_std`/`alloc` port of `wren-core`'s backend
+(~14 files touching `std::`, all with `no_std`-friendly deps) and, critically, an
+**on-device code-size/RAM spike** — the stock C compiler was chosen partly for
+compactness on the RAM-constrained Deluge. This is its own brainstorm/spec, gated
+on that spike; **Path B is forward-compatible with it** (if the migration lands,
+the debugger becomes fidelity-perfect with zero rework).
 
 ## Open details to pin during implementation
 
 - **SAB layout:** exact slot offsets (state word, command word, response word,
   byte-region length + bytes) and the JSON framing within the byte region.
-- **debug core packaging:** a dedicated `wren-web-debug` crate vs. a feature of
-  `tools/wren-web`. Lean: a sibling crate, so the plain sim's build graph never
-  pulls the `debug` feature of `wren-sys`.
+- **debug-agent reuse boundary:** whether to fork the relevant functions out of
+  `debug.rs` behind a small transport trait (mpsc for native tests, SAB in the
+  worker) vs. copy-adapt them — pick the smaller diff against `debug.rs`.
 - **Breakpoint delivery while running:** breakpoints set before `launch` travel
   by postMessage; breakpoints toggled *while parked* travel over the SAB and take
   effect on resume.
-- **`hashbrown` vs `BTreeMap`** for the agent's maps (determinism of map-entry
-  order vs. matching wren-dap's hash-table order — pick and document).
+- **wasi in a worker:** which wasi shim the debug worker needs (the sim already
+  satisfies wasi stdio imports with a tiny JS shim; the debug core adds only what
+  `wren-core`'s C VM imports).
 - **Harness event vocabulary:** the exact set/order of simulated events and how
   the UI configures them.
