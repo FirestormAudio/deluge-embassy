@@ -96,6 +96,10 @@ fn state() -> &'static mut State {
 /// `now_ms` is the current millisecond tick; `dt_s` is seconds since the last
 /// tick.
 pub fn tick(vm: Vm, now_ms: u64, dt_s: f32) {
+    tick_impl(&vm, now_ms, dt_s);
+}
+
+fn tick_impl<S: SlotApi>(vm: &S, now_ms: u64, dt_s: f32) {
     render_cv_gate(dt_s);
 
     // Fire due metros *without* holding the state borrow across the call.
@@ -147,12 +151,14 @@ fn metro_take_due(i: usize, now_ms: u64) -> Option<(*mut WrenHandle, i64)> {
     Some((m.cb, m.stage))
 }
 
-/// Invoke a metro callback `cb.call(stage)`. No state borrow held.
-fn fire_metro(vm: Vm, cb: *mut WrenHandle, stage: i64) {
+/// Invoke a metro callback `cb.call(stage)`. No state borrow held. Storage
+/// stays a raw `*mut WrenHandle` (see module docs); convert at the
+/// trait-call boundary.
+fn fire_metro<S: SlotApi>(vm: &S, cb: *mut WrenHandle, stage: i64) {
     // SAFETY: the VM thread is the sole accessor of CALL_HANDLE.
     let call = unsafe {
         if CALL_HANDLE.is_null() {
-            CALL_HANDLE = vm.make_call_handle("call(_)");
+            CALL_HANDLE = vm.make_call_handle("call(_)").0 as *mut WrenHandle;
         }
         CALL_HANDLE
     };
@@ -160,9 +166,9 @@ fn fire_metro(vm: Vm, cb: *mut WrenHandle, stage: i64) {
         return;
     }
     vm.ensure_slots(2);
-    vm.set_handle(0, cb); // receiver = the Fn
-    vm.set_f64(1, stage as f64);
-    vm.call(call); // ignore result; a throwing callback is reported by errorFn
+    vm.set_handle(0, Handle(cb as *mut c_void)); // receiver = the Fn
+    vm.set_f(1, stage as f64);
+    vm.call(Handle(call as *mut c_void)); // ignore result; a throwing callback is reported by errorFn
 }
 
 // ── Foreign object structs ───────────────────────────────────────────────────
@@ -478,6 +484,10 @@ unsafe extern "C" fn midi_set_on_cc(raw: *mut WrenVM) {
 /// the host's VM loop (not inside a foreign method), so `wrenCall` is legal.
 /// Note-on with velocity 0 is treated as note-off (MIDI convention).
 pub fn midi_rx(vm: Vm, status: u8, d1: u8, d2: u8) {
+    midi_rx_impl(&vm, status, d1, d2);
+}
+
+fn midi_rx_impl<S: SlotApi>(vm: &S, status: u8, d1: u8, d2: u8) {
     let ch = (status & 0x0F) as f64 + 1.0;
     let (cb, a, b, c) = match status & 0xF0 {
         0x90 if d2 > 0 => (midi().on_note_on, ch, d1 as f64, d2 as f64),
@@ -492,7 +502,7 @@ pub fn midi_rx(vm: Vm, status: u8, d1: u8, d2: u8) {
     let call = {
         let m = midi();
         if m.call3.is_null() {
-            m.call3 = vm.make_call_handle("call(_,_,_)");
+            m.call3 = vm.make_call_handle("call(_,_,_)").0 as *mut WrenHandle;
         }
         m.call3
     };
@@ -500,11 +510,11 @@ pub fn midi_rx(vm: Vm, status: u8, d1: u8, d2: u8) {
         return;
     }
     vm.ensure_slots(4);
-    vm.set_handle(0, cb);
-    vm.set_f64(1, a);
-    vm.set_f64(2, b);
-    vm.set_f64(3, c);
-    vm.call(call);
+    vm.set_handle(0, Handle(cb as *mut c_void));
+    vm.set_f(1, a);
+    vm.set_f(2, b);
+    vm.set_f(3, c);
+    vm.call(Handle(call as *mut c_void));
 }
 
 // ── UI: pads / buttons / encoders (in) + LEDs / OLED (out) ───────────────────
@@ -539,14 +549,15 @@ fn ui() -> &'static mut UiState {
     unsafe { &mut *addr_of_mut!(UI) }
 }
 
-fn ui_call1(vm: Vm, cb: *mut WrenHandle, a: f64) {
+/// Storage stays a raw `*mut WrenHandle`; convert at the trait-call boundary.
+fn ui_call1<S: SlotApi>(vm: &S, cb: *mut WrenHandle, a: f64) {
     if cb.is_null() {
         return;
     }
     let call = {
         let u = ui();
         if u.call1.is_null() {
-            u.call1 = vm.make_call_handle("call(_)");
+            u.call1 = vm.make_call_handle("call(_)").0 as *mut WrenHandle;
         }
         u.call1
     };
@@ -554,19 +565,20 @@ fn ui_call1(vm: Vm, cb: *mut WrenHandle, a: f64) {
         return;
     }
     vm.ensure_slots(2);
-    vm.set_handle(0, cb);
-    vm.set_f64(1, a);
-    vm.call(call);
+    vm.set_handle(0, Handle(cb as *mut c_void));
+    vm.set_f(1, a);
+    vm.call(Handle(call as *mut c_void));
 }
 
-fn ui_call2(vm: Vm, cb: *mut WrenHandle, a: f64, b: f64) {
+/// Storage stays a raw `*mut WrenHandle`; convert at the trait-call boundary.
+fn ui_call2<S: SlotApi>(vm: &S, cb: *mut WrenHandle, a: f64, b: f64) {
     if cb.is_null() {
         return;
     }
     let call = {
         let u = ui();
         if u.call2.is_null() {
-            u.call2 = vm.make_call_handle("call(_,_)");
+            u.call2 = vm.make_call_handle("call(_,_)").0 as *mut WrenHandle;
         }
         u.call2
     };
@@ -574,16 +586,20 @@ fn ui_call2(vm: Vm, cb: *mut WrenHandle, a: f64, b: f64) {
         return;
     }
     vm.ensure_slots(3);
-    vm.set_handle(0, cb);
-    vm.set_f64(1, a);
-    vm.set_f64(2, b);
-    vm.call(call);
+    vm.set_handle(0, Handle(cb as *mut c_void));
+    vm.set_f(1, a);
+    vm.set_f(2, b);
+    vm.call(Handle(call as *mut c_void));
 }
 
 /// Dispatch an input event to the wren callbacks. Called by the host. `kind`:
 /// 0=pad press, 1=pad release (`a`=x, `b`=y); 2=button press, 3=button release
 /// (`a`=id). Pad coordinates arrive pre-decoded from the host's input stream.
 pub fn input_dispatch(vm: Vm, kind: u8, a: u8, b: u8) {
+    input_dispatch_impl(&vm, kind, a, b);
+}
+
+fn input_dispatch_impl<S: SlotApi>(vm: &S, kind: u8, a: u8, b: u8) {
     match kind {
         0 | 1 => {
             let cb = if kind == 0 { ui().on_pad_press } else { ui().on_pad_release };
@@ -599,6 +615,10 @@ pub fn input_dispatch(vm: Vm, kind: u8, a: u8, b: u8) {
 
 /// Dispatch an encoder detent change. Called by the host.
 pub fn enc_turn(vm: Vm, index: u8, delta: i8) {
+    enc_turn_impl(&vm, index, delta);
+}
+
+fn enc_turn_impl<S: SlotApi>(vm: &S, index: u8, delta: i8) {
     ui_call2(vm, ui().on_enc, index as f64, delta as f64);
 }
 

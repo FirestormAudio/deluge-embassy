@@ -17,9 +17,10 @@ use crate::{CV_CHANNELS, Cmd, GATE_CHANNELS, Host};
 // links `wren-sys` must define them (the firmware and `wren-web` each provide
 // their own). This test helper is its own tiny "host" for that purpose.
 
-/// Last VM error line (-1 = none / not applicable), for a nicer panic message
-/// than a bare `WREN_RESULT_RUNTIME_ERROR` code.
+/// Last VM error line (-1 = none / not applicable) and message text, for a
+/// nicer panic message than a bare `WREN_RESULT_RUNTIME_ERROR` code.
 static LAST_ERR_LINE: AtomicI32 = AtomicI32::new(-1);
+static mut LAST_ERR_MSG: [u8; 256] = [0; 256];
 
 #[unsafe(no_mangle)]
 extern "C" fn wren_host_write(_text: *const c_char) {
@@ -27,8 +28,26 @@ extern "C" fn wren_host_write(_text: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn wren_host_error(line: c_int, _message: *const c_char) {
+extern "C" fn wren_host_error(line: c_int, message: *const c_char) {
     LAST_ERR_LINE.store(line, Ordering::Relaxed);
+    // SAFETY: single-threaded test helper (see module docs); `message` is a
+    // valid NUL-terminated C string for the duration of this call.
+    unsafe {
+        let bytes = core::ffi::CStr::from_ptr(message).to_bytes();
+        let buf = &mut *core::ptr::addr_of_mut!(LAST_ERR_MSG);
+        let n = bytes.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        buf[n] = 0;
+    }
+}
+
+/// The message from the most recent `wren_host_error` call, for panic text.
+fn last_err_msg() -> &'static str {
+    unsafe {
+        core::ffi::CStr::from_ptr(core::ptr::addr_of!(LAST_ERR_MSG) as *const c_char)
+            .to_str()
+            .unwrap_or("<non-utf8>")
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -93,8 +112,9 @@ pub fn run_and_read_cv(src: &str, ch: u8) -> f32 {
         assert_eq!(
             r,
             wren_sys::WREN_RESULT_SUCCESS,
-            "test_support: prelude failed to compile (line {})",
-            LAST_ERR_LINE.load(Ordering::Relaxed)
+            "test_support: prelude failed to compile (line {}): {}",
+            LAST_ERR_LINE.load(Ordering::Relaxed),
+            last_err_msg()
         );
 
         // NUL-terminate the script source for the C VM.
@@ -106,12 +126,74 @@ pub fn run_and_read_cv(src: &str, ch: u8) -> f32 {
         assert_eq!(
             r,
             wren_sys::WREN_RESULT_SUCCESS,
-            "test_support: script failed (line {})",
-            LAST_ERR_LINE.load(Ordering::Relaxed)
+            "test_support: script failed (line {}): {}",
+            LAST_ERR_LINE.load(Ordering::Relaxed),
+            last_err_msg()
         );
 
         // Flush slew into the host (matches a real host's tick loop).
         crate::tick(wren_sys::Vm(vm), 0, 1.0);
+
+        let cv = (*core::ptr::addr_of_mut!(HOST)).cv[ch as usize];
+
+        wren_sys::wrenFreeVM(vm);
+        crate::reset();
+        cv
+    }
+}
+
+/// Boot a fresh VM, run the prelude then `src` in the `main` module, call
+/// [`crate::tick`] `ticks` times (each `ms_per_tick` milliseconds apart,
+/// so registered `Metro` callbacks fire on schedule), read CV channel `ch`
+/// (0-based), then tear the VM down. Panics on boot/compile/runtime failure —
+/// this is a test helper, not production code.
+pub fn run_tick_read_cv(src: &str, ms_per_tick: u64, ticks: u32, ch: u8) -> f32 {
+    // SAFETY: single-threaded test helper; see module docs. The host is
+    // (re)registered before every run, and the VM is freed before returning.
+    unsafe {
+        let host = &mut *core::ptr::addr_of_mut!(HOST);
+        host.now_ms = 0;
+        host.cv = [0.0; CV_CHANNELS];
+        host.gate = [false; GATE_CHANNELS];
+        crate::set_host(&mut *core::ptr::addr_of_mut!(HOST));
+
+        let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
+        assert!(!vm.is_null(), "test_support: VM boot failed");
+
+        let r = wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr());
+        assert_eq!(
+            r,
+            wren_sys::WREN_RESULT_SUCCESS,
+            "test_support: prelude failed to compile (line {}): {}",
+            LAST_ERR_LINE.load(Ordering::Relaxed),
+            last_err_msg()
+        );
+
+        // NUL-terminate the script source for the C VM.
+        let mut buf = [0u8; 8192];
+        let n = src.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&src.as_bytes()[..n]);
+        buf[n] = 0;
+        let r = wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const c_char);
+        assert_eq!(
+            r,
+            wren_sys::WREN_RESULT_SUCCESS,
+            "test_support: script failed (line {}): {}",
+            LAST_ERR_LINE.load(Ordering::Relaxed),
+            last_err_msg()
+        );
+
+        let mut now_ms: u64 = 0;
+        for _ in 0..ticks {
+            now_ms += ms_per_tick;
+            crate::tick(wren_sys::Vm(vm), now_ms, ms_per_tick as f32 / 1000.0);
+        }
+        // Flush: `tick` renders CV *then* fires due callbacks, so the last
+        // tick's callback-driven write only reaches the host on the next
+        // render pass. One more tick at the same timestamp (dt=0, so no
+        // further callback becomes due) pushes it through before we read it
+        // back — same flush idea as `run_and_read_cv`'s post-script tick.
+        crate::tick(wren_sys::Vm(vm), now_ms, 0.0);
 
         let cv = (*core::ptr::addr_of_mut!(HOST)).cv[ch as usize];
 
