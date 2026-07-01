@@ -14,7 +14,7 @@
 
 - **Branch:** `feat/wren-web` (continue on it; do not open a new branch).
 - **The refactor in Phase 0 must be behavior-preserving** for the sim and firmware: `cargo build-wren` (device) and the host sim build stay green, and a golden-script run produces identical output before/after.
-- **The debug core never depends on `wren-sys`** (avoids double-linking the upstream C VM). The sim wasm never depends on `wren-core`.
+- **The debug core never depends on `wren-sys`** (avoids double-linking the upstream C VM). The sim wasm never depends on `wren-core`. **Because `deluge-wren-core` currently depends on `wren-sys` unconditionally and `wren-sys`'s `build.rs` always emits `cargo:rustc-link-lib=wrencore`, `wren-sys` must become an OPTIONAL, DEFAULT-ON feature of `deluge-wren-core`** (feature `wren-sys-backend`, added in Task 0.4). Sim + firmware get it by default (unchanged); `wren-web-debug` sets `default-features = false` so it links only `wren-core`'s C VM. The `SlotApi` trait, shared types, and generic binding bodies are always available (backend-agnostic); the `Vm` impl, `extern "C"` wrappers, `METHODS`/`CLASSES`, `boot*`, the `Engine`'s `Vm` entry points, and `test_support` live behind `wren-sys-backend`.
 - **`WASI_SYSROOT`** must be set for any wasm build touching the C VM (already required by `wren-sys`; `wren-core` compiles its C against the host `cc` natively and against the wasi sysroot for wasm — see Task 3.1).
 - **Cross-origin isolation is already configured** (`tools/wren-web/app/vite.config.ts` sets COOP/COEP; `worker: { format: "es" }`). Reuse it; the debug feature is disabled with a UI message when `crossOriginIsolated` is false.
 - **Wren syntax gotchas:** no semicolons; a single-line block `{ return x }` is invalid (`{ x }` is fine); multi-line blocks with `return` are fine. Applies to every `.wren` test fixture.
@@ -293,6 +293,40 @@ git add crates/deluge-wren-core/src/engine.rs crates/deluge-wren-core/tests/gold
 git commit -m "wren-core: make Engine callback dispatch generic over SlotApi"
 ```
 
+### Task 0.4: Make the `wren-sys` backend an optional default feature
+
+**Why:** `wren-web-debug` (Phase 1) links `wren-core`'s C VM; if it transitively pulls `wren-sys` (a hard dep of `deluge-wren-core`), the two upstream C VMs double-link and fail. So the `wren-sys`-specific surface must be feature-gated.
+
+**Files:**
+- Modify: `crates/deluge-wren-core/Cargo.toml` (make `wren-sys` optional; add `[features] default = ["wren-sys-backend"]`, `wren-sys-backend = ["dep:wren-sys"]`; `test-support = ["wren-sys-backend"]`)
+- Modify: `crates/deluge-wren-core/src/lib.rs`, `src/slotapi_wrensys.rs`, `src/bindings.rs`, `src/engine.rs` (gate the `Vm`-specific items behind `#[cfg(feature = "wren-sys-backend")]`)
+- Test: existing `slotapi`/`golden_sim` tests (run with default features on).
+
+**Interfaces:**
+- Always available (no feature): `SlotApi`, `WrenType`, `WrenForeign`, `Handle`, and the generic binding bodies `NAME_impl<S: SlotApi>` + generic Engine callback helpers.
+- Behind `wren-sys-backend` (default): `impl SlotApi for wren_sys::Vm`, the `extern "C" fn(*mut WrenVM)` wrappers, `METHODS`/`CLASSES`, `prelude_ptr`/`boot*`, the `Vm`-based public entry points (`tick`/`midi_rx`/`enc_turn`/`input_dispatch`), and `test_support`.
+
+- [ ] **Step 1: Write the failing test** — a build check that the crate compiles with the backend OFF, exposing only the generic surface:
+```bash
+# Expected to FAIL before gating: without wren-sys, unresolved wren_sys::* refs.
+cargo build -p deluge-wren-core --no-default-features
+```
+Add a doc-test or `tests/no_backend.rs` gated `#![cfg(not(feature = "wren-sys-backend"))]` asserting `SlotApi`/`WrenType` are namable without the backend (compile-only).
+
+- [ ] **Step 2: Run to verify it fails** — `cargo build -p deluge-wren-core --no-default-features` → FAIL (unresolved `wren_sys`).
+
+- [ ] **Step 3: Implement the gating** — in `Cargo.toml`: `wren-sys = { path = "../../wren-sys", optional = true }` + the `[features]` block above. Add `#[cfg(feature = "wren-sys-backend")]` to: the `mod slotapi_wrensys;` line and the module; every `extern "C"` wrapper + `METHODS`/`CLASSES`/`boot`/`prelude_ptr` in `bindings.rs`; the `Vm` public entry points in `engine.rs`; and `test_support`. The generic bodies, `SlotApi`, and shared types stay ungated.
+
+- [ ] **Step 4: Verify all configs**
+Run: `cargo build -p deluge-wren-core --no-default-features` (PASS — generic-only), `cargo test -p deluge-wren-core` (PASS — defaults on, golden tests green), `cargo build -p wren-web` (PASS — gets defaults), `cargo build-wren` (PASS — device, defaults on).
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+```bash
+git add crates/deluge-wren-core/Cargo.toml crates/deluge-wren-core/src
+git commit -m "wren-core: gate wren-sys backend behind a default feature"
+```
+
 ---
 
 ## Phase 1 — Debug core crate (wren-core stack, native)
@@ -324,12 +358,17 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wren-core = { path = "../../../wren-rs/crates/wren-core", features = ["debug"] }
-deluge-wren-core = { path = "../../crates/deluge-wren-core", features = ["test-support"] }
+# default-features = false is MANDATORY: it disables `wren-sys-backend` so this
+# crate links ONLY wren-core's C VM (no double-VM). We use the backend-agnostic
+# SlotApi trait + generic binding bodies, never deluge-wren-core's Vm surface or
+# its wren-sys-based `test_support`.
+deluge-wren-core = { path = "../../crates/deluge-wren-core", default-features = false }
 
 [profile.release]
 opt-level = "s"
 lto = true
 ```
+NOTE: `wren-web-debug` provides its OWN wren-core-based test helpers (`build_vm`, `run_project_capture`); it must NOT use `deluge_wren_core::test_support` (that is wren-sys-backed and would re-introduce the double-VM).
 
 `tools/wren-web-debug/tests/bindings_under_wrencore.rs`:
 ```rust
