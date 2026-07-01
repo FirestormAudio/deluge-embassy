@@ -19,6 +19,7 @@
 - **Cross-origin isolation is already configured** (`tools/wren-web/app/vite.config.ts` sets COOP/COEP; `worker: { format: "es" }`). Reuse it; the debug feature is disabled with a UI message when `crossOriginIsolated` is false.
 - **Wren syntax gotchas:** no semicolons; a single-line block `{ return x }` is invalid (`{ x }` is fine); multi-line blocks with `return` are fine. Applies to every `.wren` test fixture.
 - **wren-core lives at** `/home/kate/GitHub/wren-rs` (sibling repo). Paths like `wren-core = { path = "../../../wren-rs/crates/wren-core" }` mirror the existing `tools/wren-analyzer-wasm/Cargo.toml`.
+- **This workspace's default target is `armv7a-none-eabihf`** (`.cargo/config.toml` `[build] target`). So every HOST `cargo test`/`cargo build`/`cargo clippy` for a host-testable crate MUST pass `--target x86_64-unknown-linux-gnu`, or it tries to compile tests for the no_std device and fails with `can't find crate for std`. Device builds use the `build-wren`/`build-fw*` aliases (which set `-Zbuild-std`). IDE/rust-analyzer `std`-missing diagnostics against `armv7a` for host-only crates are expected noise, not regressions — the authoritative no_std gate is `cargo build-wren`.
 
 ---
 
