@@ -406,6 +406,43 @@ git add tools/wren-web-debug crates/deluge-wren-core/src/lib.rs
 git commit -m "wren-web-debug: run deluge bindings under wren-core"
 ```
 
+> **Discovered during Task 1.1 (user chose Option 2):** wren-core's `WrenSlotApi` exposes no handle/`wrenCall` API, so deluge's callback bindings (Metro/Midi/pad handlers) were stubbed and never fire. Tasks 1.1b + 1.1c close this. Value bindings already work; Task 1.2 (imports) does not depend on callbacks.
+
+### Task 1.1b (CROSS-REPO — `~/GitHub/wren-rs`): expose handle/call in wren-core's `WrenSlotApi`
+
+**Repo:** `/home/kate/GitHub/wren-rs` — work on a NEW feature branch (do not commit to `main`). deluge-sdk builds wren-core via a path dep on this working tree, so this is picked up automatically.
+
+**Files:**
+- Modify: `crates/wren-core/src/foreign.rs` (add object-safe handle methods to the `WrenSlotApi` trait, before its closing `}` ~line 123)
+- Modify: `crates/wren-core/src/vm/trampolines.rs` (implement them in `impl WrenSlotApi for CSlotApi`, which holds `vm: *mut WrenVM`)
+- Test: a wren-core unit/integration test where a foreign method stores a passed wren `Fn` handle and invokes it.
+
+**Interfaces:** the FFI is ALREADY declared in `crates/wren-core/src/vm/ffi.rs` (`wrenMakeCallHandle`/`wrenCall`/`wrenReleaseHandle`/`wrenGetSlotHandle`/`wrenSetSlotHandle`, `WrenHandle`). Add object-safe methods (WrenSlotApi is used as `&dyn`, so NO generics), e.g.:
+```rust
+fn make_call_handle(&self, signature: &str) -> *mut ffi::WrenHandle;
+fn call(&self, method: *mut ffi::WrenHandle) -> WrenInterpretResult; // or WrenResult<()>
+fn get_slot_handle(&self, slot: usize) -> *mut ffi::WrenHandle;
+fn set_slot_handle(&self, slot: usize, handle: *mut ffi::WrenHandle);
+fn release_handle(&self, handle: *mut ffi::WrenHandle);
+```
+(Choose the exact handle representation — raw `*mut WrenHandle` mirrors `wren-sys`'s `Vm` and makes the deluge `CoreSlots` adapter trivial; a thin opaque newtype is fine too. Keep it object-safe.)
+
+- [ ] Write the failing wren-core test (a foreign method calls back into a stored wren `Fn`, asserts it ran). RED.
+- [ ] Implement the trait methods on `CSlotApi` via the existing FFI + `self.vm`. Note **reentrancy**: `call`/`wrenCall` runs the interpreter from inside a foreign method — preserve the API-slot discipline the C VM requires; document the constraint.
+- [ ] GREEN. Then confirm the whole wren-rs workspace still builds and its suite passes (`cargo test` in wren-rs, incl. `wren-dap`).
+- [ ] Commit on the wren-rs feature branch.
+
+### Task 1.1c: De-stub `CoreSlots` handles + prove a callback fires
+
+**Files:**
+- Modify: `tools/wren-web-debug/src/slotapi_wrencore.rs` (implement the 5 handle methods of `deluge_wren_core::SlotApi` by delegating to wren-core's new `WrenSlotApi` handle API, converting between deluge's `Handle` and wren-core's handle type)
+- Test: `tools/wren-web-debug/tests/callbacks.rs`
+
+- [ ] Failing test: a script registers a callback (e.g. a `Metro` that bumps a CV each tick, or a `Midi.noteOn` handler), drive it via the `Engine`/`midi_rx` under wren-core, assert the callback ran (CV advanced / handler hit). RED (fails while stubbed).
+- [ ] De-stub the handle methods. GREEN.
+- [ ] Confirm `cargo build-wren` (device) + `deluge-wren-core` golden tests still green.
+- [ ] Commit.
+
 ### Task 1.2: Imports + prelude parity
 
 **Files:** Modify `tools/wren-web-debug/src/lib.rs`; Test `tools/wren-web-debug/tests/imports.rs`.
