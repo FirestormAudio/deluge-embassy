@@ -170,3 +170,63 @@ pub fn run_project_capture(entry: &str, modules: Vec<(String, String)>) -> Strin
         .map(RefCell::into_inner)
         .unwrap_or_else(|out| out.borrow().clone())
 }
+
+// ── wasm boot smoke (Task 3.1) ──────────────────────────────────────────
+//
+// A minimal C-ABI export that exercises the WHOLE wasm pipeline
+// single-threaded: wren-core's Rust compiler + the C VM + deluge foreign
+// bindings + the deluge prelude. It builds a VM (which compiles/runs the
+// prelude) and interprets a trivial `System.print("booted")` script, capturing
+// the output so the Node smoke can confirm it ran. No threads, no `debug_run`,
+// no transport — those are Task 3.2.
+//
+// The most-recent captured output is stashed in a thread-local so `dbg_out_*`
+// can hand it back to the host (wasm is single-threaded; a `thread_local!` is
+// effectively a plain global here).
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static LAST_OUTPUT: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Boot the deluge VM under wasm and run a trivial script. Returns 0 on
+/// success, non-zero on failure. Captured `System.print` output is retained
+/// for [`dbg_out_ptr`]/[`dbg_out_len`].
+///
+/// # Safety
+/// C-ABI export; takes no pointers, so it is trivially sound to call.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn dbg_boot() -> i32 {
+    let out = Rc::new(RefCell::new(String::new()));
+    let out_write = out.clone();
+    let write_fn = move |s: &str| out_write.borrow_mut().push_str(s);
+
+    // `build_vm` installs the no-op host, compiles + runs the deluge prelude.
+    let mut vm = build_vm(write_fn);
+    let result = vm.interpret("main", "System.print(\"booted\")");
+    drop(vm);
+
+    let captured = Rc::try_unwrap(out)
+        .map(RefCell::into_inner)
+        .unwrap_or_else(|out| out.borrow().clone());
+    LAST_OUTPUT.with(|slot| *slot.borrow_mut() = captured);
+
+    match result {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
+}
+
+/// Pointer to the UTF-8 bytes captured by the most recent [`dbg_boot`].
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn dbg_out_ptr() -> *const u8 {
+    LAST_OUTPUT.with(|slot| slot.borrow().as_ptr())
+}
+
+/// Byte length of the output captured by the most recent [`dbg_boot`].
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn dbg_out_len() -> usize {
+    LAST_OUTPUT.with(|slot| slot.borrow().len())
+}
