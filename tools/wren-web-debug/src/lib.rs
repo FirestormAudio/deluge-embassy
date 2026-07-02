@@ -10,6 +10,12 @@
 //! it links ONLY wren-core's copy of the C VM — never `wren-sys`'s — since two
 //! upstream C VMs in one binary would fail to link.
 
+/// The debug agent (Task 2.1): spawns a deluge VM on its own thread with
+/// wren-core's source debugger attached, and returns the [`DebugSession`]
+/// controller so a caller can drive it to a breakpoint stop.
+///
+/// [`DebugSession`]: wren_core::vm::DebugSession
+pub mod agent;
 /// The harness (Task 1.3): runs a project through the same VM/prelude
 /// machinery as [`build_vm`]/[`run_project_capture`], but with a *recording*
 /// [`Host`] installed instead of [`NoopHost`], so it can expose CV/gate state

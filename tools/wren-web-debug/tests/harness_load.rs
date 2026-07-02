@@ -4,10 +4,14 @@
 //! leaves that channel observable at 0.5 after `Harness::run_entry`, with no
 //! events/ticks driven beyond the harness's own post-run flush.
 
+mod common;
+
 use wren_web_debug::harness::Harness;
 
 #[test]
 fn run_entry_exposes_cv_written_at_load_time() {
+    let _g = common::VM_TEST_LOCK.lock().unwrap();
+
     let mut h = Harness::new();
     h.run_entry("output[1].volts = 0.5\n", Vec::new())
         .expect("entry should compile and run");

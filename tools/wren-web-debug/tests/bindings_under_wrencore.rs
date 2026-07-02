@@ -1,8 +1,12 @@
+mod common;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 #[test]
 fn osc_runs_under_wrencore() {
+    let _g = common::VM_TEST_LOCK.lock().unwrap();
+
     let out = Rc::new(RefCell::new(String::new()));
     let o2 = out.clone();
     let mut vm = wren_web_debug::build_vm(move |s: &str| o2.borrow_mut().push_str(s));

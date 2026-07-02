@@ -4,8 +4,12 @@
 /// imported modules (mirroring the sim's `runProject` / `PRELUDE_IMPORT`) —
 /// Wren modules are isolated, so without that, `Osc` would be an undefined
 /// variable in `lib/voice`.
+mod common;
+
 #[test]
 fn multi_file_import_runs() {
+    let _g = common::VM_TEST_LOCK.lock().unwrap();
+
     let src = "import \"lib/voice\" for Voice\nSystem.print(Voice.tag)\n";
     let lib = (
         "lib/voice".to_string(),

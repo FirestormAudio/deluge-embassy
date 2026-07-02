@@ -11,6 +11,8 @@
 //! `release_handle`): before they delegated to wren-core's new handle API,
 //! this test failed (the callback silently never fired).
 
+mod common;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -20,6 +22,8 @@ use wren_web_debug::slotapi_wrencore::CoreSlots;
 
 #[test]
 fn midi_note_on_callback_fires_under_wrencore() {
+    let _g = common::VM_TEST_LOCK.lock().unwrap();
+
     let out = Rc::new(RefCell::new(String::new()));
     let o2 = out.clone();
     let mut vm = wren_web_debug::build_vm(move |s: &str| o2.borrow_mut().push_str(s));
