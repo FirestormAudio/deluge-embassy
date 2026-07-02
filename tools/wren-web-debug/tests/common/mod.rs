@@ -14,6 +14,7 @@
 //!
 //! Usage: `let _g = common::VM_TEST_LOCK.lock().unwrap();` as the first line
 //! of any VM-booting `#[test]` fn.
+#[allow(dead_code)]
 pub static VM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Teardown for any test that parks a [`wren_core::vm::DebugSession`]'s VM
@@ -30,6 +31,7 @@ pub static VM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// this returns): it resumes execution and pumps `wait_event()` until the VM
 /// thread actually exits (`DebugStop::Terminated`), so the next test's VM
 /// boot is guaranteed not to race this one's teardown.
+#[allow(dead_code)]
 pub fn drive_to_end(session: &wren_core::vm::DebugSession) {
     session.resume();
     loop {
