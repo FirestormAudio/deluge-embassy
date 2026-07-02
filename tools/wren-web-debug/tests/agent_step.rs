@@ -12,6 +12,12 @@ use std::collections::HashSet;
 
 use wren_core::vm::DebugStop;
 
+/// Shared by `step_over_skips_call` and `step_in_enters_call`: line 7 is
+/// `C.go()`, which calls into `C.go`'s body at line 3 (`return 1`); line 8
+/// is `var b = 2`, right after the call returns.
+const CALL_FIXTURE: &str =
+    "class C {\n static go() {\n  return 1\n }\n}\nvar a = 1\nC.go()\nvar b = 2\n";
+
 /// `step_over` on a top-level statement stops at the very next line, in the
 /// same frame — no descent into any call.
 #[test]
@@ -44,9 +50,7 @@ fn step_over_advances_one_line() {
 fn step_over_skips_call() {
     let _g = common::VM_TEST_LOCK.lock().unwrap();
 
-    // Line 7 is `C.go()`; line 8 is `var b = 2`, right after the call.
-    let src = "class C {\n static go() {\n  return 1\n }\n}\nvar a = 1\nC.go()\nvar b = 2\n";
-    let session = wren_web_debug::agent::debug_run(src, vec![], HashSet::from([7]));
+    let session = wren_web_debug::agent::debug_run(CALL_FIXTURE, vec![], HashSet::from([7]));
 
     match session.wait_event() {
         DebugStop::Stopped { line, .. } => assert_eq!(line, 7),
@@ -56,7 +60,10 @@ fn step_over_skips_call() {
     session.step_over();
     match session.wait_event() {
         DebugStop::Stopped { line, .. } => {
-            assert_eq!(line, 8, "step_over over a call should skip into the callee");
+            assert_eq!(
+                line, 8,
+                "step_over over a call should skip PAST the callee, not enter it"
+            );
         }
         other => panic!("expected a step stop, got {other:?}"),
     }
@@ -70,9 +77,8 @@ fn step_over_skips_call() {
 fn step_in_enters_call() {
     let _g = common::VM_TEST_LOCK.lock().unwrap();
 
-    // Line 7 is `C.go()`; line 3 (`return 1`) is go()'s first line.
-    let src = "class C {\n static go() {\n  return 1\n }\n}\nvar a = 1\nC.go()\nvar b = 2\n";
-    let session = wren_web_debug::agent::debug_run(src, vec![], HashSet::from([7]));
+    // Line 3 (`return 1`) is go()'s first line.
+    let session = wren_web_debug::agent::debug_run(CALL_FIXTURE, vec![], HashSet::from([7]));
 
     match session.wait_event() {
         DebugStop::Stopped { line, .. } => assert_eq!(line, 7),
@@ -91,14 +97,32 @@ fn step_in_enters_call() {
 }
 
 /// `step_out` from inside a nested call stops back in the caller, at the
-/// line right after the call returns.
+/// line right after the call returns — and NOT at the next line inside the
+/// callee (which is where `step_over` would land instead).
+///
+/// `helper()` has two statements (`var y = 1` then `return y`) specifically
+/// so the breakpoint line is *not* the callee's last statement: this makes
+/// `step_over` and `step_out` diverge. If `step_out` were mis-wired to
+/// `step_over`'s logic, it would stop at line 8 (`return y`, still inside
+/// `helper()`) instead of line 4 (`return x`, back in `go()`), and this
+/// test would fail.
 #[test]
 fn step_out_returns_to_caller() {
     let _g = common::VM_TEST_LOCK.lock().unwrap();
 
-    // Line 7 (`return 1`) is inside `helper()`, called from `go()`'s line 3.
-    // step_out from line 7 should land back on go()'s line 4 (`return x`).
-    let src = "class C {\n static go() {\n  var x = C.helper()\n  return x\n }\n static helper() {\n  return 1\n }\n}\nC.go()\n";
+    // Line map (1-indexed):
+    //   1  class C {
+    //   2   static go() {
+    //   3    var x = C.helper()
+    //   4    return x
+    //   5   }
+    //   6   static helper() {
+    //   7    var y = 1        <- breakpoint
+    //   8    return y
+    //   9   }
+    //   10 }
+    //   11 C.go()
+    let src = "class C {\n static go() {\n  var x = C.helper()\n  return x\n }\n static helper() {\n  var y = 1\n  return y\n }\n}\nC.go()\n";
     let session = wren_web_debug::agent::debug_run(src, vec![], HashSet::from([7]));
 
     match session.wait_event() {
@@ -109,7 +133,11 @@ fn step_out_returns_to_caller() {
     session.step_out();
     match session.wait_event() {
         DebugStop::Stopped { line, .. } => {
-            assert_eq!(line, 4, "step_out should return to the caller's next line");
+            assert_eq!(
+                line, 4,
+                "step_out should return to the caller's next line (go()'s `return x`), \
+                 not helper()'s next line (`return y`)"
+            );
         }
         other => panic!("expected a step stop, got {other:?}"),
     }
