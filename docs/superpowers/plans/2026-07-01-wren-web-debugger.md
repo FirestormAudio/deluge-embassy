@@ -567,29 +567,35 @@ Expected: builds; `node smoke.mjs` prints "booted".
 
 - [ ] **Step 4: Commit** — `"wren-web-debug: wasm32-wasi build + boot smoke"`.
 
-### Task 3.2: SAB layout + parked command loop + `DebugController`
+> **Phase 3 revised to Option A (wasi-threads), confirmed feasible by the 3.2a spike** (`A-FEASIBLE`: threaded build+link works; `std::thread` spawn+join runs in a wasi-threads host). Model: the debug module runs in a Web Worker built for `wasm32-wasip1-threads`; inside it, `debug_run` spawns the VM on a **wasm thread** and `serve()` (Task 2.4) drives `DebugSession` — **the entire native debugger is reused unchanged**. A **`DebugTransport` impl over a `SharedArrayBuffer`** connects the worker to the main JS thread. Build recipe (from the spike): `RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals" cargo +nightly build -Zbuild-std=std,panic_abort --target wasm32-wasip1-threads --release`; wren-core `build.rs` already compiles the C VM with matching atomics (wren-rs `d36c2c4`). **Init wrinkle:** a plain cdylib doesn't init main-thread TLS on wasip1-threads (hangs before spawning) — give the module a `_start`/bin-style init entry (or explicit `_initialize`). **Pause** routes via wren-core's `Pause` atomic (a dedicated SAB slot the VM checks), NOT through `serve` (carry-forward from Task 2.4).
 
-**Files:** Create `tools/wren-web-debug/src/sab.rs`, `tools/wren-web/app/src/debug/sab.ts`, `controller.ts`; Test: `tools/wren-web/app/src/debug/sab.test.ts` (vitest) with a fake worker.
+### Task 3.2: Threaded debug wasm + SAB `DebugTransport` + `serve()` in a worker (Node-verifiable)
+
+**Files:** Create `tools/wren-web-debug/src/sab.rs` (SAB `DebugTransport` impl + `dbg_launch` entry), a threaded-build wrapper (`tools/wren-web-debug/build-threads.sh` or a cargo alias), `tools/wren-web-debug/threads-harness.mjs` (Node test host reusing the spike's thread-spawn shim); Modify `src/lib.rs`.
 
 **Interfaces:**
-- Produces (shared layout, both languages): a `SharedArrayBuffer` with an `Int32Array` control header — `[STATE, CMD_SEQ, RESP_SEQ, LEN]` at words 0–3 — followed by a byte region for JSON. `STATE`: 0=running, 1=parked. Main writes a request's JSON into bytes, bumps `CMD_SEQ`, `Atomics.notify(cmd)`. Worker (parked, in `Atomics.wait` on `CMD_SEQ`) computes, writes response JSON, bumps `RESP_SEQ`, `Atomics.notify(resp)`. Main `await`s via `Atomics.waitAsync(resp)`.
-- `DebugController` (TS): `setBreakpoints`, `launch`, `continue`, `stepOver/In/Out`, `stackTrace`, `scopes`, `variables`, `evaluate`, `on(event, cb)`.
+- SAB layout (shared, both languages): an `Int32Array` control header — `[CMD_SEQ, RESP_SEQ, EVENT_SEQ, PAUSE, CMD_LEN, EVENT_LEN]` — plus a command-JSON byte region (main→worker) and an event-JSON byte region (worker→main). Commands: main writes JSON + bumps `CMD_SEQ` + notifies; worker's `SabTransport::recv_cmd` blocks on `CMD_SEQ` (`core::arch::wasm32::memory_atomic_wait32`), reads JSON → `DebugCmd`. Events/responses: `SabTransport::send_event` writes JSON + bumps `EVENT_SEQ` + notifies; main `await`s via `Atomics.waitAsync(EVENT_SEQ)`. `PAUSE`: main sets it; the VM's `Pause` handle reads it.
+- `dbg_launch(entry_ptr,len, bp_ptr,len)`: builds the deluge VM, calls the `debug_run` machinery (spawns the VM wasm thread with the hook + breakpoints), then runs `serve(&session, &SabTransport::new(sab))`. Reuses Task 2.1-2.4 code unchanged.
 
-- [ ] **Step 1: Failing test** — `sab.test.ts`: instantiate the SAB, run a stub "worker" (a function on a real `Worker` or a mocked one) that echoes a `stackTrace` request; assert `DebugController.stackTrace(1)` resolves with the echoed payload via `Atomics.waitAsync`.
-- [ ] **Step 2: Verify fail** — `npx vitest run src/debug/sab.test.ts` (add vitest if absent) → FAIL.
-- [ ] **Step 3: Implement** `sab.ts` (encode/decode header + JSON), `controller.ts` (request → SAB → `Atomics.waitAsync` → response), and `src/sab.rs` (the parked loop `DebugTransport` impl: block on `Atomics.wait`-equivalent via `core::arch::wasm32::memory_atomic_wait32`, read CMD JSON, call `serve`'s handler, write RESP JSON, notify).
-- [ ] **Step 4: Verify PASS.**
-- [ ] **Step 5: Commit** — `"wren-web-debug: SAB protocol + DebugController"`.
-
-### Task 3.3: End-to-end worker debug run
-
-**Files:** Modify `worker.ts`, `controller.ts`; Test: Playwright `tools/wren-web/app/tests/debug-e2e.spec.ts`.
-
-- [ ] **Step 1: Failing Playwright test** — load the app, `evaluate` a script into the project, call `controller.launch` with a breakpoint at line 2 via a test hook on `window`, assert a `stopped` event at line 2 and that `stackTrace()` returns ≥1 frame.
+- [ ] **Step 1: Failing Node test** — `threads-harness.mjs`: build & load the threaded wasm with the spike's `worker_threads` thread-spawn shim + a `SharedArrayBuffer`, call `dbg_launch` with a breakpoint at line 2, then (acting as the main-thread controller) write a `StackTrace` command then `Continue` into the SAB and read events back; assert the event sequence `Stopped{line:2}` → `StackTrace{stackFrames…}` → `Terminated`. Mirrors the native `agent_transport` test but over SAB in wasm. RED first (no `dbg_launch`/`sab.rs`).
 - [ ] **Step 2: Verify fail.**
-- [ ] **Step 3: Wire** the worker: on `launch`, boot the debug wasm, register the SAB, run `dbg_launch` (which enters `serve` over the SAB transport); forward `output`/`stopped`/`terminated` as postMessage events while running, SAB while parked.
-- [ ] **Step 4: Verify PASS** (`npx playwright test debug-e2e`).
-- [ ] **Step 5: Commit** — `"wren-web-debug: end-to-end worker debug run"`.
+- [ ] **Step 3: Implement** `src/sab.rs` (the `SabTransport: DebugTransport` impl + SAB header/JSON codec via `memory_atomic_wait32`/`memory_atomic_notify`), `dbg_launch` (init entry + `debug_run` + `serve`), and the threaded-build wrapper. Give the module a proper init entry (`_start` or `_initialize`) per the wrinkle above. Copy the artifact + note the shared-memory requirement.
+- [ ] **Step 4: Verify PASS** (`node tools/wren-web-debug/threads-harness.mjs`). Confirm the single-threaded 3.1 build + native tests still pass.
+- [ ] **Step 5: Commit** — `"wren-web-debug: threaded wasm + SAB DebugTransport + serve"`.
+
+### Task 3.3: `DebugController` (TS) + browser worker + Playwright e2e
+
+**Files:** Create `tools/wren-web/app/src/debug/worker.ts` (threaded wasm loader + browser thread-spawn shim over sub-Workers + owns the SAB), `controller.ts` (main-thread API), `sab.ts` (shared header/JSON codec, TS side); Test: Playwright `tools/wren-web/app/tests/debug-e2e.spec.ts`.
+
+**Interfaces:**
+- `DebugController` (TS): `setBreakpoints`, `launch`, `continue`, `stepOver/In/Out`, `pause`, `stackTrace`, `scopes`, `variables`, `evaluate`, `on(event, cb)` — writes commands to the SAB, awaits events/responses via `Atomics.waitAsync`; `pause` sets the `PAUSE` slot.
+- `worker.ts`: instantiates the threaded wasm with the browser thread-spawn shim (each `wasi.thread-spawn` → a sub-`Worker` running `wasi_thread_start` over the shared `WebAssembly.Memory`); relies on the app's existing COOP/COEP for SAB. On `launch`, calls `dbg_launch`.
+
+- [ ] **Step 1: Failing Playwright test** — `debug-e2e.spec.ts`: load the app (cross-origin isolated), inject a script + a line-2 breakpoint via a `window` test hook, call `controller.launch`, assert a `stopped` event at line 2 and `stackTrace()` returns ≥1 frame. RED (no worker/controller).
+- [ ] **Step 2: Verify fail** (`npx playwright test debug-e2e`).
+- [ ] **Step 3: Implement** `worker.ts` (threaded loader + sub-Worker thread-spawn shim + SAB), `controller.ts` + `sab.ts` (TS codec matching `src/sab.rs`'s layout byte-for-byte). Reuse the sim's WASI-shim approach where applicable.
+- [ ] **Step 4: Verify PASS.** Also confirm no cross-origin-isolation regression to the existing sim/audio.
+- [ ] **Step 5: Commit** — `"wren-web: browser DebugController + threaded worker (e2e)"`.
 
 ---
 
