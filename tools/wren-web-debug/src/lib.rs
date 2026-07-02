@@ -11,7 +11,12 @@
 //! upstream C VMs in one binary would fail to link.
 
 mod register;
-mod slotapi_wrencore;
+/// Exposed (not just crate-private) so tests can fire deluge's generic event
+/// entries (e.g. `deluge_wren_core::midi_rx_impl`) from host context, wrapping
+/// a live [`wren_core::vm::CWrenVm`] in a [`slotapi_wrencore::CoreSlots`] —
+/// the same adapter foreign methods get, reused outside a foreign call to
+/// prove the callback round-trip.
+pub mod slotapi_wrencore;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

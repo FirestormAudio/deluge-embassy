@@ -5,24 +5,23 @@
 //! wrapping the `&dyn WrenSlotApi` that wren-core hands the foreign method, and
 //! forwards deluge's slot operations to the equivalent wren-core calls.
 //!
-//! ## Handle / call gap (IMPORTANT)
-//! wren-core's [`WrenSlotApi`] trait exposes only value slots — it has **no**
-//! persistent-handle or `wrenCall` surface (those C entry points exist in
-//! wren-core's FFI, but the trait doesn't expose them and the concrete
-//! `CSlotApi` passed to foreign methods is private, so we can't recover the raw
-//! `WrenVM*`). The deluge `SlotApi` needs `get_handle` / `set_handle` /
-//! `make_call_handle` / `call` / `release_handle` for the callback-style
-//! bindings (`Metro.start`, `Midi.on*`, `Pads/Buttons/Enc.on*`). Those methods
-//! are therefore **stubbed** here (null handle / no-op). Every value binding
-//! (`Output`, `Gate`, `Node`/`Osc`/`Env`/`Noise`/`Out`, `Led`, `Oled`, and the
-//! direct `Midi.noteOn/…` senders) maps cleanly and is fully functional; the
-//! callback-registration bindings will silently no-op until wren-core grows a
-//! handle API. See the task report for the escalation.
+//! ## Handle / call surface
+//! wren-core's [`WrenSlotApi`] trait now exposes a handle/call API
+//! (`make_call_handle` / `call` / `get_slot_handle` / `set_slot_handle` /
+//! `release_handle`, added alongside deluge Task 1.1b), mirroring `wren-sys`'s
+//! `Vm` handle surface. This lets the callback-style bindings (`Metro.start`,
+//! `Midi.on*`, `Pads/Buttons/Enc.on*`) work under wren-core too: a foreign
+//! method captures a `Fn` via [`SlotApi::get_handle`], and the host loop
+//! invokes it later via [`SlotApi::call`] — see `WrenSlotApi::call`'s doc for
+//! the reentrancy constraint (host/top-level context only, never from inside a
+//! foreign method).
 
 use core::cell::RefCell;
+use core::ffi::c_void;
 
 use deluge_wren_core::{Handle, SlotApi, WrenForeign as DwcForeign, WrenType as DwcType};
 use wren_core::foreign::{WrenSlotApi, WrenType as CoreType};
+use wren_core::vm::ffi;
 
 /// A deluge [`SlotApi`] backed by a wren-core [`WrenSlotApi`] for the duration
 /// of a single foreign-method call.
@@ -128,16 +127,27 @@ impl SlotApi for CoreSlots {
         }
     }
 
-    // ── Handle / call surface: unsupported under wren-core (see module docs) ──
-    fn get_handle(&self, _slot: i32) -> Handle {
-        Handle(core::ptr::null_mut())
+    // ── Handle / call surface: delegate to wren-core's handle API ──────────
+    fn get_handle(&self, slot: i32) -> Handle {
+        Handle(self.api.get_slot_handle(slot as usize) as *mut c_void)
     }
-    fn set_handle(&self, _slot: i32, _h: Handle) {}
-    fn make_call_handle(&self, _signature: &str) -> Handle {
-        Handle(core::ptr::null_mut())
+
+    fn set_handle(&self, slot: i32, h: Handle) {
+        self.api.set_slot_handle(slot as usize, h.0 as *mut ffi::WrenHandle);
     }
-    fn call(&self, _method: Handle) -> i32 {
-        0
+
+    fn make_call_handle(&self, signature: &str) -> Handle {
+        Handle(self.api.make_call_handle(signature) as *mut c_void)
     }
-    fn release_handle(&self, _h: Handle) {}
+
+    fn call(&self, method: Handle) -> i32 {
+        match self.api.call(method.0 as *mut ffi::WrenHandle) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
+    }
+
+    fn release_handle(&self, h: Handle) {
+        self.api.release_handle(h.0 as *mut ffi::WrenHandle);
+    }
 }

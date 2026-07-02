@@ -107,7 +107,10 @@ pub fn tick(vm: Vm, now_ms: u64, dt_s: f32) {
     tick_impl(&vm, now_ms, dt_s);
 }
 
-fn tick_impl<S: SlotApi>(vm: &S, now_ms: u64, dt_s: f32) {
+/// Generic body of [`tick`]: backend-agnostic over any [`SlotApi`], so a debug
+/// core (e.g. `wren-web-debug`'s wren-core backend) can drive the same
+/// per-iteration tick outside the `wren-sys-backend` feature.
+pub fn tick_impl<S: SlotApi>(vm: &S, now_ms: u64, dt_s: f32) {
     render_cv_gate(dt_s);
 
     // Fire due metros *without* holding the state borrow across the call.
@@ -508,7 +511,11 @@ pub fn midi_rx(vm: Vm, status: u8, d1: u8, d2: u8) {
     midi_rx_impl(&vm, status, d1, d2);
 }
 
-fn midi_rx_impl<S: SlotApi>(vm: &S, status: u8, d1: u8, d2: u8) {
+/// Generic body of [`midi_rx`]: backend-agnostic over any [`SlotApi`], so a
+/// debug core can dispatch synthetic MIDI events to the registered wren
+/// callbacks from host (top-level) context, outside the `wren-sys-backend`
+/// feature.
+pub fn midi_rx_impl<S: SlotApi>(vm: &S, status: u8, d1: u8, d2: u8) {
     let ch = (status & 0x0F) as f64 + 1.0;
     let (cb, a, b, c) = match status & 0xF0 {
         0x90 if d2 > 0 => (midi().on_note_on, ch, d1 as f64, d2 as f64),
@@ -619,7 +626,8 @@ pub fn input_dispatch(vm: Vm, kind: u8, a: u8, b: u8) {
     input_dispatch_impl(&vm, kind, a, b);
 }
 
-fn input_dispatch_impl<S: SlotApi>(vm: &S, kind: u8, a: u8, b: u8) {
+/// Generic body of [`input_dispatch`]: see [`tick_impl`]/[`midi_rx_impl`] docs.
+pub fn input_dispatch_impl<S: SlotApi>(vm: &S, kind: u8, a: u8, b: u8) {
     match kind {
         0 | 1 => {
             let cb = if kind == 0 { ui().on_pad_press } else { ui().on_pad_release };
@@ -639,7 +647,8 @@ pub fn enc_turn(vm: Vm, index: u8, delta: i8) {
     enc_turn_impl(&vm, index, delta);
 }
 
-fn enc_turn_impl<S: SlotApi>(vm: &S, index: u8, delta: i8) {
+/// Generic body of [`enc_turn`]: see [`tick_impl`]/[`midi_rx_impl`] docs.
+pub fn enc_turn_impl<S: SlotApi>(vm: &S, index: u8, delta: i8) {
     ui_call2(vm, ui().on_enc, index as f64, delta as f64);
 }
 
