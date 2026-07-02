@@ -1,0 +1,21 @@
+[package]
+name = "wren-web-debug"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Deluge Wren debugger core: runs the shared deluge foreign bindings under wren-core's Rust-compiler VM (named locals for source-level debugging)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wren-core = { path = "../../../wren-rs/crates/wren-core", features = ["debug"] }
+# default-features = false is MANDATORY: it disables `wren-sys-backend` so this
+# crate links ONLY wren-core's C VM (no double-VM). We use the backend-agnostic
+# SlotApi trait + generic binding bodies, never deluge-wren-core's Vm surface or
+# its wren-sys-based `test_support`.
+deluge-wren-core = { path = "../../crates/deluge-wren-core", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true

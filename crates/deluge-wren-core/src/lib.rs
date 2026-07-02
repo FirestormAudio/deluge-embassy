@@ -26,7 +26,7 @@ mod slotapi_wrensys;
 #[cfg(all(feature = "wren-sys-backend", any(test, feature = "test-support")))]
 pub mod test_support;
 
-pub use bindings::reset;
+pub use bindings::{prelude_str, register_foreign, reset};
 #[cfg(feature = "wren-sys-backend")]
 pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, tick};
 pub use engine::{

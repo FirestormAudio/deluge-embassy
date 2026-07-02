@@ -718,9 +718,13 @@ unsafe extern "C" fn led_off(raw: *mut WrenVM) {
 }
 
 // OLED
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn oled_clear(_raw: *mut WrenVM) {
+pub(crate) fn oled_clear_impl<S: SlotApi>(_vm: &S) {
     host().oled_clear();
+}
+#[cfg(feature = "wren-sys-backend")]
+unsafe extern "C" fn oled_clear(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    oled_clear_impl(&vm);
 }
 
 pub(crate) fn oled_text_impl<S: SlotApi>(vm: &S) {
@@ -747,9 +751,13 @@ unsafe extern "C" fn oled_pixel(raw: *mut WrenVM) {
     oled_pixel_impl(&vm);
 }
 
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn oled_show(_raw: *mut WrenVM) {
+pub(crate) fn oled_show_impl<S: SlotApi>(_vm: &S) {
     host().oled_show();
+}
+#[cfg(feature = "wren-sys-backend")]
+unsafe extern "C" fn oled_show(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    oled_show_impl(&vm);
 }
 
 // ── Audio: DSP node graph (`Node` foreign class) ─────────────────────────────
@@ -862,9 +870,13 @@ unsafe extern "C" fn node_patch(raw: *mut WrenVM) {
     node_patch_impl(&vm);
 }
 
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_reset(_raw: *mut WrenVM) {
+pub(crate) fn node_reset_impl<S: SlotApi>(_vm: &S) {
     audio::reset();
+}
+#[cfg(feature = "wren-sys-backend")]
+unsafe extern "C" fn node_reset(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_reset_impl(&vm);
 }
 
 // Instance methods (self = slot 0).
@@ -905,6 +917,72 @@ pub(crate) fn node_trigger_impl<S: SlotApi>(vm: &S) {
 unsafe extern "C" fn node_trigger(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_trigger_impl(&vm);
+}
+
+// ── Backend-agnostic binding enumeration ─────────────────────────────────────
+
+/// The single source of truth for *which* generic binding bodies exist and how
+/// they map to wren `(module, class, is_static, signature)`. Backend-agnostic:
+/// it hands each entry to caller-provided registrars, so any [`SlotApi`] backend
+/// can wire the same surface into its own foreign registry without re-listing
+/// the ~37 signatures. (The `wren-sys` path keeps its own `METHODS`/`CLASSES`
+/// tables below because those bind C-ABI `extern "C"` wrappers — a structurally
+/// different function type — but they enumerate the same classes/signatures.)
+///
+/// - `method(module, class, is_static, signature, body)` registers one method.
+/// - `class(module, class, allocate)` registers one foreign-class allocator.
+pub fn register_foreign<S: SlotApi>(
+    mut method: impl FnMut(&'static str, &'static str, bool, &'static str, fn(&S)),
+    mut class: impl FnMut(&'static str, &'static str, fn(&S)),
+) {
+    // Foreign classes (allocators).
+    class("main", "Output", output_alloc_impl::<S>);
+    class("main", "Gate", gate_alloc_impl::<S>);
+    class("main", "Metro", metro_alloc_impl::<S>);
+
+    // Output (CV).
+    method("main", "Output", false, "volts", output_volts_get_impl::<S>);
+    method("main", "Output", false, "volts=(_)", output_volts_set_impl::<S>);
+    method("main", "Output", false, "slew=(_)", output_slew_set_impl::<S>);
+    // Gate.
+    method("main", "Gate", false, "on=(_)", gate_on_set_impl::<S>);
+    // Metro.
+    method("main", "Metro", false, "start(_,_)", metro_start_impl::<S>);
+    method("main", "Metro", false, "stop()", metro_stop_impl::<S>);
+    method("main", "Metro", false, "time=(_)", metro_time_set_impl::<S>);
+    // Midi (static).
+    method("main", "Midi", true, "noteOn(_,_,_)", midi_note_on_impl::<S>);
+    method("main", "Midi", true, "noteOff(_,_,_)", midi_note_off_impl::<S>);
+    method("main", "Midi", true, "cc(_,_,_)", midi_cc_impl::<S>);
+    method("main", "Midi", true, "send(_,_,_)", midi_send_impl::<S>);
+    method("main", "Midi", true, "onNoteOn=(_)", midi_set_on_note_on_impl::<S>);
+    method("main", "Midi", true, "onNoteOff=(_)", midi_set_on_note_off_impl::<S>);
+    method("main", "Midi", true, "onCC=(_)", midi_set_on_cc_impl::<S>);
+    // Pads / Buttons / Enc (static input callbacks).
+    method("main", "Pads", true, "onPress=(_)", pads_on_press_impl::<S>);
+    method("main", "Pads", true, "onRelease=(_)", pads_on_release_impl::<S>);
+    method("main", "Buttons", true, "onPress=(_)", buttons_on_press_impl::<S>);
+    method("main", "Buttons", true, "onRelease=(_)", buttons_on_release_impl::<S>);
+    method("main", "Enc", true, "onTurn=(_)", enc_on_turn_impl::<S>);
+    // Led / Oled (static output).
+    method("main", "Led", true, "on(_)", led_on_impl::<S>);
+    method("main", "Led", true, "off(_)", led_off_impl::<S>);
+    method("main", "Oled", true, "clear()", oled_clear_impl::<S>);
+    method("main", "Oled", true, "text(_,_,_)", oled_text_impl::<S>);
+    method("main", "Oled", true, "pixel(_,_,_)", oled_pixel_impl::<S>);
+    method("main", "Oled", true, "show()", oled_show_impl::<S>);
+    // Audio: Node factories (static) + instance methods.
+    method("main", "Node", true, "src_(_,_)", node_src_impl::<S>);
+    method("main", "Node", true, "env_(_,_)", node_env_impl::<S>);
+    method("main", "Node", true, "noise_()", node_noise_impl::<S>);
+    method("main", "Node", true, "binop_(_,_,_)", node_binop_impl::<S>);
+    method("main", "Node", true, "lpf_(_,_)", node_lpf_impl::<S>);
+    method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
+    method("main", "Node", true, "reset_()", node_reset_impl::<S>);
+    method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
+    method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
+    method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
+    method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
 }
 
 // ── Registry tables ──────────────────────────────────────────────────────────
@@ -985,9 +1063,20 @@ const fn static_method(
 
 // ── Wren prelude (compiled at boot, before user scripts) ─────────────────────
 
-/// The prelude (declares the foreign classes + `output[]`/`gate[]`), embedded
-/// from `wren/prelude.wren` with a trailing NUL appended at compile time so it
-/// can be handed to the C VM as a C string.
+/// The prelude source (declares the foreign classes + `output[]`/`gate[]`),
+/// embedded from `wren/prelude.wren`. Backend-agnostic single source: the
+/// `wren-sys` path appends a NUL for the C string API ([`prelude_ptr`]); the
+/// `wren-core` path consumes it as a Rust `&str` ([`prelude_str`]).
+const PRELUDE_SRC: &str = include_str!("../wren/prelude.wren");
+
+/// The prelude source as a Rust `&str` (no trailing NUL), for backends that
+/// compile from a Rust string (e.g. `wren-core`).
+pub fn prelude_str() -> &'static str {
+    PRELUDE_SRC
+}
+
+/// The prelude with a trailing NUL appended at compile time so it can be handed
+/// to the C VM as a C string.
 #[cfg(feature = "wren-sys-backend")]
 const PRELUDE: &str = concat!(include_str!("../wren/prelude.wren"), "\0");
 
