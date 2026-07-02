@@ -28,6 +28,12 @@ mod register;
 /// the same adapter foreign methods get, reused outside a foreign call to
 /// prove the callback round-trip.
 pub mod slotapi_wrencore;
+/// The transport seam (Task 2.4): a transport-agnostic driver loop
+/// (`serve`) that pumps a [`agent::debug_run`]-created
+/// [`wren_core::vm::DebugSession`] over any [`transport::DebugTransport`] —
+/// an in-process `mpsc` pair for native tests today, a `SharedArrayBuffer`
+/// protocol for the Phase 3 browser worker.
+pub mod transport;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
