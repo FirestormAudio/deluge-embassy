@@ -97,12 +97,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "allocator-api2"
-version = "0.2.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
-
-[[package]]
 name = "alsa"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2455,8 +2449,6 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.2.0",
 ]
 
@@ -5296,27 +5288,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
-name = "strum"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
-dependencies = [
- "strum_macros",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
 name = "svg_fmt"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6826,18 +6797,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wren-core"
-version = "0.4.0"
-dependencies = [
- "cc",
- "hashbrown 0.16.1",
- "libm",
- "log",
- "strum",
- "wren-syntax",
-]
-
-[[package]]
 name = "wren-firmware"
 version = "0.1.0"
 dependencies = [
@@ -6854,26 +6813,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "wren-syntax"
-version = "0.4.0"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "wren-sys"
 version = "0.1.0"
 dependencies = [
  "cc",
  "deluge-alloc",
-]
-
-[[package]]
-name = "wren-web-debug"
-version = "0.1.0"
-dependencies = [
- "deluge-wren-core",
- "wren-core",
 ]
 
 [[package]]

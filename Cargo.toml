@@ -36,7 +36,6 @@ members = [
   "examples/usb_log",
   "wren-sys",
   "wren-firmware",
-  "tools/wren-web-debug",
 ]
 # Host-side tooling: built for the host triple, not the embedded armv7a target,
 # so it must not be a member of this no_std cross-compiled workspace.
@@ -45,10 +44,13 @@ members = [
 # so it must never build for the device — keep it out of the workspace too.
 # `tools/wren-web` is the wasm core for the web simulator: a cdylib built for
 # wasm32-unknown-unknown (not the device triple), so it is excluded too.
+# `tools/wren-web-debug` is the host-side, std, wren-core-based debug harness:
+# also built for the host triple, not the device triple, so it is excluded too.
 exclude = [
   "tools/cargo-deluge",
   "tools/deluge-simulator",
   "tools/wren-web",
+  "tools/wren-web-debug",
   "tools/wren-analyzer-wasm",
   "crates/deluge-sim-link",
 ]

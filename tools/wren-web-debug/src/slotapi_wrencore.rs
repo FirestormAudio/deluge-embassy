@@ -31,6 +31,9 @@ pub struct CoreSlots {
     /// Owns strings returned by [`SlotApi::get_str`] so we can hand out a
     /// borrowed `&str`. Fresh per call; entries are never removed, so the boxed
     /// allocations stay valid for the life of this `CoreSlots`.
+    /// Bounded per foreign-method call (a new `CoreSlots`/`strings` is created
+    /// at each call boundary and dropped at its end), NOT per-VM — this is not
+    /// a latent unbounded-growth leak.
     strings: RefCell<Vec<Box<str>>>,
 }
 
