@@ -10,6 +10,11 @@
 //! it links ONLY wren-core's copy of the C VM — never `wren-sys`'s — since two
 //! upstream C VMs in one binary would fail to link.
 
+/// The harness (Task 1.3): runs a project through the same VM/prelude
+/// machinery as [`build_vm`]/[`run_project_capture`], but with a *recording*
+/// [`Host`] installed instead of [`NoopHost`], so it can expose CV/gate state
+/// after the run.
+pub mod harness;
 mod register;
 /// Exposed (not just crate-private) so tests can fire deluge's generic event
 /// entries (e.g. `deluge_wren_core::midi_rx_impl`) from host context, wrapping
@@ -77,19 +82,42 @@ fn foreign_registries() -> (ForeignMethodRegistry, ForeignClassRegistry) {
     (mreg, creg)
 }
 
+/// A wren-core module loader: resolves an `import`ed module name to its
+/// source, or `None` if unknown.
+type LoadFn = Box<dyn Fn(&str) -> Option<String>>;
+
+/// Build a wren-core VM with every deluge foreign binding registered and the
+/// deluge prelude compiled into `main`, *without* touching the active
+/// [`Host`] — callers must call [`set_host`]/[`deluge_wren_core::reset`]
+/// first. Shared by [`build_vm`], [`run_project_capture`], and
+/// [`harness::Harness`] (which installs a recording host instead of
+/// [`NoopHost`]), so the registry/prelude setup lives in exactly one place.
+fn boot_vm(write_fn: impl Fn(&str) + 'static, load_fn: Option<LoadFn>) -> CWrenVm {
+    let (mreg, creg) = foreign_registries();
+
+    let mut vm = CWrenVm::with_foreign(write_fn, None, load_fn, mreg, creg);
+    vm.interpret("main", deluge_wren_core::prelude_str())
+        .expect("deluge prelude failed to compile/run under wren-core");
+    vm
+}
+
 /// Build a wren-core VM with every deluge foreign binding registered and the
 /// deluge prelude compiled into the `main` module.
 ///
 /// `write_fn` receives each chunk of `System.print` output.
 pub fn build_vm(write_fn: impl Fn(&str) + 'static) -> CWrenVm {
     install_noop_host();
+    boot_vm(write_fn, None)
+}
 
-    let (mreg, creg) = foreign_registries();
-
-    let mut vm = CWrenVm::with_foreign(write_fn, None, None, mreg, creg);
-    vm.interpret("main", deluge_wren_core::prelude_str())
-        .expect("deluge prelude failed to compile/run under wren-core");
-    vm
+/// Prepend [`PRELUDE_IMPORT`] to every project module's source, keyed by the
+/// module name used in `import` statements. Shared by [`run_project_capture`]
+/// and [`harness::Harness::run_entry`].
+fn prelude_import_modules(modules: Vec<(String, String)>) -> HashMap<String, String> {
+    modules
+        .into_iter()
+        .map(|(name, src)| (name, format!("{PRELUDE_IMPORT}{src}")))
+        .collect()
 }
 
 /// Run a multi-file project under wren-core and capture its `System.print`
@@ -110,21 +138,14 @@ pub fn build_vm(write_fn: impl Fn(&str) + 'static) -> CWrenVm {
 pub fn run_project_capture(entry: &str, modules: Vec<(String, String)>) -> String {
     install_noop_host();
 
-    let (mreg, creg) = foreign_registries();
-
     let out = Rc::new(RefCell::new(String::new()));
     let out_write = out.clone();
     let write_fn = move |s: &str| out_write.borrow_mut().push_str(s);
 
-    let module_map: HashMap<String, String> = modules
-        .into_iter()
-        .map(|(name, src)| (name, format!("{PRELUDE_IMPORT}{src}")))
-        .collect();
+    let module_map = prelude_import_modules(modules);
     let load_fn = move |name: &str| module_map.get(name).cloned();
 
-    let mut vm = CWrenVm::with_foreign(write_fn, None, Some(Box::new(load_fn)), mreg, creg);
-    vm.interpret("main", deluge_wren_core::prelude_str())
-        .expect("deluge prelude failed to compile/run under wren-core");
+    let mut vm = boot_vm(write_fn, Some(Box::new(load_fn)));
     if let Err(e) = vm.interpret("main", entry) {
         out.borrow_mut().push_str(&format!("\n[error] {e}"));
     }
