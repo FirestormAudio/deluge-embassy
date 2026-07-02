@@ -13,8 +13,21 @@
 mod register;
 mod slotapi_wrencore;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use deluge_wren_core::{Cmd, Host, set_host};
+use wren_core::foreign::{ForeignClassRegistry, ForeignMethodRegistry};
 use wren_core::vm::CWrenVm;
+
+/// The Deluge prelude's public names, auto-imported into every non-entry
+/// module by [`run_project_capture`]. Wren modules are isolated, so a module
+/// pulled in via `import` can't see `main`'s top-level names (the prelude
+/// lives in `main`, see [`build_vm`]) unless it explicitly imports them.
+/// Mirrors `PRELUDE_IMPORT` in `tools/wren-web/app/src/sim.ts`, which does
+/// the same thing for the sim's `runProject`; keep the two lists in sync.
+const PRELUDE_IMPORT: &str = "import \"main\" for Output, Gate, Metro, Midi, Pads, Buttons, Enc, Led, Oled, Node, Osc, Env, Noise, Out, output, gate\n";
 
 /// A no-op [`Host`]: the deluge binding bodies reach the outside world (audio
 /// graph, CV/gate jacks, MIDI, LEDs, OLED) through this trait, so one must be
@@ -48,6 +61,17 @@ fn install_noop_host() {
     deluge_wren_core::reset();
 }
 
+/// Build the foreign registries every wren-core VM in this crate needs: every
+/// deluge binding (`Output`, `Node`/`Osc`/…, `Led`, `Oled`, …), enumerated
+/// once via [`register::register_all`] so `build_vm` and
+/// [`run_project_capture`] never duplicate the registration.
+fn foreign_registries() -> (ForeignMethodRegistry, ForeignClassRegistry) {
+    let mut mreg = ForeignMethodRegistry::new();
+    let mut creg = ForeignClassRegistry::new();
+    register::register_all(&mut mreg, &mut creg);
+    (mreg, creg)
+}
+
 /// Build a wren-core VM with every deluge foreign binding registered and the
 /// deluge prelude compiled into the `main` module.
 ///
@@ -55,12 +79,56 @@ fn install_noop_host() {
 pub fn build_vm(write_fn: impl Fn(&str) + 'static) -> CWrenVm {
     install_noop_host();
 
-    let mut mreg = wren_core::foreign::ForeignMethodRegistry::new();
-    let mut creg = wren_core::foreign::ForeignClassRegistry::new();
-    register::register_all(&mut mreg, &mut creg);
+    let (mreg, creg) = foreign_registries();
 
     let mut vm = CWrenVm::with_foreign(write_fn, None, None, mreg, creg);
     vm.interpret("main", deluge_wren_core::prelude_str())
         .expect("deluge prelude failed to compile/run under wren-core");
     vm
+}
+
+/// Run a multi-file project under wren-core and capture its `System.print`
+/// output as a `String`.
+///
+/// `entry` is the source of the `main` module (which gets the deluge prelude
+/// compiled ahead of it, exactly like [`build_vm`]). `modules` are the
+/// project's other files, keyed by the module name used in `import`
+/// statements (e.g. `import "lib/voice" for Voice"` resolves against a
+/// `("lib/voice", ...)` entry).
+///
+/// Wren modules are isolated from one another, and the deluge prelude
+/// (`Osc`, `Output`, …) is compiled into `main` — so an imported module can't
+/// see it unless it imports it explicitly. Mirroring the sim's `runProject`
+/// (`tools/wren-web/app/src/sim.ts`), every module source is auto-prepended
+/// with [`PRELUDE_IMPORT`] before being handed to the VM, so project files
+/// can use the prelude API without writing that import by hand.
+pub fn run_project_capture(entry: &str, modules: Vec<(String, String)>) -> String {
+    install_noop_host();
+
+    let (mreg, creg) = foreign_registries();
+
+    let out = Rc::new(RefCell::new(String::new()));
+    let out_write = out.clone();
+    let write_fn = move |s: &str| out_write.borrow_mut().push_str(s);
+
+    let module_map: HashMap<String, String> = modules
+        .into_iter()
+        .map(|(name, src)| (name, format!("{PRELUDE_IMPORT}{src}")))
+        .collect();
+    let load_fn = move |name: &str| module_map.get(name).cloned();
+
+    let mut vm = CWrenVm::with_foreign(write_fn, None, Some(Box::new(load_fn)), mreg, creg);
+    vm.interpret("main", deluge_wren_core::prelude_str())
+        .expect("deluge prelude failed to compile/run under wren-core");
+    if let Err(e) = vm.interpret("main", entry) {
+        out.borrow_mut().push_str(&format!("\n[error] {e}"));
+    }
+    // Drop the VM (and the `write_fn` closure it owns, which holds the other
+    // `Rc` clone) before unwrapping, so this doesn't have to fall back to a
+    // clone of the captured output.
+    drop(vm);
+
+    Rc::try_unwrap(out)
+        .map(RefCell::into_inner)
+        .unwrap_or_else(|out| out.borrow().clone())
 }
