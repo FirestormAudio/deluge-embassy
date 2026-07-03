@@ -11,11 +11,59 @@
 //! module docs on `deluge_wren_core::test_support`), so a run's CV/gate
 //! writes are observable afterward via [`Harness::cv`]/[`Harness::gate`].
 
+use std::collections::HashSet;
+
 use deluge_wren_core::{CV_CHANNELS, Cmd, GATE_CHANNELS, Host, set_host};
 use wren_core::foreign::WrenSlotApi;
-use wren_core::vm::CWrenVm;
+use wren_core::vm::{CWrenVm, DebugStop};
 
+use crate::drive::DriveEvent;
 use crate::slotapi_wrencore::CoreSlots;
+
+/// Harness Layer 2 (Task 5.1): run `src` under the debug agent breaking at
+/// `bp_line`, drive a single MIDI note-on (`note`/`vel`) into the VM with the
+/// debugger hook still attached, and return the source line the VM stopped at
+/// — or `-1` if it terminated without stopping.
+///
+/// This is the payoff test-driver for driven callbacks: `src` registers a
+/// `Midi.onNoteOn` handler at top level, and the note-on fires that handler
+/// via [`deluge_wren_core::midi_rx_impl`] *after* `interpret` returns, so a
+/// breakpoint inside the handler parks the VM thread. After capturing the stop
+/// line, this drains the session to termination (resume until
+/// [`DebugStop::Terminated`]) so the parked VM thread exits cleanly before the
+/// next VM boots — the same discipline `tests/common::drive_to_end` uses.
+pub fn debug_drive_note(src: &str, bp_line: i32, note: u8, vel: u8) -> i32 {
+    let session = crate::agent::debug_run_driven(
+        src,
+        Vec::new(),
+        HashSet::from([bp_line]),
+        vec![DriveEvent::NoteOn { note, vel }],
+    );
+
+    let line = loop {
+        match session.wait_event() {
+            DebugStop::Stopped { line, .. } => break line,
+            DebugStop::Terminated => break -1,
+            // Async diagnostic output — keep waiting for the real stop.
+            DebugStop::Output { .. } => continue,
+        }
+    };
+
+    if line != -1 {
+        // Resume and pump until the VM thread actually exits, so the parked
+        // thread doesn't outlive this call and race a later VM boot.
+        session.resume();
+        loop {
+            match session.wait_event() {
+                DebugStop::Terminated => break,
+                DebugStop::Stopped { .. } => session.resume(),
+                DebugStop::Output { .. } => {}
+            }
+        }
+    }
+
+    line
+}
 
 /// Records every CV/gate write in memory; every other [`Host`] effect (MIDI,
 /// LEDs, OLED, audio-graph commands) is a sink. Layer 1 only needs to observe

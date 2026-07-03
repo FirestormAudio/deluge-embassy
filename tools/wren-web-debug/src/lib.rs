@@ -25,6 +25,11 @@
 ///
 /// [`DebugSession`]: wren_core::vm::DebugSession
 pub mod agent;
+/// Task 5.1 (harness Layer 2): the [`drive::DriveEvent`] type + `dispatch`
+/// for replaying host events (MIDI/tick/encoder) into a live debug VM so a
+/// breakpoint inside a fired callback parks the VM thread. Threaded through
+/// [`agent::debug_run_driven`] and [`harness::debug_drive_note`].
+pub mod drive;
 /// The harness (Task 1.3): runs a project through the same VM/prelude
 /// machinery as [`build_vm`]/[`run_project_capture`], but with a *recording*
 /// [`Host`] installed instead of [`NoopHost`], so it can expose CV/gate state

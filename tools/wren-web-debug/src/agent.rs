@@ -25,7 +25,11 @@
 
 use std::collections::HashSet;
 
+use wren_core::foreign::WrenSlotApi;
 use wren_core::vm::{Breakpoints, DebugSession};
+
+use crate::drive::DriveEvent;
+use crate::slotapi_wrencore::CoreSlots;
 
 /// Spawn a deluge VM on its own thread with a debugger attached, breaking on
 /// `breakpoints` (source lines in the `main` module — the entry's module
@@ -35,8 +39,32 @@ use wren_core::vm::{Breakpoints, DebugSession};
 /// `entry` as `main` (with `modules` importable exactly like
 /// [`crate::run_project_capture`]).
 ///
-/// See the module docs for the single-VM-per-process caveat.
+/// Thin wrapper over [`debug_run_driven`] with no driven events — every
+/// existing caller keeps the top-level-only behaviour. See the module docs
+/// for the single-VM-per-process caveat.
 pub fn debug_run(entry: &str, modules: Vec<(String, String)>, breakpoints: HashSet<i32>) -> DebugSession {
+    debug_run_driven(entry, modules, breakpoints, Vec::new())
+}
+
+/// Like [`debug_run`], but after `interpret` returns (and BEFORE the debugger
+/// is detached) the VM thread replays `drive` — a list of host events (MIDI
+/// note/CC, ticks, encoder turns) — against the same VM via
+/// [`crate::drive::dispatch`]. The hook stays attached across the drive, so a
+/// breakpoint *inside* a fired callback (e.g. a `Midi.onNoteOn` handler)
+/// suspends the fiber mid-`vm.call` and parks the VM thread exactly like a
+/// top-level breakpoint. This is Task 5.1's payoff — the first breakpoint that
+/// fires in host-driven callback code rather than in the interpreted entry.
+///
+/// The driven `*_impl` calls invoke `vm.call` from the VM thread's top level
+/// (numFrames==0 after `interpret` returns), satisfying `wrenCall`'s
+/// reentrancy constraint — the same context the sim/harness event loop drives
+/// from. Passing an empty `drive` reproduces [`debug_run`] exactly.
+pub fn debug_run_driven(
+    entry: &str,
+    modules: Vec<(String, String)>,
+    breakpoints: HashSet<i32>,
+    drive: Vec<DriveEvent>,
+) -> DebugSession {
     let (session, hook) = DebugSession::new_with_breakpoints(Breakpoints::new(breakpoints));
 
     let entry = entry.to_string();
@@ -56,6 +84,19 @@ pub fn debug_run(entry: &str, modules: Vec<(String, String)>, breakpoints: HashS
         // interpret the caller's entry — this is the call the hook parks.
         vm.attach_debugger(hook);
         let _ = vm.interpret("main", &entry);
+
+        // Drive host events with the hook STILL attached (before detach), so a
+        // breakpoint inside a fired handler parks this VM thread just like a
+        // top-level one. `CoreSlots` is the same adapter foreign methods get,
+        // reused here from host/top-level context (see `tests/callbacks.rs`).
+        if !drive.is_empty() {
+            let api: &dyn WrenSlotApi = &vm;
+            let slots = CoreSlots::new(api);
+            for ev in &drive {
+                crate::drive::dispatch(&slots, ev);
+            }
+        }
+
         vm.detach_debugger();
     });
 
