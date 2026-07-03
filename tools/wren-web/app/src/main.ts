@@ -10,6 +10,7 @@ import { ProjectStore, loadInitialProject, projectFromExample } from "./project"
 import { Tabs } from "./tabs";
 import { FileBrowser } from "./filebrowser";
 import { setupBreakpointGutter } from "./debug/gutter";
+import { setupResizers } from "./resize";
 import { DebugSession } from "./debug/session";
 import { DebugToolbar } from "./debug/ui";
 import { DebugSidebar } from "./debug/panels";
@@ -46,6 +47,7 @@ async function boot() {
   const gutter = setupBreakpointGutter(monaco, editor, tabs, store);
   tabs.render();
   browser.render();
+  setupResizers(); // drag-resizable left panel + console (persisted)
 
   // Examples menu loads a whole project.
   const select = $<HTMLSelectElement>("#examples");

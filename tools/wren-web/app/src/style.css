@@ -127,14 +127,30 @@ select {
 
 /* ── Bench: files | editor | instrument pane ─────────────────────────────── */
 .bench {
+  /* Left width + console height are drag-resizable (see src/resize.ts); Monaco
+     reflows via automaticLayout. */
+  --left-w: 210px;
+  --console-h: 156px;
   display: grid;
-  grid-template-columns: 210px 1fr 600px;
+  grid-template-columns: var(--left-w) 1fr 600px;
   min-height: 0;
 }
 .file-browser, .editor-pane, .instrument-pane {
   display: flex; flex-direction: column; min-height: 0; min-width: 0;
   background: var(--panel);
+  position: relative; /* anchor the resize handles */
 }
+
+/* ── Resize handles (splitters) ──────────────────────────────────────────────
+   A thin hit-strip on a pane border; phosphor-tinted while hovered/dragged. */
+.resizer { position: absolute; z-index: 6; background: transparent; transition: background 0.1s; }
+.resizer:hover, .resizer.dragging { background: #8fe9ff40; }
+.resizer:focus-visible { background: #8fe9ff66; outline: none; }
+.resizer-x { top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; }
+.resizer-y { top: -3px; left: 0; width: 100%; height: 6px; cursor: row-resize; }
+/* While dragging, lock the cursor + kill selection across the whole page. */
+body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-select: none; }
+body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-select: none; }
 .instrument-pane {
   border-left: 1px solid var(--hairline);
   background: linear-gradient(180deg, var(--panel) 0%, var(--chassis) 100%);
@@ -509,7 +525,7 @@ select {
   flex: none;
   border-top: 1px solid var(--hairline);
   background: var(--chassis-deep);
-  display: flex; flex-direction: column; height: 156px;
+  display: flex; flex-direction: column; height: var(--console-h);
 }
 .console {
   flex: 1; overflow-y: auto; padding: 8px 14px;
@@ -589,6 +605,7 @@ select {
   .topbar { height: auto; flex-wrap: wrap; gap: 8px; padding: 8px 14px; }
   .tagline { display: none; }
   .console-pane { height: 120px; }
+  .resizer { display: none; } /* single-column layout: nothing to resize */
 }
 
 @media (prefers-reduced-motion: reduce) {
