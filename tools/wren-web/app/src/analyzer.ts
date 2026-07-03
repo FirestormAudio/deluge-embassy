@@ -25,11 +25,39 @@ export class Analyzer {
           this.pending.delete(m.id);
           resolve(m.result);
         }
+      } else if (m.type === "initError") {
+        // The wasm never came up — fail loudly and drain any waiters (so the
+        // language providers return null instead of hanging).
+        console.error("[analyzer] wasm init failed:", m.error);
+        this.failPending();
       }
     };
+    // A worker load/runtime error (or a message that couldn't be cloned) also
+    // leaves queries unanswered — surface it and drain the waiters.
+    this.worker.onerror = (e) => {
+      console.error("[analyzer] worker error:", e.message, `${e.filename}:${e.lineno}`);
+      this.failPending();
+    };
+    this.worker.onmessageerror = () => {
+      console.error("[analyzer] worker message deserialization error");
+      this.failPending();
+    };
     fetch(wasmUrl)
-      .then((r) => r.arrayBuffer())
-      .then((buf) => this.worker.postMessage({ type: "init", wasm: buf }, [buf]));
+      .then((r) => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.arrayBuffer();
+      })
+      .then((buf) => this.worker.postMessage({ type: "init", wasm: buf }, [buf]))
+      .catch((err) => {
+        console.error("[analyzer] failed to load", wasmUrl, err);
+        this.failPending();
+      });
+  }
+
+  /// Resolve every outstanding query with null so awaiting providers don't hang.
+  private failPending() {
+    for (const [, resolve] of this.pending) resolve(null);
+    this.pending.clear();
   }
 
   /// Schedule analysis of `source` (debounced); `version` lets the caller drop

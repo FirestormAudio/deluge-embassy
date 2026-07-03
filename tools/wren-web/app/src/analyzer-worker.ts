@@ -121,21 +121,44 @@ function completions(source: string): Completion[] {
 
 const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
 
-self.onmessage = async (e: MessageEvent) => {
-  const msg = e.data;
-  if (msg.type === "init") {
-    const { instance } = await WebAssembly.instantiate(msg.wasm as ArrayBuffer, {});
-    x = instance.exports as unknown as AnalyzerExports;
-    post({ type: "ready" });
-  } else if (!x) {
-    return;
-  } else if (msg.type === "analyze") {
+// Handle an analyze/query once the wasm is ready.
+function handle(msg: { type: string; version?: number; source: string; id?: number; kind?: QueryKind; offset?: number }) {
+  if (msg.type === "analyze") {
     post({ type: "diagnostics", version: msg.version, diags: diagnostics(msg.source) });
   } else if (msg.type === "query") {
     let result: unknown = null;
-    if (msg.kind === "hover") result = hover(msg.source, msg.offset);
-    else if (msg.kind === "definition") result = definition(msg.source, msg.offset);
+    if (msg.kind === "hover") result = hover(msg.source, msg.offset!);
+    else if (msg.kind === "definition") result = definition(msg.source, msg.offset!);
     else if (msg.kind === "completions") result = completions(msg.source);
+    // Always reply — even a null result — so the main thread's pending promise
+    // resolves instead of hanging forever (which wedges Monaco's hover).
     post({ type: "queryResult", id: msg.id, result });
   }
+}
+
+type QueryKind = "hover" | "definition" | "completions";
+
+// Messages that arrive before the wasm finishes initializing are queued and
+// drained on ready — dropping them would hang the caller's promise.
+const queued: Parameters<typeof handle>[0][] = [];
+
+self.onmessage = async (e: MessageEvent) => {
+  const msg = e.data;
+  if (msg.type === "init") {
+    try {
+      const { instance } = await WebAssembly.instantiate(msg.wasm as ArrayBuffer, {});
+      x = instance.exports as unknown as AnalyzerExports;
+    } catch (err) {
+      post({ type: "initError", error: String(err && (err as Error).stack ? (err as Error).stack : err) });
+      return;
+    }
+    post({ type: "ready" });
+    for (const m of queued.splice(0)) handle(m);
+    return;
+  }
+  if (!x) {
+    queued.push(msg);
+    return;
+  }
+  handle(msg);
 };
