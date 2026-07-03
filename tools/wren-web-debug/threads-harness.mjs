@@ -1,16 +1,21 @@
-// Task 3.2: prove a full `Stopped -> StackTrace -> Terminated` debug run over a
-// SharedArrayBuffer, in real wasm threads, in Node.
+// Task 3.2 / 5.2: prove a full `Stopped -> StackTrace -> Terminated` debug run
+// over a SharedArrayBuffer, in real wasm threads, in Node.
 //
-// This is the SAB analogue of the native `tests/agent_transport.rs` test: same
-// program, same breakpoint (line 2), same command sequence (StackTrace, then
-// Continue), same expected events — but instead of an in-process `mpsc` pair,
-// the commands/events cross a `SharedArrayBuffer` (a region of the threaded
-// wasm's shared linear memory), driven from the Node MAIN thread while the
-// wasm `serve()` loop runs on a Worker and the deluge VM runs on a third
+// This is the SAB analogue of the native `tests/agent_transport.rs` test — the
+// commands/events cross a `SharedArrayBuffer` (a region of the threaded wasm's
+// shared linear memory), driven from the Node MAIN thread while the wasm
+// `serve()` loop runs on a Worker and the deluge VM runs on a third
 // (wasi-thread-spawned) Worker.
 //
+// Task 5.2 upgrade: the fixture is now a `Midi.onNoteOn` handler with a
+// breakpoint INSIDE its body (line 2). That line never runs during `interpret`
+// — it is reached ONLY when `dbg_launch`'s new (note, vel, blocks) scalars fire
+// a driven NoteOn against the live VM. So a green run here proves the drive
+// params thread through `dbg_launch -> debug_run_driven` and that a callback
+// breakpoint parks the VM thread over the SAB (the non-browser check for 5.2).
+//
 // Run: node tools/wren-web-debug/threads-harness.mjs
-//   (build first: tools/wren-web-debug/build-threads.sh)
+//   (build first: npm run build:debug-wasm, or tools/wren-web-debug/build-threads.sh)
 
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -40,6 +45,12 @@ function fail(msg) {
   process.exit(1);
 }
 
+// Global watchdog: fail loudly instead of hanging forever if a stop/ack never
+// arrives (e.g. an un-driven callback breakpoint terminates the run early and
+// `writeCmd` would otherwise park on an ack that will never come).
+const WATCHDOG_MS = 60000;
+setTimeout(() => fail(`watchdog: no SUCCESS within ${WATCHDOG_MS} ms`), WATCHDOG_MS).unref();
+
 async function main() {
   const bytes = await readFile(wasmPath);
   const module = await WebAssembly.compile(bytes);
@@ -55,8 +66,14 @@ async function main() {
     workerData: {
       module,
       memory,
-      entry: "var a = 1\nvar b = 2\nSystem.print(b)\n",
+      // A `Midi.onNoteOn` handler: line 1 registers, line 2 is the body (only
+      // reached via a driven NoteOn). Matches the native 5.1 fixture.
+      entry: "Midi.onNoteOn = Fn.new { |ch, n, v|\n  output[1].volts = n / 12.0\n}\n",
       bpLines: [2],
+      // Task 5.2 drive scalars: fire NoteOn(60, 100), no ticks.
+      note: 60,
+      vel: 100,
+      blocks: 0,
     },
   });
   worker.on("error", (e) => fail(`dbg-worker errored: ${e && e.stack ? e.stack : e}`));
@@ -160,7 +177,7 @@ async function main() {
   if (!terminated) fail("never saw Terminated");
 
   console.log(
-    "SUCCESS: SAB-driven Stopped{line:2} -> StackTrace{stackFrames} -> Terminated over wasm threads",
+    "SUCCESS: driven NoteOn -> callback breakpoint Stopped{line:2} -> StackTrace{stackFrames} -> Terminated over wasm threads",
   );
   await worker.terminate();
   process.exit(0);

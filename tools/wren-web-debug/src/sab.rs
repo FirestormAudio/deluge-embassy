@@ -235,12 +235,31 @@ pub extern "C" fn dbg_sab_ptr() -> *const u8 {
     sab_base() as *const u8
 }
 
+/// The control-rate step for launch-time driven ticks: ~10 ms (100 Hz), a
+/// sensible block rate for metro callbacks / CV slew flushes.
+const DRIVE_STEP_MS: u64 = 10;
+
 /// Launch a debug session and drive it over the SAB transport. Spawns the VM on
-/// its own wasm thread (via [`crate::agent::debug_run`]) breaking on each line
-/// in `bp_ptr[..bp_count]`, then runs the same `serve` loop the native tests use
-/// — reading `DebugCmd`s from and writing `DebugEvent`s to shared memory.
-/// **Blocks** until the session terminates (the host calls this on a worker
-/// thread; the JS main thread drives the SAB concurrently).
+/// its own wasm thread (via [`crate::agent::debug_run_driven`]) breaking on each
+/// line in `bp_ptr[..bp_count]`, then runs the same `serve` loop the native
+/// tests use — reading `DebugCmd`s from and writing `DebugEvent`s to shared
+/// memory. **Blocks** until the session terminates (the host calls this on a
+/// worker thread; the JS main thread drives the SAB concurrently).
+///
+/// # Task 5.2 drive scalars
+/// After `interpret` (which registers handlers) and BEFORE the debugger detaches,
+/// the VM thread replays a small drive list built from the trailing scalars:
+/// - `note >= 0` → one [`DriveEvent::NoteOn`] with `note` (clamped 0..=127) at
+///   `vel` (falls back to 100 when out of the 0..=127 range); `note < 0` = none.
+/// - then `blocks` (clamped `>= 0`) × [`DriveEvent::Tick`] at a
+///   [`DRIVE_STEP_MS`]-spaced control rate.
+///
+/// This is how a breakpoint *inside* a driven callback (e.g. a `Midi.onNoteOn`
+/// handler body) fires in the browser: the note is emitted from host/top-level
+/// context, the fired handler parks the VM thread mid-`vm.call`, and `serve`
+/// reports the `Stopped` over the SAB exactly like a top-level breakpoint. The
+/// wire format is intentionally scalar (MVP); a richer serialized drive list is
+/// a future extension. See [`crate::drive`].
 ///
 /// # Safety
 /// `entry_ptr[..entry_len]` must be valid UTF-8; `bp_ptr[..bp_count]` a valid
@@ -251,6 +270,9 @@ pub unsafe extern "C" fn dbg_launch(
     entry_len: usize,
     bp_ptr: *const i32,
     bp_count: usize,
+    note: i32,
+    vel: i32,
+    blocks: i32,
 ) -> i32 {
     let entry = {
         let bytes = unsafe { core::slice::from_raw_parts(entry_ptr, entry_len) };
@@ -266,8 +288,24 @@ pub unsafe extern "C" fn dbg_launch(
         lines.iter().copied().collect()
     };
 
-    // Spawn the VM thread (parks at the breakpoint) — Task 2.1 code, unchanged.
-    let session = crate::agent::debug_run(&entry, Vec::new(), breakpoints);
+    // Build the launch-time drive list from the scalar params (Task 5.2).
+    let mut drive: Vec<crate::drive::DriveEvent> = Vec::new();
+    if note >= 0 {
+        let n = note.min(127) as u8;
+        let v = if (0..=127).contains(&vel) { vel as u8 } else { 100 };
+        drive.push(crate::drive::DriveEvent::NoteOn { note: n, vel: v });
+    }
+    let n_blocks = blocks.max(0) as u64;
+    for i in 0..n_blocks {
+        drive.push(crate::drive::DriveEvent::Tick {
+            now_ms: i * DRIVE_STEP_MS,
+            dt_s: DRIVE_STEP_MS as f32 / 1000.0,
+        });
+    }
+
+    // Spawn the VM thread (parks at the breakpoint), replaying the drive after
+    // `interpret` — Task 5.1 seam, unchanged.
+    let session = crate::agent::debug_run_driven(&entry, Vec::new(), breakpoints, drive);
     // Drive it over shared memory with the exact same `serve` loop the native
     // `mpsc` test uses — only the transport differs.
     let transport = SabTransport::new(sab_base());

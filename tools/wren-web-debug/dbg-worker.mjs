@@ -12,7 +12,7 @@
 import { parentPort, workerData, Worker } from "node:worker_threads";
 import { makeWasiImports, ExitStatus } from "./wasi-shim.mjs";
 
-const { module, memory, entry, bpLines } = workerData;
+const { module, memory, entry, bpLines, note = -1, vel = 100, blocks = 0 } = workerData;
 
 // `wasi.thread-spawn`: launch a sub-Worker that runs `wasi_thread_start` with
 // the same module + shared memory. Returns a positive tid synchronously.
@@ -57,5 +57,7 @@ const bpPtr = ex.dbg_alloc(bpLines.length * 4);
 }
 
 // Phase 3: launch + drive `serve()` over the SAB. BLOCKS until the session ends.
-const rc = ex.dbg_launch(entryPtr, entryBytes.length, bpPtr, bpLines.length);
+// Task 5.2: the trailing (note, vel, blocks) scalars fire a launch-time NoteOn
+// (+ `blocks` control-rate ticks) so a breakpoint inside a driven callback stops.
+const rc = ex.dbg_launch(entryPtr, entryBytes.length, bpPtr, bpLines.length, note, vel, blocks);
 parentPort.postMessage({ type: "done", rc });
