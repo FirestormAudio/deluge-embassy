@@ -532,19 +532,20 @@ select {
 /* ── Debug: breakpoint gutter ───────────────────────────────────────────────
    A breakpoint is a control probe you placed, so it's amber (--voltage), never
    red (red = errors only). The empty-gutter hover shows a dim ghost dot to cue
-   "click to set." Both are centered dots in Monaco's glyph margin. */
+   "click to set." The dot hugs the RIGHT of the glyph margin so it sits right
+   next to the line numbers (VSCode-like), not floating at the far-left edge. */
 .dbg-breakpoint { cursor: pointer; }
 .dbg-breakpoint::before {
-  content: ""; position: absolute; top: 50%; left: 50%;
-  width: 9px; height: 9px; transform: translate(-50%, -50%);
+  content: ""; position: absolute; top: 50%; right: 2px;
+  width: 9px; height: 9px; transform: translateY(-50%);
   border-radius: 50%; background: var(--voltage);
   box-shadow: 0 0 6px var(--voltage);
 }
 /* Ghost cue on hover over an empty glyph-margin line (no glow, dim ink). */
 .dbg-breakpoint-ghost { cursor: pointer; }
 .dbg-breakpoint-ghost::before {
-  content: ""; position: absolute; top: 50%; left: 50%;
-  width: 9px; height: 9px; transform: translate(-50%, -50%);
+  content: ""; position: absolute; top: 50%; right: 2px;
+  width: 9px; height: 9px; transform: translateY(-50%);
   border-radius: 50%; background: var(--ink-faint);
 }
 
@@ -573,8 +574,8 @@ select {
 .dbg-current-line { background: #8fe9ff12; }
 .dbg-current-bar { box-shadow: inset 2px 0 0 var(--phosphor); }
 .dbg-current-glyph::before {
-  content: "▶"; position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%); font-size: 9px;
+  content: "▶"; position: absolute; top: 50%; right: 1px;
+  transform: translateY(-50%); font-size: 9px;
   color: var(--phosphor); text-shadow: 0 0 6px var(--phosphor);
 }
 

@@ -75,6 +75,11 @@ export function createEditor(host: HTMLElement, value: string) {
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
     glyphMargin: true, // breakpoint gutter (see debug/gutter.ts)
+    // Keep the line-number column snug so the breakpoint glyph sits right next
+    // to the numbers (VSCode-like) instead of floating far left; expands past
+    // this minimum for longer files.
+    lineNumbersMinChars: 2,
+    folding: false, // no folding margin between numbers and code (unused for Wren)
     padding: { top: 14 },
     renderLineHighlight: "line",
     smoothScrolling: true,
