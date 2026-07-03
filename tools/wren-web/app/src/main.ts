@@ -12,6 +12,7 @@ import { FileBrowser } from "./filebrowser";
 import { setupBreakpointGutter } from "./debug/gutter";
 import { DebugSession } from "./debug/session";
 import { DebugToolbar } from "./debug/ui";
+import { DebugSidebar } from "./debug/panels";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -218,6 +219,11 @@ async function boot() {
   const debugToolbar = new DebugToolbar({ monaco, editor, tabs, store, session: debugSession });
   runBtn.parentElement!.insertBefore(debugToolbar.root, runBtn);
 
+  // Left-sidebar debug view: [ files · debug ] switch + CALL STACK panel. Auto-
+  // activates the debug segment while a session is live; returns to the last
+  // shown pane when the run ends.
+  const debugSidebar = new DebugSidebar($("#file-browser"), debugSession);
+
   // Audio scope — rendered from the main engine (audio itself plays in the
   // worklet). One block per frame; advancing the main engine for the waveform is
   // cheap and independent of the worklet's render.
@@ -289,6 +295,7 @@ async function boot() {
     // Debug session inspection (used by tests): current state + selected frame.
     debugState: () => debugSession.state,
     selectedFrame: () => debugSession.selectedFrameId,
+    debugPane: () => debugSidebar.shown,
   };
 }
 

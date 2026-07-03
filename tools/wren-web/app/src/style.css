@@ -173,6 +173,59 @@ select {
 .fb-act:hover, .fb-add:hover { color: var(--phosphor); }
 .fb-del:hover { color: #ff6b6b; }
 
+/* ── Left-pane switch [ files · debug ] (VSCode-style) ─────────────────────────
+   A segmented header at the top of the left pane; the active segment gets the
+   phosphor underline from .tab.active. Selecting a segment swaps the pane body
+   between the file tree (#fb-body) and the debug view (#debug-view). */
+.pane-switch {
+  display: flex; align-items: stretch; flex: none;
+  border-bottom: 1px solid var(--hairline); background: var(--chassis);
+}
+.pane-seg {
+  font: var(--legend); letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ink-dim); background: none; border: none; cursor: pointer;
+  padding: 10px 12px; user-select: none;
+}
+.pane-seg:hover { color: var(--ink); }
+.pane-seg.is-active { color: var(--ink); box-shadow: inset 0 -2px 0 var(--phosphor); }
+.pane-switch-add { margin-left: auto; align-self: center; margin-right: 8px; }
+/* `display: inline-grid` on #fb-new would otherwise defeat [hidden]; the
+   id-qualified rule out-specifies it so the button hides in the debug view. */
+#fb-new[hidden] { display: none; }
+
+.fb-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.fb-body[hidden] { display: none; }
+
+/* ── Debug view (accordion of collapsible sections) ───────────────────────────
+   Reuses the .pane-legend head + .fb-twisty glyph. The selected frame mirrors
+   .fb-file.is-active (phosphor-tinted bg); the current ▶ marker is phosphor. */
+.dbg-view { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
+.dbg-view[hidden] { display: none; }
+.dbg-section { display: flex; flex-direction: column; flex: none; }
+.dbg-section-head {
+  display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%;
+  background: none; cursor: pointer; text-align: left;
+}
+.dbg-section-head:hover { color: var(--ink); }
+.dbg-section-head .fb-twisty { font-size: 9px; }
+.dbg-section.collapsed .dbg-section-body { display: none; }
+.dbg-section-body { padding: 4px 0; font-size: 12.5px; }
+
+.dbg-hint {
+  color: var(--ink-faint); font-style: italic; font-size: 12px; padding: 6px 12px;
+}
+
+.dbg-frame {
+  display: flex; align-items: center; gap: 4px; height: 24px; cursor: pointer;
+  color: var(--ink-dim); padding: 0 8px;
+}
+.dbg-frame:hover { background: #ffffff08; color: var(--ink); }
+.dbg-frame.selected { background: #8fe9ff10; color: var(--ink); }
+.dbg-frame-mark { width: 12px; flex: none; font-size: 9px; color: var(--phosphor); text-align: center; }
+.dbg-frame-mark.dim { color: var(--ink-faint); }
+.dbg-frame-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "IBM Plex Mono", monospace; }
+.dbg-frame-loc { flex: none; color: var(--ink-dim); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+
 /* ── Editor tab strip ─────────────────────────────────────────────────────── */
 .tab-bar {
   display: flex; align-items: stretch; gap: 1px; height: 34px; flex: none;

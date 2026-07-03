@@ -35,8 +35,15 @@
 
     <main class="bench">
       <section class="file-browser" id="file-browser">
-        <div class="pane-legend">files <button id="fb-new" title="new file" aria-label="new file">+</button></div>
-        <div id="fb-tree" class="fb-tree"></div>
+        <div class="pane-switch" role="tablist" aria-label="left panel">
+          <button id="pane-files" class="pane-seg is-active" type="button" role="tab" aria-selected="true" aria-controls="fb-body">files</button>
+          <button id="pane-debug" class="pane-seg" type="button" role="tab" aria-selected="false" aria-controls="debug-view">debug</button>
+          <button id="fb-new" class="pane-switch-add" type="button" title="new file" aria-label="new file">+</button>
+        </div>
+        <div id="fb-body" class="fb-body">
+          <div id="fb-tree" class="fb-tree"></div>
+        </div>
+        <div id="debug-view" class="dbg-view" hidden></div>
       </section>
 
       <section class="editor-pane">
