@@ -4,6 +4,15 @@
 // built-in language's tokenizer + the TS/HTML/CSS/JSON language services (~3 MB).
 // We register Wren ourselves, so none of that is needed.
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
+// The bare `editor.api` ships NO editor contributions, so registered hover /
+// completion / go-to-definition providers would never be invoked (there'd be no
+// controller to call them — the app looked like hover was "broken"). Pull in
+// just the three we use as side-effect imports; this keeps the lean bundle (we
+// still avoid the full `monaco-editor` barrel that bundles every language's
+// tokenizer + the TS/HTML/CSS/JSON language services).
+import "monaco-editor/esm/vs/editor/contrib/hover/browser/hoverContribution";
+import "monaco-editor/esm/vs/editor/contrib/suggest/browser/suggestController";
+import "monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/goToCommands";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { registerWren, WREN_ID } from "./wren-lang";
 import { registerWrenTextMate } from "./textmate";
