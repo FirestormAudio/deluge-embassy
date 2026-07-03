@@ -102,13 +102,26 @@ fn stack_trace_then_continue_over_mpsc_transport() {
     // invariant this crate requires.
     driver.join().expect("serve thread panicked");
 
-    // Expected sequence: the initial breakpoint stop (from `serve`'s pre-loop
-    // `run_until_stop`), then the `StackTrace` response, then `Terminated`
-    // (from the `Continue` command's post-resume `run_until_stop`, since
-    // nothing else in this program stops the VM again).
-    assert_eq!(events.len(), 3, "expected exactly 3 events, got {events:?}");
+    // The program's `System.print(b)` (b == 2) now streams to the controller as
+    // an `Output` event when the `Continue` runs it to completion — so split the
+    // stream into that stdout and the structural events. Expected structural
+    // sequence: the initial breakpoint stop (from `serve`'s pre-loop
+    // `run_until_stop`), the `StackTrace` response, then `Terminated` (from the
+    // `Continue`'s post-resume run-to-completion).
+    let stdout: String = events
+        .iter()
+        .filter_map(|e| match e {
+            DebugEvent::Output { output, category } if category == "stdout" => Some(output.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(stdout.contains('2'), "System.print(2) should stream as stdout Output; events: {events:?}");
 
-    match &events[0] {
+    let structural: Vec<&DebugEvent> =
+        events.iter().filter(|e| !matches!(e, DebugEvent::Output { .. })).collect();
+    assert_eq!(structural.len(), 3, "expected exactly 3 structural events, got {structural:?}");
+
+    match structural[0] {
         DebugEvent::Stopped { thread_id, line, reason, all_threads_stopped } => {
             assert_eq!(*thread_id, 1);
             assert_eq!(*line, 2);
@@ -118,7 +131,7 @@ fn stack_trace_then_continue_over_mpsc_transport() {
         other => panic!("expected Stopped first, got {other:?}"),
     }
 
-    match &events[1] {
+    match structural[1] {
         DebugEvent::StackTrace { stack_frames, total_frames } => {
             assert_eq!(*total_frames, stack_frames.len());
             assert!(!stack_frames.is_empty(), "expected at least one frame at the breakpoint");
@@ -127,5 +140,5 @@ fn stack_trace_then_continue_over_mpsc_transport() {
         other => panic!("expected StackTrace second, got {other:?}"),
     }
 
-    assert_eq!(events[2], DebugEvent::Terminated, "expected Terminated third, got {:?}", events[2]);
+    assert_eq!(*structural[2], DebugEvent::Terminated, "expected Terminated third, got {:?}", structural[2]);
 }

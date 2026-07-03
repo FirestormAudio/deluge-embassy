@@ -77,13 +77,24 @@ pub fn debug_run_driven(
         crate::install_noop_host();
 
         let load_fn = move |name: &str| module_map.get(name).cloned();
-        let mut vm = crate::boot_vm(|_s: &str| {}, Some(Box::new(load_fn)));
+
+        // Route the VM's `System.print` output into the debug session's event
+        // stream as `Output` events, so stdout streams to the controller/console
+        // live during a debug run (the hook itself only emits output for
+        // logpoints/condition warnings). `err_writer` surfaces a failed
+        // `interpret` (compile/runtime error) as stderr — otherwise it would be
+        // swallowed and the console would show nothing for a broken script.
+        let writer = hook.output_writer();
+        let err_writer = writer.clone();
+        let mut vm = crate::boot_vm(move |s: &str| writer.write(s), Some(Box::new(load_fn)));
 
         // Attach the debugger *after* the prelude has already run (inside
         // `boot_vm`) so prelude internals never trip a breakpoint, then
         // interpret the caller's entry — this is the call the hook parks.
         vm.attach_debugger(hook);
-        let _ = vm.interpret("main", &entry);
+        if let Err(e) = vm.interpret("main", &entry) {
+            err_writer.error(&format!("{e}\n"));
+        }
 
         // Drive host events with the hook STILL attached (before detach), so a
         // breakpoint inside a fired handler parks this VM thread just like a
