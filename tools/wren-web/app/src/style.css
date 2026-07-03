@@ -226,6 +226,34 @@ select {
 .dbg-frame-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "IBM Plex Mono", monospace; }
 .dbg-frame-loc { flex: none; color: var(--ink-dim); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
 
+/* ── Variables (locals tree) ──────────────────────────────────────────────────
+   Scope sub-groups carry a lighter .pane-legend head; rows read `name = value`
+   with the value in --voltage mono (like .jack-val) — live instrument data.
+   Expandable rows reuse the .fb-twisty glyph and expand lazily. */
+.dbg-scope { display: flex; flex-direction: column; }
+.dbg-scope-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 6px 12px 4px; background: none; border: none; cursor: pointer; text-align: left;
+}
+.dbg-scope-head:hover { color: var(--ink); }
+.dbg-scope-head .fb-twisty { font-size: 9px; }
+.dbg-scope-body[hidden] { display: none; }
+.dbg-scope-body { padding-bottom: 2px; }
+
+.dbg-var-row {
+  display: flex; align-items: center; gap: 4px; min-height: 20px; padding: 0 8px;
+  font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-dim);
+}
+.dbg-var-row[role="button"] { cursor: pointer; }
+.dbg-var-row[role="button"]:hover { background: #ffffff08; }
+.dbg-var-row .fb-twisty { flex: none; text-align: center; }
+.dbg-var-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbg-var-eq { color: var(--ink-faint); flex: none; }
+.dbg-var-val {
+  color: var(--voltage); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dbg-var-children { padding-left: 12px; }
+
 /* ── Editor tab strip ─────────────────────────────────────────────────────── */
 .tab-bar {
   display: flex; align-items: stretch; gap: 1px; height: 34px; flex: none;

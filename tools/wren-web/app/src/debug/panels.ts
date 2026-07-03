@@ -16,11 +16,12 @@
 // frame mirrors `.fb-file.is-active` (phosphor-tinted bg), the current ▶ marker
 // is phosphor. No new palette/fonts.
 import type { DebugSession, DebugState } from "./session";
-import type { StackFrameDto } from "./sab";
+import type { StackFrameDto, ScopeDto, VariableDto } from "./sab";
 
 type Pane = "files" | "debug";
 
 const IDLE_HINT = "— start a debug session to inspect —";
+const VARS_HINT = "— locals appear here at a stop —";
 
 export class DebugSidebar {
   private readonly paneFiles: HTMLButtonElement;
@@ -29,6 +30,9 @@ export class DebugSidebar {
   private readonly view: HTMLElement;
   private readonly fbNew: HTMLElement | null;
   private callstackBody!: HTMLElement;
+  private variablesBody!: HTMLElement;
+  /** Bumped on every VARIABLES render so stale async fetches self-abort. */
+  private varRenderSeq = 0;
 
   /** What the user last chose manually — restored when a run ends. */
   private userChoice: Pane = "files";
@@ -51,8 +55,12 @@ export class DebugSidebar {
 
     this.session.on("state", (s) => this.onState(s));
     this.session.on("stopped", () => void this.onStopped());
+    // The variables tree follows the selected frame (the top frame is selected
+    // by default on every stop — see `onStopped`).
+    this.session.on("frameSelected", (id) => void this.onFrameSelected(id));
 
     this.clearStack();
+    this.clearVariables();
     this.activate("files");
   }
 
@@ -76,7 +84,10 @@ export class DebugSidebar {
     // choice when it ends. Clear the stack whenever we're not paused.
     if (s === "starting") this.activate("debug");
     if (s === "idle") this.activate(this.userChoice);
-    if (s !== "paused") this.clearStack();
+    if (s !== "paused") {
+      this.clearStack();
+      this.clearVariables();
+    }
   }
 
   private async onStopped(): Promise<void> {
@@ -93,7 +104,7 @@ export class DebugSidebar {
     const call = this.section("call stack", "dbg-callstack");
     this.callstackBody = call.body;
     const vars = this.section("variables", "dbg-variables");
-    vars.body.appendChild(this.hint("— locals appear here (4.4) —"));
+    this.variablesBody = vars.body;
     this.view.append(call.root, vars.root);
   }
 
@@ -194,5 +205,150 @@ export class DebugSidebar {
   private clearStack(): void {
     if (!this.callstackBody) return;
     this.callstackBody.replaceChildren(this.hint(IDLE_HINT));
+  }
+
+  // ── variables (locals tree) ────────────────────────────────────────────────────
+
+  /** A frame was selected (top frame by default on each stop) → render its scopes. */
+  private async onFrameSelected(frameId: number | null): Promise<void> {
+    const seq = ++this.varRenderSeq;
+    if (frameId == null) {
+      this.clearVariables();
+      return;
+    }
+    const scopes = await this.session.scopes(frameId);
+    if (seq !== this.varRenderSeq) return; // a newer selection superseded us
+    this.variablesBody.replaceChildren();
+    if (!scopes.length) {
+      this.variablesBody.appendChild(this.hint(VARS_HINT));
+      return;
+    }
+    // Render one sub-group per scope. The first scope ("Locals") is expanded by
+    // default; the rest (e.g. the prelude-flooded "Module" scope) stay collapsed
+    // and lazily fetch their variables only when the user opens them.
+    scopes.forEach((sc, i) => this.variablesBody.appendChild(this.scopeGroup(sc, i === 0, seq)));
+  }
+
+  /** A collapsible scope sub-group: `.pane-legend` sub-header + a lazy body. */
+  private scopeGroup(scope: ScopeDto, expand: boolean, seq: number): HTMLElement {
+    const root = document.createElement("div");
+    root.className = "dbg-scope";
+
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "pane-legend dbg-scope-head";
+    head.setAttribute("aria-expanded", String(expand));
+    const twisty = document.createElement("span");
+    twisty.className = "fb-twisty";
+    twisty.setAttribute("aria-hidden", "true");
+    twisty.textContent = expand ? "▾" : "▸";
+    const label = document.createElement("span");
+    label.textContent = scope.name;
+    head.append(twisty, label);
+
+    const body = document.createElement("div");
+    body.className = "dbg-scope-body";
+    body.hidden = !expand;
+
+    let loaded = false;
+    const fill = async (): Promise<void> => {
+      if (loaded) return;
+      loaded = true;
+      const vars = await this.session.variables(scope.variablesReference);
+      if (!body.isConnected || seq !== this.varRenderSeq) {
+        loaded = false; // superseded before we could paint — allow a later fill
+        return;
+      }
+      for (const v of vars) body.appendChild(this.varNode(v, seq));
+    };
+
+    head.addEventListener("click", () => {
+      const open = head.getAttribute("aria-expanded") !== "true";
+      head.setAttribute("aria-expanded", String(open));
+      twisty.textContent = open ? "▾" : "▸";
+      body.hidden = !open;
+      if (open) void fill();
+    });
+
+    root.append(head, body);
+    if (expand) void fill();
+    return root;
+  }
+
+  /** One variable row (`name = value`); expandable ones lazily fetch children. */
+  private varNode(v: VariableDto, seq: number): HTMLElement {
+    const node = document.createElement("div");
+    node.className = "dbg-var";
+    node.dataset.name = v.name;
+
+    const row = document.createElement("div");
+    row.className = "dbg-var-row";
+
+    const twisty = document.createElement("span");
+    twisty.className = "fb-twisty";
+    twisty.setAttribute("aria-hidden", "true");
+
+    const name = document.createElement("span");
+    name.className = "dbg-var-name";
+    name.textContent = v.name;
+    const eq = document.createElement("span");
+    eq.className = "dbg-var-eq";
+    eq.textContent = "=";
+    eq.setAttribute("aria-hidden", "true");
+    const val = document.createElement("span");
+    val.className = "dbg-var-val";
+    val.textContent = v.value;
+
+    row.append(twisty, name, eq, val);
+    node.appendChild(row);
+
+    if (v.variablesReference <= 0) {
+      twisty.textContent = ""; // leaf: empty spacer keeps names aligned
+      return node;
+    }
+
+    twisty.textContent = "▸";
+    const children = document.createElement("div");
+    children.className = "dbg-var-children";
+    children.hidden = true;
+    node.appendChild(children);
+
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    row.setAttribute("aria-expanded", "false");
+    row.setAttribute("aria-label", `${v.name} = ${v.value}`);
+
+    let loaded = false;
+    const fill = async (): Promise<void> => {
+      if (loaded) return;
+      loaded = true; // fetch children exactly once (collapse→expand won't refetch)
+      const kids = await this.session.variables(v.variablesReference);
+      if (!children.isConnected || seq !== this.varRenderSeq) {
+        loaded = false;
+        return;
+      }
+      for (const c of kids) children.appendChild(this.varNode(c, seq));
+    };
+    const toggle = (): void => {
+      const open = row.getAttribute("aria-expanded") !== "true";
+      row.setAttribute("aria-expanded", String(open));
+      twisty.textContent = open ? "▾" : "▸";
+      children.hidden = !open;
+      if (open) void fill();
+    };
+    row.addEventListener("click", toggle);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+    return node;
+  }
+
+  private clearVariables(): void {
+    if (!this.variablesBody) return;
+    this.varRenderSeq++; // abort any in-flight fetch
+    this.variablesBody.replaceChildren(this.hint(VARS_HINT));
   }
 }
