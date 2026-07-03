@@ -8,8 +8,10 @@
 #
 # We build the `dbg_threads` BIN (a command module with a real `_start` that
 # bootstraps the main thread's TLS — see src/bin/dbg_threads.rs) rather than the
-# cdylib. A command module exports only `_start`/`memory` by default, so we
-# force-export the `dbg_*` control functions the host calls after init.
+# cdylib. The `dbg_*` control functions the host calls after init are
+# `#[no_mangle]` in the lib (src/sab.rs); in this toolchain those carry the wasm
+# export attribute and flow through into the bin's exports (verified), so no
+# explicit `--export` link args are needed.
 set -euo pipefail
 
 : "${WASI_SYSROOT:=/home/kate/.local/wasi-sysroot-25.0}"
@@ -20,10 +22,7 @@ cd "$HERE"
 
 rustup component add rust-src --toolchain nightly >/dev/null 2>&1 || true
 
-export RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
--C link-arg=--export=dbg_alloc \
--C link-arg=--export=dbg_sab_ptr \
--C link-arg=--export=dbg_launch"
+export RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals"
 
 cargo +nightly build \
   -Zbuild-std=std,panic_abort \

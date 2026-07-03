@@ -26,8 +26,8 @@ fn main() {
     // dependency). No-op at runtime — `_start` returns immediately.
     #[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
     {
-        let _ = wren_web_debug::sab::dbg_sab_ptr as usize;
-        let _ = wren_web_debug::sab::dbg_alloc as usize;
-        let _ = wren_web_debug::sab::dbg_launch as usize;
+        let _ = wren_web_debug::sab::dbg_sab_ptr as *const () as usize;
+        let _ = wren_web_debug::sab::dbg_alloc as *const () as usize;
+        let _ = wren_web_debug::sab::dbg_launch as *const () as usize;
     }
 }

@@ -85,7 +85,9 @@ pub const SAB_BYTES: usize = CMD_REGION_OFF + REGION_CAP * 2; // 16416
 /// so the controller can read [`dbg_sab_ptr`]'s address before any thread runs
 /// module init.
 #[repr(align(8))]
-struct SabBuf([u8; SAB_BYTES]);
+// The payload is only ever touched through raw pointers at computed offsets
+// (per-word atomics / byte copies), never via this field — so it reads as dead.
+struct SabBuf(#[allow(dead_code)] [u8; SAB_BYTES]);
 
 static mut SAB: SabBuf = SabBuf([0; SAB_BYTES]);
 
@@ -216,8 +218,12 @@ impl DebugTransport for SabTransport {
 /// C-ABI export; the returned pointer is valid for `len` bytes.
 #[unsafe(no_mangle)]
 pub extern "C" fn dbg_alloc(len: usize) -> *mut u8 {
-    let mut v = Vec::<u8>::with_capacity(len);
-    let p = v.as_mut_ptr();
+    // Allocate as `u64` so the returned pointer is 8-byte aligned — the host
+    // writes an `i32` breakpoint array here that `dbg_launch` reads back as a
+    // `&[i32]`, which requires 4-byte alignment. Rounds up to whole words.
+    let words = len.div_ceil(8).max(1);
+    let mut v = Vec::<u64>::with_capacity(words);
+    let p = v.as_mut_ptr() as *mut u8;
     core::mem::forget(v);
     p
 }
