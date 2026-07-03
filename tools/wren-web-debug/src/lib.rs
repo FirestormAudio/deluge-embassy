@@ -10,6 +10,15 @@
 //! it links ONLY wren-core's copy of the C VM — never `wren-sys`'s — since two
 //! upstream C VMs in one binary would fail to link.
 
+// The SAB transport (`sab.rs`) uses the `atomic.wait`/`atomic.notify` wasm
+// intrinsics, still nightly-unstable. Enable them ONLY for the threads build
+// (where `sab` is compiled at all) so native / single-threaded wasm — which
+// don't touch these — need no unstable feature.
+#![cfg_attr(
+    all(target_arch = "wasm32", target_feature = "atomics"),
+    feature(stdarch_wasm_atomic_wait)
+)]
+
 /// The debug agent (Task 2.1): spawns a deluge VM on its own thread with
 /// wren-core's source debugger attached, and returns the [`DebugSession`]
 /// controller so a caller can drive it to a breakpoint stop.
@@ -28,6 +37,14 @@ mod register;
 /// the same adapter foreign methods get, reused outside a foreign call to
 /// prove the callback round-trip.
 pub mod slotapi_wrencore;
+/// Task 3.2: a [`transport::DebugTransport`] backed by a `SharedArrayBuffer`
+/// (a region of the wasm32-wasip1-threads shared linear memory), so the same
+/// [`transport::serve`] loop runs unchanged in a wasm worker driven from the
+/// JS main thread. Only compiled for the threads build (it uses the wasm
+/// `atomic.wait`/`atomic.notify` intrinsics), so the native rlib and the
+/// single-threaded Task 3.1 wasm are unaffected.
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+pub mod sab;
 /// The transport seam (Task 2.4): a transport-agnostic driver loop
 /// (`serve`) that pumps a [`agent::debug_run`]-created
 /// [`wren_core::vm::DebugSession`] over any [`transport::DebugTransport`] —
