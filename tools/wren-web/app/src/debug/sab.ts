@@ -147,7 +147,11 @@ export class SabChannel {
       const seq = Atomics.load(this.hdr, IDX_EVENT_SEQ);
       if (seq !== this.lastEventSeq) {
         const len = Atomics.load(this.hdr, IDX_EVENT_LEN);
-        const json = dec.decode(this.eventRegion.subarray(0, len));
+        // TextDecoder.decode rejects SharedArrayBuffer-backed views ("must not
+        // be shared"), so copy the bytes into a private buffer first.
+        const copy = new Uint8Array(len);
+        copy.set(this.eventRegion.subarray(0, len));
+        const json = dec.decode(copy);
         this.lastEventSeq = seq;
         Atomics.store(this.hdr, IDX_EVENT_ACK, seq);
         Atomics.notify(this.hdr, IDX_EVENT_ACK);

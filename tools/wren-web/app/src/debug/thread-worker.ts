@@ -1,20 +1,26 @@
 // Task 3.3: a spawned wasi-thread, browser port of
 // `tools/wren-web-debug/thread-worker.mjs`.
 //
-// When the wasm calls `wasi.thread-spawn`, the spawning worker (worker.ts, or
-// another thread-worker) launches one of these Workers with the SAME compiled
-// module + SAME shared memory and posts `{module, memory, tid, startArg}` to it.
-// This worker instantiates, then calls `wasi_thread_start(tid, startArg)` — the
-// wasi-threads entry that sets up this thread's TLS from `startArg` and runs the
-// Rust thread closure (here: the deluge VM under the debugger).
+// When the wasm calls `wasi.thread-spawn`, the controller (page main thread)
+// creates one of these Workers with the SAME compiled module + SAME shared
+// memory and posts `{module, memory, tid, startArg}` to it. This worker
+// instantiates, then calls `wasi_thread_start(tid, startArg)` — the wasi-threads
+// entry that sets up this thread's TLS from `startArg` and runs the Rust thread
+// closure (here: the deluge VM under the debugger).
 //
 // Browser note: unlike Node's `workerData`, browser Workers receive their init
-// payload via an initial `postMessage`; we handle exactly one such message.
+// payload via an initial `postMessage`. Also, all thread-workers are created by
+// the MAIN thread (not nested inside another worker): a bundled module worker
+// spawning another module worker does not execute reliably in a production
+// build under cross-origin isolation, so `wasi.thread-spawn` requests are routed
+// up to the controller, which does the `new Worker`. This worker's own
+// `thread-spawn` therefore also posts a request up to the main thread.
 
 import { makeWasiImports, ExitStatus } from "./wasi-shim";
 
 interface WorkerScope {
   onmessage: ((e: MessageEvent) => void) | null;
+  postMessage(msg: unknown): void;
 }
 const ctx = self as unknown as WorkerScope;
 
@@ -32,13 +38,13 @@ interface ThreadExports extends WebAssembly.Exports {
 ctx.onmessage = async (e: MessageEvent<ThreadInit>) => {
   const { module, memory, tid, startArg } = e.data;
 
-  // Allow this thread to spawn further threads (defensive; the debug session
-  // only spawns the one VM thread today). Seed tids away from the parent's range.
+  // Further thread-spawns (defensive; the debug session only spawns the one VM
+  // thread today) are delegated up to the main thread. Seed tids away from the
+  // parent's range to avoid collisions.
   let tidCounter = 1000 + tid * 100;
   const threadSpawn = (childStartArg: number): number => {
     const childTid = tidCounter++;
-    const w = new Worker(new URL("./thread-worker.ts", import.meta.url), { type: "module" });
-    w.postMessage({ module, memory, tid: childTid, startArg: childStartArg } satisfies ThreadInit);
+    ctx.postMessage({ type: "spawn-thread", tid: childTid, startArg: childStartArg });
     return childTid;
   };
 
@@ -48,13 +54,17 @@ ctx.onmessage = async (e: MessageEvent<ThreadInit>) => {
     wasi: { "thread-spawn": threadSpawn },
   };
 
-  const instance = await WebAssembly.instantiate(module, imports);
-  const ex = instance.exports as ThreadExports;
-
   try {
+    const instance = await WebAssembly.instantiate(module, imports);
+    const ex = instance.exports as ThreadExports;
     ex.wasi_thread_start(tid, startArg);
   } catch (err) {
-    if (!(err instanceof ExitStatus)) throw err;
+    if (err instanceof ExitStatus) return; // thread closure returned via proc_exit
+    ctx.postMessage({
+      type: "threaderror",
+      tid,
+      error: String(err && (err as Error).stack ? (err as Error).stack : err),
+    });
   }
   // Thread closure returned; this Worker can exit.
 };

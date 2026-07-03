@@ -6,10 +6,16 @@
 //   3. publishes the SAB base back to the controller,
 //   4. on a `launch` message: writes the entry script + breakpoint-line array
 //      into wasm memory and calls `dbg_launch`, which spawns the VM thread (via
-//      `wasi.thread-spawn` → thread-worker.ts) and runs `serve()` over the SAB —
-//      BLOCKING this worker until the debug session terminates. Workers may
-//      block, so this is fine (the page main thread drives the SAB concurrently
-//      via Atomics.waitAsync).
+//      `wasi.thread-spawn`) and runs `serve()` over the SAB — BLOCKING this
+//      worker until the debug session terminates. Workers may block, so this is
+//      fine (the page main thread drives the SAB concurrently via
+//      Atomics.waitAsync).
+//
+// `wasi.thread-spawn` allocates a tid synchronously and asks the MAIN thread to
+// create the sub-Worker (a bundled worker spawning a nested worker does not
+// execute reliably in a production build under cross-origin isolation). The tid
+// is returned immediately; the VM thread runs once the main thread has created
+// + inited the sub-Worker, synchronized purely via the shared memory's atomics.
 
 import { makeWasiImports, ExitStatus } from "./wasi-shim";
 
@@ -32,23 +38,18 @@ type InMsg =
   | { type: "launch"; entry: string; bpLines: number[] };
 
 let ex: DbgExports | null = null;
-let sharedModule: WebAssembly.Module | null = null;
 let sharedMemory: WebAssembly.Memory | null = null;
 
-// `wasi.thread-spawn`: launch a sub-Worker (thread-worker.ts) running the same
-// module + shared memory. Returns a positive tid synchronously; the sub-Worker
-// boots async and calls `wasi_thread_start` (synchronization is via the shared
-// memory's atomics, exactly as in the Node harness).
+// `wasi.thread-spawn`: allocate a tid and ask the main thread to create the
+// thread-worker. Returns synchronously; the VM thread boots async (atomics sync).
 let tidCounter = 1;
 function threadSpawn(startArg: number): number {
   const tid = tidCounter++;
-  const w = new Worker(new URL("./thread-worker.ts", import.meta.url), { type: "module" });
-  w.postMessage({ module: sharedModule, memory: sharedMemory, tid, startArg });
+  ctx.postMessage({ type: "spawn-thread", tid, startArg });
   return tid;
 }
 
 async function onInit(module: WebAssembly.Module, memory: WebAssembly.Memory): Promise<void> {
-  sharedModule = module;
   sharedMemory = memory;
 
   const imports: WebAssembly.Imports = {

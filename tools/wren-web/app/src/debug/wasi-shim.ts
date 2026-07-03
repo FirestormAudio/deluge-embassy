@@ -33,9 +33,15 @@ export function makeWasiImports({
 
   return {
     random_get(ptr: number, len: number): number {
+      // `crypto.getRandomValues` rejects views backed by a SharedArrayBuffer
+      // ("must not be shared"), and the wasm memory here IS shared — so fill a
+      // private buffer then copy the bytes into shared memory.
       const out = new Uint8Array(memory.buffer, ptr, len);
+      const tmp = new Uint8Array(Math.min(len, MAX_RANDOM_CHUNK));
       for (let off = 0; off < len; off += MAX_RANDOM_CHUNK) {
-        crypto.getRandomValues(out.subarray(off, Math.min(off + MAX_RANDOM_CHUNK, len)));
+        const n = Math.min(MAX_RANDOM_CHUNK, len - off);
+        crypto.getRandomValues(n === tmp.length ? tmp : tmp.subarray(0, n));
+        out.set(tmp.subarray(0, n), off);
       }
       return ERRNO_SUCCESS;
     },

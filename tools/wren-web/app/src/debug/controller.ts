@@ -43,9 +43,13 @@ interface Pending {
 
 export class DebugController {
   private readonly ready: Promise<void>;
+  private module!: WebAssembly.Module;
+  private memory!: WebAssembly.Memory;
   private worker!: Worker;
+  private readonly threadWorkers: Worker[] = [];
   private channel!: SabChannel;
   private pending: Pending | null = null;
+  private baseResolver: { resolve: (base: number) => void; reject: (err: unknown) => void } | null = null;
   private breakpoints: number[] = [];
   private disposed = false;
   private terminated = false;
@@ -62,42 +66,89 @@ export class DebugController {
   }
 
   private async init(): Promise<void> {
-    const module = await WebAssembly.compileStreaming(fetch(this.wasmUrl));
-    const memory = new WebAssembly.Memory({
+    this.module = await WebAssembly.compileStreaming(fetch(this.wasmUrl));
+    this.memory = new WebAssembly.Memory({
       initial: MEMORY_INITIAL,
       maximum: MEMORY_MAXIMUM,
       shared: true,
     });
 
     this.worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+    this.worker.onmessage = (e: MessageEvent) => this.onWorkerMessage(e.data);
+    this.worker.onerror = (ev: ErrorEvent) => {
+      const err = new Error(`worker errored: ${ev.message}`);
+      if (this.baseResolver) {
+        this.baseResolver.reject(err);
+        this.baseResolver = null;
+      } else this.failPending(err);
+    };
 
     const base = await new Promise<number>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timed out waiting for SAB base")), 20000);
-      this.worker.onmessage = (e: MessageEvent) => {
-        const m = e.data;
-        if (m && m.type === "base") {
+      this.baseResolver = {
+        resolve: (b) => {
           clearTimeout(timer);
-          resolve(m.base as number);
-        } else if (m && m.type === "error") {
+          resolve(b);
+        },
+        reject: (e) => {
           clearTimeout(timer);
-          reject(new Error(`worker init error: ${m.error}`));
-        }
+          reject(e);
+        },
       };
-      this.worker.onerror = (ev: ErrorEvent) => {
-        clearTimeout(timer);
-        reject(new Error(`worker errored: ${ev.message}`));
-      };
-      this.worker.postMessage({ type: "init", module, memory });
+      this.worker.postMessage({ type: "init", module: this.module, memory: this.memory });
     });
 
-    this.channel = new SabChannel(memory.buffer, base);
-    // Keep listening for post-init worker messages (done / error) without
-    // interfering with the SAB event pump.
-    this.worker.onmessage = (e: MessageEvent) => {
-      const m = e.data;
-      if (m && m.type === "error") this.failPending(new Error(`worker error: ${m.error}`));
-    };
+    this.channel = new SabChannel(this.memory.buffer, base);
     void this.pump();
+  }
+
+  /**
+   * Handle control/diagnostic messages from the module-main worker AND every
+   * thread-worker. (SAB *events* travel over shared memory, not postMessage.)
+   * `spawn-thread` is the wasi.thread-spawn delegation: the worker allocated a
+   * tid and asked us to create the sub-Worker from the main thread.
+   */
+  private onWorkerMessage(m: any): void {
+    if (!m) return;
+    switch (m.type) {
+      case "base":
+        this.baseResolver?.resolve(m.base as number);
+        this.baseResolver = null;
+        break;
+      case "spawn-thread":
+        this.spawnThread(m.tid as number, m.startArg as number);
+        break;
+      case "threadlog":
+        console.log("[wren-debug]", m.msg);
+        break;
+      case "threaderror":
+        console.error(`[wren-debug thread ${m.tid}]`, m.error);
+        this.failPending(new Error(`thread ${m.tid} error: ${m.error}`));
+        break;
+      case "error": {
+        const err = new Error(`worker error: ${m.error}`);
+        if (this.baseResolver) {
+          this.baseResolver.reject(err);
+          this.baseResolver = null;
+        } else this.failPending(err);
+        break;
+      }
+      case "done":
+        break;
+    }
+  }
+
+  /** Create a wasi thread-worker from the main thread (never nested). */
+  private spawnThread(tid: number, startArg: number): void {
+    if (this.disposed) return;
+    const w = new Worker(new URL("./thread-worker.ts", import.meta.url), { type: "module" });
+    w.onmessage = (e: MessageEvent) => this.onWorkerMessage(e.data);
+    w.onerror = (ev: ErrorEvent) => {
+      console.error(`[wren-debug thread ${tid}]`, ev.message);
+      this.failPending(new Error(`thread ${tid} errored: ${ev.message}`));
+    };
+    this.threadWorkers.push(w);
+    w.postMessage({ module: this.module, memory: this.memory, tid, startArg });
   }
 
   /** The async SAB event pump: read → dispatch, until disposed. */
@@ -263,5 +314,7 @@ export class DebugController {
     this.disposed = true;
     this.failPending(new Error("controller disposed"));
     this.worker?.terminate();
+    for (const w of this.threadWorkers) w.terminate();
+    this.threadWorkers.length = 0;
   }
 }
