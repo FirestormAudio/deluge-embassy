@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:debug-wasm": "bash scripts/build-debug-wasm.sh",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.1",
@@ -17,6 +19,7 @@
     "vscode-textmate": "^9.3.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
   }

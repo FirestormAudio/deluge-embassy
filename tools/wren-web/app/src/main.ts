@@ -14,6 +14,16 @@ import { EXAMPLES } from "./examples";
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
 const wasmUrl = `${import.meta.env.BASE_URL}wren_web.wasm`;
 
+// Task 3.3: headless test/debug hook. The threaded DebugController is imported
+// only on demand (dynamic import), so it never touches the normal boot path or
+// bundle. Phase 4 (Monaco UI) will consume this controller directly.
+(window as unknown as { __wrenDebug: unknown }).__wrenDebug = {
+  createController: () =>
+    import("./debug/controller").then(
+      (m) => new m.DebugController(`${import.meta.env.BASE_URL}wren-debug-threads.wasm`),
+    ),
+};
+
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
 async function boot() {
