@@ -254,6 +254,27 @@ select {
 }
 .dbg-var-children { padding-left: 12px; }
 
+/* ── Drive form (Task 5.2) ────────────────────────────────────────────────────
+   A launch-time input probe: pick a MIDI note (+ block count) fired on Debug so
+   a breakpoint inside a driven callback stops. Inputs reuse the .oct-ctrl idiom
+   (panel-raised, hairline, phosphor hover/focus) — no new palette. */
+.dbg-drive-form { padding: 6px 12px 8px; display: flex; flex-direction: column; gap: 6px; }
+.dbg-drive-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: default; }
+.dbg-drive-label {
+  font: 10px/1 "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-dim);
+}
+.dbg-drive-input {
+  width: 62px; padding: 3px 6px; text-align: right;
+  background: var(--panel-raised); color: var(--phosphor);
+  border: 1px solid var(--hairline); border-radius: 4px;
+  font: 12px/1 "IBM Plex Mono", monospace;
+}
+.dbg-drive-input::placeholder { color: var(--ink-faint); }
+.dbg-drive-input:hover { border-color: #8fe9ff44; }
+.dbg-drive-input:focus-visible { outline: none; border-color: var(--phosphor); box-shadow: 0 0 6px #8fe9ff55; }
+.dbg-drive-hint { padding: 2px 0 0; }
+
 /* ── Editor tab strip ─────────────────────────────────────────────────────── */
 .tab-bar {
   display: flex; align-items: stretch; gap: 1px; height: 34px; flex: none;

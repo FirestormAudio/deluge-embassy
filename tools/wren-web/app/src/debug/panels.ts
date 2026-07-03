@@ -101,11 +101,87 @@ export class DebugSidebar {
 
   private buildView(): void {
     this.view.replaceChildren();
+    // DRIVE (Task 5.2): launch-time input config, usable even while idle so you
+    // configure a note before hitting Debug. Sits above the run-state sections.
+    const drive = this.section("drive", "dbg-drive");
+    this.buildDriveForm(drive.body);
     const call = this.section("call stack", "dbg-callstack");
     this.callstackBody = call.body;
     const vars = this.section("variables", "dbg-variables");
     this.variablesBody = vars.body;
-    this.view.append(call.root, vars.root);
+    this.view.append(drive.root, call.root, vars.root);
+  }
+
+  /**
+   * The DRIVE form: a MIDI note + a control-rate block count fired at launch so a
+   * breakpoint inside a driven callback (e.g. a `Midi.onNoteOn` body) stops. The
+   * values write straight onto the shared `DebugSession` (`setDrive`); the
+   * toolbar's Debug reads `session.drive` at start. A blank note = fire nothing
+   * (a plain run) — the default, so existing runs are unchanged.
+   */
+  private buildDriveForm(body: HTMLElement): void {
+    body.classList.add("dbg-drive-form");
+
+    const noteRow = this.driveField(
+      "note",
+      "dbg-drive-note",
+      "MIDI note to fire on Debug (0–127, blank = none)",
+      { min: 0, max: 127, placeholder: "none" },
+      (raw) => {
+        const n = raw === "" ? -1 : Math.max(0, Math.min(127, Math.round(Number(raw))));
+        this.session.setDrive({ note: Number.isFinite(n) ? n : -1 });
+      },
+    );
+
+    const blocksRow = this.driveField(
+      "blocks",
+      "dbg-drive-blocks",
+      "Control-rate blocks (ticks) to drive after the note",
+      { min: 0, placeholder: "0", value: "0" },
+      (raw) => {
+        const b = raw === "" ? 0 : Math.max(0, Math.round(Number(raw)));
+        this.session.setDrive({ blocks: Number.isFinite(b) ? b : 0 });
+      },
+    );
+
+    const hint = document.createElement("div");
+    hint.className = "dbg-hint dbg-drive-hint";
+    hint.textContent = "fires this note (+ ticks) at launch so callback breakpoints hit.";
+
+    body.append(noteRow, blocksRow, hint);
+  }
+
+  /** One labelled numeric drive input (`.oct-ctrl`-styled), wired to `onInput`. */
+  private driveField(
+    label: string,
+    id: string,
+    aria: string,
+    attrs: { min?: number; max?: number; placeholder?: string; value?: string },
+    onInput: (raw: string) => void,
+  ): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "dbg-drive-row";
+    row.htmlFor = id;
+
+    const name = document.createElement("span");
+    name.className = "dbg-drive-label";
+    name.textContent = label;
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.id = id;
+    input.className = "dbg-drive-input";
+    input.inputMode = "numeric";
+    input.setAttribute("aria-label", aria);
+    input.title = aria;
+    if (attrs.min !== undefined) input.min = String(attrs.min);
+    if (attrs.max !== undefined) input.max = String(attrs.max);
+    if (attrs.placeholder !== undefined) input.placeholder = attrs.placeholder;
+    if (attrs.value !== undefined) input.value = attrs.value;
+    input.addEventListener("input", () => onInput(input.value.trim()));
+
+    row.append(name, input);
+    return row;
   }
 
   /** A collapsible accordion section (`.pane-legend` head + `.fb-twisty`). */

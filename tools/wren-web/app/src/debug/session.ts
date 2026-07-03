@@ -19,6 +19,20 @@ import type { DebugEvent, StackFrameDto, ScopeDto, VariableDto } from "./sab";
 
 export type DebugState = "idle" | "starting" | "paused" | "running";
 
+// Task 5.2: the launch-time drive config the DRIVE form edits and `start`
+// forwards to the controller. `note < 0` = fire no note (a plain run); `blocks`
+// is the count of control-rate ticks driven after the note (both consumed once
+// per launch by the wasm `dbg_launch`). `vel` has no form control yet (fixed
+// default); it rounds out the NoteOn the scalar wire format carries.
+export interface DriveConfig {
+  note: number;
+  vel: number;
+  blocks: number;
+}
+
+/** The default: no driven note (a plain debug run), velocity 100, no ticks. */
+export const DEFAULT_DRIVE: DriveConfig = { note: -1, vel: 100, blocks: 0 };
+
 // A pre-flight compile error (line, message) — surfaced verbatim in the console
 // and aborts the run before a worker is spawned (the debug core doesn't report
 // compile errors yet — see the task report).
@@ -59,6 +73,8 @@ export class DebugSession {
   private _state: DebugState = "idle";
   private _stopped: Extract<DebugEvent, { event: "stopped" }> | null = null;
   private _selectedFrameId: number | null = null;
+  /** Launch-time drive config (edited by the DRIVE form, read on `start`). */
+  private _drive: DriveConfig = { ...DEFAULT_DRIVE };
   private readonly listeners: { [K in keyof DebugSessionEvents]: Set<Listener<K>> } = {
     state: new Set(),
     stopped: new Set(),
@@ -81,6 +97,15 @@ export class DebugSession {
   /** The frameId a view selected at the current stop (top frame by default). */
   get selectedFrameId(): number | null {
     return this._selectedFrameId;
+  }
+
+  /** The current launch-time drive config (the DRIVE form's live state). */
+  get drive(): DriveConfig {
+    return this._drive;
+  }
+  /** Patch the drive config from the DRIVE form (merges over the current state). */
+  setDrive(patch: Partial<DriveConfig>): void {
+    this._drive = { ...this._drive, ...patch };
   }
 
   /** Cross-origin isolation is required for the SharedArrayBuffer transport. */
@@ -111,8 +136,12 @@ export class DebugSession {
 
   // ── lifecycle ───────────────────────────────────────────────────────────────
 
-  /** Start a debug session for the entry source with the given breakpoint lines. */
-  async start(entry: string, breakpoints: number[]): Promise<void> {
+  /**
+   * Start a debug session for the entry source with the given breakpoint lines.
+   * `drive` defaults to the form's stored config; note >= 0 fires a launch-time
+   * NoteOn so a breakpoint inside that callback stops (Task 5.2).
+   */
+  async start(entry: string, breakpoints: number[], drive: DriveConfig = this._drive): Promise<void> {
     if (this._state !== "idle" || !this.isIsolated()) return;
 
     // Pre-flight: don't spin up a worker on code the editor already flags as
@@ -133,7 +162,7 @@ export class DebugSession {
         this.emit("output", ev);
       });
       await this.controller.whenReady();
-      const reply = await this.controller.launch(entry, breakpoints);
+      const reply = await this.controller.launch(entry, breakpoints, drive);
       this.onSettle(reply);
     } catch (e) {
       this.deps.log(`debug: ${e instanceof Error ? e.message : String(e)}`, "err");

@@ -110,7 +110,9 @@ export class DebugToolbar {
     const entry = store.project.entry;
     const source = tabs.model(entry).getValue();
     const breakpoints = store.breakpointsFor(entry);
-    await session.start(source, breakpoints);
+    // Task 5.2: the DRIVE form's config (a note to fire + control-rate blocks)
+    // rides along so a breakpoint inside a driven callback stops.
+    await session.start(source, breakpoints, session.drive);
   }
 
   /** Debug runs the entry file — make sure it's the shown model at a stop. */

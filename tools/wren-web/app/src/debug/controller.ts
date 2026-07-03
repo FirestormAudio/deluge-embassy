@@ -247,12 +247,22 @@ export class DebugController {
    * caller can discriminate "paused" from "finished" and never hangs waiting for
    * a stop that will not come. A `stopped` is also emitted to on("stopped").
    */
-  launch(entry: string, breakpoints?: number[]): Promise<DebugEvent> {
+  launch(
+    entry: string,
+    breakpoints?: number[],
+    drive?: { note?: number; vel?: number; blocks?: number },
+  ): Promise<DebugEvent> {
     if (breakpoints) this.setBreakpoints(breakpoints);
+    // Task 5.2 drive scalars: default to "no note" so a plain launch behaves
+    // exactly as before; `dbg_launch` maps note >= 0 to a NoteOn and blocks to
+    // control-rate ticks (see src/sab.rs).
+    const note = drive?.note ?? -1;
+    const vel = drive?.vel ?? 100;
+    const blocks = drive?.blocks ?? 0;
     return this.enqueue(async () => {
       await this.ready;
       const reply = this.waitFor((ev) => ev.event === "stopped" || ev.event === "terminated");
-      this.worker.postMessage({ type: "launch", entry, bpLines: this.breakpoints });
+      this.worker.postMessage({ type: "launch", entry, bpLines: this.breakpoints, note, vel, blocks });
       return reply;
     });
   }

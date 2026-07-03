@@ -30,12 +30,20 @@ interface DbgExports extends WebAssembly.Exports {
   _start(): void;
   dbg_sab_ptr(): number;
   dbg_alloc(len: number): number;
-  dbg_launch(entryPtr: number, entryLen: number, bpPtr: number, bpCount: number): number;
+  dbg_launch(
+    entryPtr: number,
+    entryLen: number,
+    bpPtr: number,
+    bpCount: number,
+    note: number,
+    vel: number,
+    blocks: number,
+  ): number;
 }
 
 type InMsg =
   | { type: "init"; module: WebAssembly.Module; memory: WebAssembly.Memory }
-  | { type: "launch"; entry: string; bpLines: number[] };
+  | { type: "launch"; entry: string; bpLines: number[]; note: number; vel: number; blocks: number };
 
 let ex: DbgExports | null = null;
 let sharedMemory: WebAssembly.Memory | null = null;
@@ -72,7 +80,7 @@ async function onInit(module: WebAssembly.Module, memory: WebAssembly.Memory): P
   ctx.postMessage({ type: "base", base: ex.dbg_sab_ptr() });
 }
 
-function onLaunch(entry: string, bpLines: number[]): void {
+function onLaunch(entry: string, bpLines: number[], note: number, vel: number, blocks: number): void {
   if (!ex || !sharedMemory) throw new Error("worker: launch before init");
   const memory = sharedMemory;
 
@@ -88,7 +96,9 @@ function onLaunch(entry: string, bpLines: number[]): void {
   }
 
   // Phase 3: launch + drive `serve()` over the SAB. BLOCKS until session end.
-  const rc = ex.dbg_launch(entryPtr, entryBytes.length, bpPtr, bpLines.length);
+  // Task 5.2: (note, vel, blocks) fire a launch-time NoteOn (+ control-rate
+  // ticks) so a breakpoint inside a driven callback stops.
+  const rc = ex.dbg_launch(entryPtr, entryBytes.length, bpPtr, bpLines.length, note, vel, blocks);
   ctx.postMessage({ type: "done", rc });
 }
 
@@ -100,7 +110,7 @@ ctx.onmessage = (e: MessageEvent<InMsg>) => {
     );
   } else if (msg.type === "launch") {
     try {
-      onLaunch(msg.entry, msg.bpLines);
+      onLaunch(msg.entry, msg.bpLines, msg.note, msg.vel, msg.blocks);
     } catch (err) {
       ctx.postMessage({ type: "error", error: String(err) });
     }
