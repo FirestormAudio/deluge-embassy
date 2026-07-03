@@ -241,15 +241,17 @@ export class DebugController {
   }
 
   /**
-   * Launch a debug session: post the entry + breakpoints to the worker, resolve
-   * when the first `stopped` arrives (the initial breakpoint stop). Also emitted
-   * to on("stopped").
+   * Launch a debug session: post the entry + breakpoints to the worker. Resolves
+   * with the first `stopped` (a breakpoint was hit) OR with `terminated` if the
+   * program ran to completion / failed to compile without ever stopping — so the
+   * caller can discriminate "paused" from "finished" and never hangs waiting for
+   * a stop that will not come. A `stopped` is also emitted to on("stopped").
    */
   launch(entry: string, breakpoints?: number[]): Promise<DebugEvent> {
     if (breakpoints) this.setBreakpoints(breakpoints);
     return this.enqueue(async () => {
       await this.ready;
-      const reply = this.waitFor((ev) => ev.event === "stopped");
+      const reply = this.waitFor((ev) => ev.event === "stopped" || ev.event === "terminated");
       this.worker.postMessage({ type: "launch", entry, bpLines: this.breakpoints });
       return reply;
     });

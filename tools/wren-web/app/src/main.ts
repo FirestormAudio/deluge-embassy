@@ -10,6 +10,7 @@ import { ProjectStore, loadInitialProject, projectFromExample } from "./project"
 import { Tabs } from "./tabs";
 import { FileBrowser } from "./filebrowser";
 import { setupBreakpointGutter } from "./debug/gutter";
+import { DebugToolbar } from "./debug/ui";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -188,9 +189,36 @@ async function boot() {
     audioState.classList.add("on");
   };
 
-  $("#run").addEventListener("click", runWithAudio);
+  const runBtn = $("#run");
+  runBtn.addEventListener("click", runWithAudio);
   // Cmd/Ctrl-Enter to run.
   editor.addCommand(2048 | 3 /* KeyMod.CtrlCmd | KeyCode.Enter */, runWithAudio);
+
+  // Debug transport toolbar (topbar, left of Run). Drives the threaded debugger
+  // via the DebugController over the SAB; paused-line highlight lives here too.
+  const debugToolbar = new DebugToolbar({
+    monaco,
+    editor,
+    tabs,
+    store,
+    wasmUrl: `${import.meta.env.BASE_URL}wren-debug-threads.wasm`,
+    log,
+    // Debug runs the entry file — make sure it's the shown model at a stop.
+    showEntry: () => {
+      if (store.project.active !== store.project.entry) store.activate(store.project.entry);
+    },
+    // Pre-flight: if the analyzer already flags the entry as broken, surface the
+    // error verbatim and abort before spawning a worker (the debug core doesn't
+    // report compile errors yet — see the task report).
+    preflight: () => {
+      const entryModel = tabs.model(store.project.entry);
+      const errs = analyzerMarkers(entryModel).filter((m) => m.severity === monaco.MarkerSeverity.Error);
+      if (!errs.length) return null;
+      const e = errs[0];
+      return { line: e.startLineNumber, message: `${store.project.entry}:${e.startLineNumber}: ${e.message}` };
+    },
+  });
+  runBtn.parentElement!.insertBefore(debugToolbar.root, runBtn);
 
   // Audio scope — rendered from the main engine (audio itself plays in the
   // worklet). One block per frame; advancing the main engine for the waveform is

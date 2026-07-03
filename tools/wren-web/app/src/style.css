@@ -446,6 +446,36 @@ select {
   border-radius: 50%; background: var(--ink-faint);
 }
 
+/* ── Debug: transport toolbar (topbar, left of Run) ─────────────────────────
+   The Debug trigger is a ghost button with a PHOSPHOR hover accent (cyan =
+   "probe/instrument"), distinct from Run's amber "play." While a session is
+   live it hides and the transport cluster shows: small panel-raised buttons in
+   the idiom of .oct-ctrl, phosphor hover, 0.5 opacity when disabled. */
+.dbg-toolbar { display: inline-flex; align-items: center; gap: 8px; }
+.dbg-start:hover:not(:disabled) { color: var(--phosphor); border-color: #8fe9ff44; }
+.dbg-start:disabled { opacity: 0.5; cursor: default; }
+.dbg-transport { display: inline-flex; align-items: center; gap: 4px; }
+/* `display` on the class would otherwise defeat the [hidden] attribute. */
+.dbg-transport[hidden] { display: none; }
+.dbg-transport button {
+  display: inline-grid; place-items: center; padding: 0;
+  width: 26px; height: 26px; line-height: 1; font-size: 13px; cursor: pointer;
+  background: var(--panel-raised); color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 5px;
+}
+.dbg-transport button:hover:not(:disabled) { color: var(--phosphor); border-color: #8fe9ff44; }
+.dbg-transport button:disabled { opacity: 0.5; cursor: default; }
+.dbg-transport #dbg-stop:hover:not(:disabled) { color: #ff8585; border-color: #ff6b6b55; }
+
+/* ── Debug: paused line (the execution beam rests here — phosphor) ──────────── */
+.dbg-current-line { background: #8fe9ff12; }
+.dbg-current-bar { box-shadow: inset 2px 0 0 var(--phosphor); }
+.dbg-current-glyph::before {
+  content: "▶"; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%); font-size: 9px;
+  color: var(--phosphor); text-shadow: 0 0 6px var(--phosphor);
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 880px) {
   body { overflow: auto; height: auto; }
