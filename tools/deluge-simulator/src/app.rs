@@ -10,18 +10,23 @@ use crate::hardware_state::DelugeHardware;
 use crate::hardware_link::HardwareMirror;
 use crate::link::{self, LinkKind};
 use crate::pad_grid::PadGrid;
+#[cfg(feature = "rack")]
 use crate::rack::InstrumentRack;
 use crate::renderer::DynamicElementsRenderer;
 use crate::rgb::RGB;
 
 use deluge_protocol::{FromDeluge, ToDeluge};
-use deluge_sim_link::audio::{Consumer, HeapCons};
+use deluge_sim_link::audio::HeapCons;
+#[cfg(feature = "rack")]
+use deluge_sim_link::audio::Consumer;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 use iced::{
     Color, Element, Length, Task, Theme,
-    widget::{Canvas, Image, Stack, column, container, image},
+    widget::{Canvas, Image, Stack, container, image},
 };
+#[cfg(feature = "rack")]
+use iced::widget::column;
 
 /// Window width (px): the faceplate's half-SVG width.
 pub(crate) const WINDOW_WIDTH: f32 = 1089.0;
@@ -29,6 +34,11 @@ pub(crate) const WINDOW_WIDTH: f32 = 1089.0;
 pub(crate) const FACEPLATE_HEIGHT: f32 = 741.0;
 /// Height (px) of the CV/gate rack strip above the faceplate.
 pub(crate) const RACK_HEIGHT: f32 = 92.0;
+/// Total window height: the faceplate, plus the rack strip when the `rack`
+/// feature is enabled. With the feature off the top panel is compiled out and
+/// the window is faceplate-only.
+pub(crate) const WINDOW_HEIGHT: f32 =
+    FACEPLATE_HEIGHT + if cfg!(feature = "rack") { RACK_HEIGHT } else { 0.0 };
 
 /// Messages produced by the canvas (input) and the periodic tick.
 #[derive(Debug, Clone)]
@@ -44,8 +54,10 @@ pub enum SimulatorMessage {
     EncoderReleased(HardwareEncoder),
     ToggleStickyKeys,
     /// Toggle the CV/gate rack strip between meters and scope traces.
+    #[cfg(feature = "rack")]
     ToggleRackScopes,
     /// Collapse/expand the rack strip (and resize the window to match).
+    #[cfg(feature = "rack")]
     ToggleRackCollapsed,
 }
 
@@ -53,6 +65,7 @@ pub struct DelugeSimulator {
     /// Persistent canvas renderer — owns display, pad grid, and hardware state.
     renderer: DynamicElementsRenderer,
     /// CV/gate visualiser to the right of the faceplate.
+    #[cfg(feature = "rack")]
     rack: InstrumentRack,
     /// Pre-rasterised SVG faceplate (drawn behind the canvas).
     svg_background: Option<image::Handle>,
@@ -64,6 +77,7 @@ pub struct DelugeSimulator {
     hardware: Option<HardwareMirror>,
     /// Stereo tap of the output audio (in-process link only) feeding the rack's
     /// L/R audio oscilloscopes. Drained each frame.
+    #[cfg(feature = "rack")]
     audio_monitor: Option<HeapCons<[f32; 2]>>,
     /// Master output volume, driven by the faceplate Volume knob (0.0–1.0).
     volume: crate::audio::Volume,
@@ -71,6 +85,54 @@ pub struct DelugeSimulator {
 
 /// Percentage points the Volume knob moves per scroll detent.
 const VOLUME_STEP: i32 = 4;
+
+// Top-panel (rack) integration seam. The CV/gate/audio "top panel" is an
+// optional `rack` feature: when enabled these forward to the [`InstrumentRack`];
+// when disabled the panel is compiled out and these are no-ops, so the call
+// sites in `update`/`apply`/`apply_shared_panel` stay feature-agnostic.
+#[cfg(feature = "rack")]
+impl DelugeSimulator {
+    fn rack_set_cv(&mut self, cv: [u16; 4]) {
+        self.rack.set_cv(cv);
+    }
+    fn rack_set_gate(&mut self, gate: [bool; 4]) {
+        self.rack.set_gate(gate);
+    }
+    fn rack_set_cv_channel(&mut self, ch: usize, code: u16) {
+        self.rack.set_cv_channel(ch, code);
+    }
+    fn rack_set_gate_channel(&mut self, ch: usize, on: bool) {
+        self.rack.set_gate_channel(ch, on);
+    }
+    fn rack_flash_midi_in(&mut self) {
+        self.rack.flash_midi_in();
+    }
+    fn rack_flash_midi_out(&mut self) {
+        self.rack.flash_midi_out();
+    }
+    fn rack_sample(&mut self) {
+        self.rack.sample();
+    }
+    fn drain_audio_monitor(&mut self) {
+        if let Some(mon) = self.audio_monitor.as_mut() {
+            while let Some([l, r]) = mon.try_pop() {
+                self.rack.push_audio(l, r);
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "rack"))]
+impl DelugeSimulator {
+    fn rack_set_cv(&mut self, _cv: [u16; 4]) {}
+    fn rack_set_gate(&mut self, _gate: [bool; 4]) {}
+    fn rack_set_cv_channel(&mut self, _ch: usize, _code: u16) {}
+    fn rack_set_gate_channel(&mut self, _ch: usize, _on: bool) {}
+    fn rack_flash_midi_in(&mut self) {}
+    fn rack_flash_midi_out(&mut self) {}
+    fn rack_sample(&mut self) {}
+    fn drain_audio_monitor(&mut self) {}
+}
 
 impl DelugeSimulator {
     pub fn new(
@@ -80,6 +142,10 @@ impl DelugeSimulator {
         volume: crate::audio::Volume,
         hardware: Option<HardwareMirror>,
     ) -> Self {
+        // With the `rack` feature off there is no top panel to feed, so the
+        // output-audio tap is unused.
+        #[cfg(not(feature = "rack"))]
+        let _ = audio_monitor;
         let mut renderer = DynamicElementsRenderer::new(
             SimulatorDisplay::new(),
             PadGrid::new(),
@@ -90,10 +156,12 @@ impl DelugeSimulator {
         renderer.hardware.set_encoder_value(HardwareEncoder::Volume, 100);
         Self {
             renderer,
+            #[cfg(feature = "rack")]
             rack: InstrumentRack::new(),
             svg_background,
             link,
             hardware,
+            #[cfg(feature = "rack")]
             audio_monitor,
             volume,
         }
@@ -105,15 +173,12 @@ impl DelugeSimulator {
                 self.drain_inbound();
                 self.service_hardware();
                 // Drain the audio monitor (mono output tap) into the rack's audio
-                // scope history before sampling CV/gate for the same frame.
-                if let Some(mon) = self.audio_monitor.as_mut() {
-                    while let Some([l, r]) = mon.try_pop() {
-                        self.rack.push_audio(l, r);
-                    }
-                }
-                // Append a rack history point each frame so the scopes scroll
-                // evenly regardless of how often the app writes CV/gate.
-                self.rack.sample();
+                // scope history before sampling CV/gate for the same frame, then
+                // append a rack history point so the scopes scroll evenly
+                // regardless of how often the app writes CV/gate. Both are no-ops
+                // when the `rack` feature is disabled.
+                self.drain_audio_monitor();
+                self.rack_sample();
             }
 
             SimulatorMessage::PadPressed { col, row } => {
@@ -177,12 +242,14 @@ impl DelugeSimulator {
                 self.renderer.controls_cache.clear();
             }
 
+            #[cfg(feature = "rack")]
             SimulatorMessage::ToggleRackScopes => self.rack.toggle_expanded(),
 
             // The strip keeps a fixed height; collapsing just hides its contents
             // (down to the handle), so the faceplate never moves. We can't shrink
             // the window to reclaim the space — Wayland blocks client resize and a
             // tiling compositor would tile the window if it were made resizable.
+            #[cfg(feature = "rack")]
             SimulatorMessage::ToggleRackCollapsed => self.rack.toggle_collapsed(),
         }
         Task::none()
@@ -298,16 +365,16 @@ impl DelugeSimulator {
             self.renderer.controls_cache.clear();
         }
         if let Some(cv) = cv {
-            self.rack.set_cv(cv);
+            self.rack_set_cv(cv);
         }
         if let Some(gate) = gate {
-            self.rack.set_gate(gate);
+            self.rack_set_gate(gate);
         }
         if midi_in_active {
-            self.rack.flash_midi_in();
+            self.rack_flash_midi_in();
         }
         if midi_out_active {
-            self.rack.flash_midi_out();
+            self.rack_flash_midi_out();
         }
 
         // Record the generations we've now applied.
@@ -368,10 +435,10 @@ impl DelugeSimulator {
                 self.renderer.controls_cache.clear();
             }
             ToDeluge::SetCv { channel, value } => {
-                self.rack.set_cv_channel(channel as usize, value);
+                self.rack_set_cv_channel(channel as usize, value);
             }
             ToDeluge::SetGate { channel, on } => {
-                self.rack.set_gate_channel(channel as usize, on);
+                self.rack_set_gate_channel(channel as usize, on);
             }
             // No panel representation (audio/brightness/handshake).
             ToDeluge::SetBrightness(_) | ToDeluge::GetVersion | ToDeluge::Ping => {}
@@ -459,11 +526,19 @@ impl DelugeSimulator {
         // The CV/gate rack is a separate strip above the faceplate (over the
         // back-panel jacks), not overlapping the deluge graphic. Collapsing
         // shrinks the strip to its handle bar and resizes the window to match.
-        let rack = Canvas::new(&self.rack)
-            .width(Length::Fill)
-            .height(Length::Fixed(RACK_HEIGHT));
-
-        column![rack, faceplate].width(Length::Fill).height(Length::Fill).into()
+        // With the `rack` feature off the strip is compiled out entirely and the
+        // window shows only the faceplate.
+        #[cfg(feature = "rack")]
+        {
+            let rack = Canvas::new(&self.rack)
+                .width(Length::Fill)
+                .height(Length::Fixed(RACK_HEIGHT));
+            column![rack, faceplate].width(Length::Fill).height(Length::Fill).into()
+        }
+        #[cfg(not(feature = "rack"))]
+        {
+            faceplate.into()
+        }
     }
 
     pub fn theme(&self) -> Theme {

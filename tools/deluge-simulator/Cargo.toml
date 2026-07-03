@@ -14,6 +14,16 @@ path = "src/lib.rs"
 name = "deluge-simulator"
 path = "src/main.rs"
 
+[features]
+default = ["rack"]
+# The top-panel "rack" strip above the faceplate: CV/gate meters and the L/R
+# audio output oscilloscopes. On by default (the in-process `cargo deluge sim`
+# path feeds the scopes from host audio). DelugeFirmware's `dbt sim` builds with
+# `--no-default-features`: the protocol link carries no audio, so the scopes
+# would be dead — the whole strip is compiled out and the window is
+# faceplate-only.
+rack = []
+
 [dependencies]
 # The shared host↔device wire contract (panel role).
 deluge-protocol = { path = "../../crates/deluge-protocol", features = ["std"] }

@@ -20,9 +20,11 @@ mod hardware_state;
 mod link;
 mod midi;
 mod pad_grid;
+#[cfg(feature = "rack")]
 mod rack;
 mod renderer;
 mod rgb;
+#[cfg(feature = "rack")]
 mod scope;
 
 pub use headless::run_headless;
@@ -74,7 +76,7 @@ fn run_app(
     // Not resizable: a tiling Wayland compositor would otherwise tile (and
     // letterbox) the window, and Wayland blocks client-side resize/reposition
     // anyway — so collapsing the rack hides its contents rather than resizing.
-    .window_size(iced::Size::new(app::WINDOW_WIDTH, app::FACEPLATE_HEIGHT + app::RACK_HEIGHT))
+    .window_size(iced::Size::new(app::WINDOW_WIDTH, app::WINDOW_HEIGHT))
     .resizable(false)
     .theme(|s: &DelugeSimulator| s.theme())
     .subscription(|s: &DelugeSimulator| s.subscription())
