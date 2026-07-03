@@ -10,6 +10,7 @@ import { ProjectStore, loadInitialProject, projectFromExample } from "./project"
 import { Tabs } from "./tabs";
 import { FileBrowser } from "./filebrowser";
 import { setupBreakpointGutter } from "./debug/gutter";
+import { DebugSession } from "./debug/session";
 import { DebugToolbar } from "./debug/ui";
 import { EXAMPLES } from "./examples";
 
@@ -194,19 +195,12 @@ async function boot() {
   // Cmd/Ctrl-Enter to run.
   editor.addCommand(2048 | 3 /* KeyMod.CtrlCmd | KeyCode.Enter */, runWithAudio);
 
-  // Debug transport toolbar (topbar, left of Run). Drives the threaded debugger
-  // via the DebugController over the SAB; paused-line highlight lives here too.
-  const debugToolbar = new DebugToolbar({
-    monaco,
-    editor,
-    tabs,
-    store,
+  // Shared debug session: owns the DebugController lifecycle, state machine,
+  // output routing, isolation gate + compile pre-flight. Both the transport
+  // toolbar and the left-sidebar debug view observe this single source of truth.
+  const debugSession = new DebugSession({
     wasmUrl: `${import.meta.env.BASE_URL}wren-debug-threads.wasm`,
     log,
-    // Debug runs the entry file — make sure it's the shown model at a stop.
-    showEntry: () => {
-      if (store.project.active !== store.project.entry) store.activate(store.project.entry);
-    },
     // Pre-flight: if the analyzer already flags the entry as broken, surface the
     // error verbatim and abort before spawning a worker (the debug core doesn't
     // report compile errors yet — see the task report).
@@ -218,6 +212,10 @@ async function boot() {
       return { line: e.startLineNumber, message: `${store.project.entry}:${e.startLineNumber}: ${e.message}` };
     },
   });
+
+  // Debug transport toolbar (topbar, left of Run). Drives the session; the
+  // paused-line highlight lives here too.
+  const debugToolbar = new DebugToolbar({ monaco, editor, tabs, store, session: debugSession });
   runBtn.parentElement!.insertBefore(debugToolbar.root, runBtn);
 
   // Audio scope — rendered from the main engine (audio itself plays in the
@@ -288,6 +286,9 @@ async function boot() {
     run: () => run(),
     // Breakpoint inspection (used by tests).
     breakpoints: (p: string) => store.breakpointsFor(p),
+    // Debug session inspection (used by tests): current state + selected frame.
+    debugState: () => debugSession.state,
+    selectedFrame: () => debugSession.selectedFrameId,
   };
 }
 

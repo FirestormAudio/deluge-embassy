@@ -1,4 +1,4 @@
-// Debug transport toolbar + paused-line highlight (Task 4.2).
+// Debug transport toolbar + paused-line highlight (Task 4.2, refactored in 4.3).
 //
 // A single "Debug" trigger in the topbar (left of the amber Run button) starts a
 // debug run of the entry file; while a session is live it expands into a compact
@@ -8,45 +8,26 @@
 // (.superpowers/sdd/phase4-design-direction.md): breakpoints are amber, the
 // paused line is phosphor (cyan), red stays errors-only.
 //
-// The debugger runs the ENTRY file only — the wasm `dbg_launch` takes an entry
-// string + flat line breakpoints, no imported modules yet (a documented
-// carry-forward). Breakpoints are seeded from the store for the entry file.
+// As of 4.3 this is a *view* over the shared `DebugSession` (src/debug/session.ts)
+// — it no longer owns the DebugController or the state machine; it drives the
+// session and reflects its `state`/`stopped` events. The DebugSession owns the
+// controller lifecycle, output routing, isolation gate and compile pre-flight.
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 import type { ProjectStore } from "../project";
 import type { Tabs } from "../tabs";
-import type { DebugController } from "./controller";
-import type { DebugEvent } from "./sab";
-
-// A pre-flight compile error (entry, line, message) — used to abort a debug run
-// before spawning the worker and surface the error verbatim in the console.
-export interface PreflightError {
-  line: number;
-  message: string;
-}
+import type { DebugSession, DebugState } from "./session";
 
 export interface DebugToolbarDeps {
   monaco: typeof Monaco;
   editor: Monaco.editor.IStandaloneCodeEditor;
   tabs: Tabs;
   store: ProjectStore;
-  /** Threaded debug wasm URL (fetched by the DebugController). */
-  wasmUrl: string;
-  /** Append a line to the console (kind "out" | "err"), reusing main.ts's log. */
-  log: (text: string, kind?: string) => void;
-  /** Ensure the entry file is the shown model before decorating the stop. */
-  showEntry: () => void;
-  /** Compile pre-flight: any error-severity diagnostics on the entry, or null. */
-  preflight: () => PreflightError | null;
-  /** Overridable for tests; defaults to the real `crossOriginIsolated`. */
-  isIsolated?: () => boolean;
+  /** The shared session this toolbar drives + reflects. */
+  session: DebugSession;
 }
 
-type State = "idle" | "starting" | "paused" | "running";
-
 export class DebugToolbar {
-  private controller: DebugController | null = null;
   private decorations: Monaco.editor.IEditorDecorationsCollection | null = null;
-  private state: State = "idle";
 
   private readonly debugBtn: HTMLButtonElement;
   private readonly cluster: HTMLElement;
@@ -71,14 +52,24 @@ export class DebugToolbar {
       this.cluster.appendChild(b);
       return b;
     };
-    mk("continue", "▸", "Continue", () => void this.resume("continue"));
-    mk("stepOver", "⤼", "Step over", () => void this.resume("stepOver"));
-    mk("stepIn", "⤓", "Step into", () => void this.resume("stepIn"));
-    mk("stepOut", "⤒", "Step out", () => void this.resume("stepOut"));
-    mk("stop", "■", "Stop", () => this.stop());
+    mk("continue", "▸", "Continue", () => void this.deps.session.continue());
+    mk("stepOver", "⤼", "Step over", () => void this.deps.session.stepOver());
+    mk("stepIn", "⤓", "Step into", () => void this.deps.session.stepIn());
+    mk("stepOut", "⤒", "Step out", () => void this.deps.session.stepOut());
+    mk("stop", "■", "Stop", () => this.deps.session.stop());
 
     this.root.append(this.debugBtn, this.cluster);
+
+    // Reflect the shared session: paused-line on stop, clear on run/idle,
+    // transport enable/disable on every state change.
+    this.deps.session.on("stopped", (ev) => {
+      this.showEntry();
+      this.showPausedLine(ev.line);
+    });
+    this.deps.session.on("state", (s) => this.onState(s));
+
     this.applyIsolation();
+    this.onState(this.deps.session.state);
   }
 
   private button(id: string, text: string, label: string): HTMLButtonElement {
@@ -91,25 +82,16 @@ export class DebugToolbar {
     return b;
   }
 
-  private isIsolated(): boolean {
-    if (this.deps.isIsolated) return this.deps.isIsolated();
-    // Test seam: `window.__wrenNoIsolation` forces the disabled state without
-    // actually dropping COOP/COEP (which the page needs for everything else).
-    const w = window as unknown as { __wrenNoIsolation?: boolean };
-    return !w.__wrenNoIsolation && crossOriginIsolated;
-  }
-
   /** Cross-origin isolation is required for the SharedArrayBuffer transport. */
   private applyIsolation() {
-    if (!this.isIsolated()) {
+    if (!this.deps.session.isIsolated()) {
       this.debugBtn.disabled = true;
       this.debugBtn.title = "Debugging needs cross-origin isolation (SharedArrayBuffer)";
       this.debugBtn.setAttribute("aria-label", this.debugBtn.title);
     }
   }
 
-  private setState(s: State) {
-    this.state = s;
+  private onState(s: DebugState) {
     const live = s === "paused" || s === "running" || s === "starting";
     this.cluster.hidden = !live;
     this.debugBtn.hidden = live;
@@ -118,71 +100,23 @@ export class DebugToolbar {
     for (const [id, b] of Object.entries(this.transport)) {
       b.disabled = id === "stop" ? !live : !paused;
     }
+    // Clear the paused-line decoration whenever we leave `paused`.
+    if (!paused) this.clearPausedLine();
   }
 
   /** Start a debug session for the entry file. */
   async start() {
-    if (this.state !== "idle" || !this.isIsolated()) return;
-
-    // Pre-flight: don't spin up a worker on code the editor already flags as
-    // broken — show the compile error verbatim and abort (editor untouched).
-    const err = this.deps.preflight();
-    if (err) {
-      this.deps.log(err.message, "err");
-      return;
-    }
-
-    this.setState("starting");
-    const entry = this.deps.store.project.entry;
-    const source = this.deps.tabs.model(entry).getValue();
-    const breakpoints = this.deps.store.breakpointsFor(entry);
-
-    try {
-      const { DebugController } = await import("./controller");
-      this.controller = new DebugController(this.deps.wasmUrl);
-      this.controller.on("output", (ev) => {
-        if (ev.event === "output") this.deps.log(ev.output, ev.category === "stderr" ? "err" : "out");
-      });
-      await this.controller.whenReady();
-      const reply = await this.controller.launch(source, breakpoints);
-      this.onSettle(reply);
-    } catch (e) {
-      this.deps.log(`debug: ${e instanceof Error ? e.message : String(e)}`, "err");
-      this.stop();
-    }
+    const { store, tabs, session } = this.deps;
+    const entry = store.project.entry;
+    const source = tabs.model(entry).getValue();
+    const breakpoints = store.breakpointsFor(entry);
+    await session.start(source, breakpoints);
   }
 
-  private async resume(kind: "continue" | "stepOver" | "stepIn" | "stepOut") {
-    if (!this.controller || this.state !== "paused") return;
-    this.clearPausedLine();
-    this.setState("running");
-    try {
-      const reply = await this.controller[kind]();
-      this.onSettle(reply);
-    } catch (e) {
-      this.deps.log(`debug: ${e instanceof Error ? e.message : String(e)}`, "err");
-      this.stop();
-    }
-  }
-
-  /** A launch/continue/step settled: either a new stop, or the session ended. */
-  private onSettle(reply: DebugEvent) {
-    if (reply.event === "stopped") {
-      this.deps.showEntry();
-      this.showPausedLine(reply.line);
-      this.setState("paused");
-    } else {
-      // terminated (ran to completion / no more breakpoints) → back to idle.
-      this.stop();
-    }
-  }
-
-  /** Tear the session down and return to idle. */
-  stop() {
-    this.clearPausedLine();
-    this.controller?.dispose();
-    this.controller = null;
-    this.setState("idle");
+  /** Debug runs the entry file — make sure it's the shown model at a stop. */
+  private showEntry() {
+    const { store } = this.deps;
+    if (store.project.active !== store.project.entry) store.activate(store.project.entry);
   }
 
   private showPausedLine(line: number) {
