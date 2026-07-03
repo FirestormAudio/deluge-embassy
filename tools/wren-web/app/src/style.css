@@ -427,6 +427,25 @@ select {
 .line.err { color: #ff8585; }
 .line.err::before { content: "! "; color: #ff6b6b; }
 
+/* ── Debug: breakpoint gutter ───────────────────────────────────────────────
+   A breakpoint is a control probe you placed, so it's amber (--voltage), never
+   red (red = errors only). The empty-gutter hover shows a dim ghost dot to cue
+   "click to set." Both are centered dots in Monaco's glyph margin. */
+.dbg-breakpoint { cursor: pointer; }
+.dbg-breakpoint::before {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 9px; height: 9px; transform: translate(-50%, -50%);
+  border-radius: 50%; background: var(--voltage);
+  box-shadow: 0 0 6px var(--voltage);
+}
+/* Ghost cue on hover over an empty glyph-margin line (no glow, dim ink). */
+.dbg-breakpoint-ghost { cursor: pointer; }
+.dbg-breakpoint-ghost::before {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 9px; height: 9px; transform: translate(-50%, -50%);
+  border-radius: 50%; background: var(--ink-faint);
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 880px) {
   body { overflow: auto; height: auto; }

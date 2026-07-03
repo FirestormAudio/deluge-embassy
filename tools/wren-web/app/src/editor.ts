@@ -65,6 +65,7 @@ export function createEditor(host: HTMLElement, value: string) {
     lineHeight: 20,
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
+    glyphMargin: true, // breakpoint gutter (see debug/gutter.ts)
     padding: { top: 14 },
     renderLineHighlight: "line",
     smoothScrolling: true,

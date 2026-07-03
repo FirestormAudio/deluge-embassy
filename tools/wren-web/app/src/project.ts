@@ -10,6 +10,10 @@ export interface Project {
   entry: string;
   open: string[];
   active: string;
+  // Debug breakpoints, keyed by file path → sorted 1-based line numbers.
+  // Rides along in the persisted JSON but is deliberately kept out of
+  // permalink() (share the code, not someone else's probe points).
+  breakpoints: Record<string, number[]>;
 }
 
 const KEY = "wren-deluge:project";
@@ -17,18 +21,24 @@ const KEY = "wren-deluge:project";
 /// A file's Wren module name (path without the .wren extension).
 export const moduleName = (path: string) => path.replace(/\.wren$/, "");
 
+function cloneBreakpoints(bp: Record<string, number[]>): Record<string, number[]> {
+  const out: Record<string, number[]> = {};
+  for (const [path, lines] of Object.entries(bp)) out[path] = [...lines];
+  return out;
+}
+
 function clone(p: Project): Project {
-  return { files: { ...p.files }, entry: p.entry, open: [...p.open], active: p.active };
+  return { files: { ...p.files }, entry: p.entry, open: [...p.open], active: p.active, breakpoints: cloneBreakpoints(p.breakpoints) };
 }
 
 export function defaultProject(): Project {
   const ex = EXAMPLES[0];
-  return { files: { ...ex.files }, entry: ex.entry, open: [ex.entry], active: ex.entry };
+  return { files: { ...ex.files }, entry: ex.entry, open: [ex.entry], active: ex.entry, breakpoints: {} };
 }
 
 /// A Project from an example (used by the examples menu).
 export function projectFromExample(ex: { files: Record<string, string>; entry: string }): Project {
-  return { files: { ...ex.files }, entry: ex.entry, open: Object.keys(ex.files).includes(ex.entry) ? [ex.entry] : [], active: ex.entry };
+  return { files: { ...ex.files }, entry: ex.entry, open: Object.keys(ex.files).includes(ex.entry) ? [ex.entry] : [], active: ex.entry, breakpoints: {} };
 }
 
 function fromPermalink(): Project | null {
@@ -48,7 +58,7 @@ function fromLocal(): Project | null {
     // Migrate a legacy single script into a one-file project.
     const legacy = localStorage.getItem(LEGACY_SCRIPT_KEY);
     if (legacy != null) {
-      return { files: { "main.wren": legacy }, entry: "main.wren", open: ["main.wren"], active: "main.wren" };
+      return { files: { "main.wren": legacy }, entry: "main.wren", open: ["main.wren"], active: "main.wren", breakpoints: {} };
     }
   } catch {
     /* ignore */
@@ -64,7 +74,14 @@ function normalize(p: Partial<Project>): Project {
   const open = (p.open ?? [entry]).filter((x) => files[x] != null);
   if (open.length === 0) open.push(entry);
   const active = p.active && open.includes(p.active) ? p.active : open[0];
-  return { files, entry, open, active };
+  // Drop breakpoints for files that no longer exist; keep lines sorted + unique.
+  const breakpoints: Record<string, number[]> = {};
+  for (const [path, lines] of Object.entries(p.breakpoints ?? {})) {
+    if (files[path] == null || !Array.isArray(lines)) continue;
+    const clean = [...new Set(lines.filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+    if (clean.length) breakpoints[path] = clean;
+  }
+  return { files, entry, open, active, breakpoints };
 }
 
 /// Initial project: permalink > localStorage (with legacy migration) > default.
@@ -152,6 +169,7 @@ export class ProjectStore {
   }
   remove(path: string) {
     delete this.project.files[path];
+    delete this.project.breakpoints[path];
     this.project.open = this.project.open.filter((p) => p !== path);
     if (this.project.entry === path) this.project.entry = this.paths().find((p) => p.endsWith(".wren")) ?? "";
     if (this.project.active === path) this.project.active = this.project.open[this.project.open.length - 1] ?? "";
@@ -161,6 +179,10 @@ export class ProjectStore {
     if (this.project.files[newPath] != null || this.project.files[oldPath] == null) return;
     this.project.files[newPath] = this.project.files[oldPath];
     delete this.project.files[oldPath];
+    if (this.project.breakpoints[oldPath]) {
+      this.project.breakpoints[newPath] = this.project.breakpoints[oldPath];
+      delete this.project.breakpoints[oldPath];
+    }
     const swap = (p: string) => (p === oldPath ? newPath : p);
     this.project.open = this.project.open.map(swap);
     if (this.project.entry === oldPath) this.project.entry = newPath;
@@ -170,6 +192,30 @@ export class ProjectStore {
   setEntry(path: string) {
     this.project.entry = path;
     this.changed();
+  }
+
+  /// Sorted breakpoint lines for a file (empty if none). 4.2 seeds
+  /// `controller.launch` from this for the active file.
+  breakpointsFor(path: string): number[] {
+    return this.project.breakpoints[path] ?? [];
+  }
+  /// Toggle a breakpoint at `line` for `path`; returns the new state (true = set).
+  /// Persists but doesn't re-render tabs/tree (breakpoints are gutter-local).
+  toggleBreakpoint(path: string, line: number): boolean {
+    const lines = this.project.breakpoints[path] ?? [];
+    const set = lines.includes(line);
+    this.setBreakpoints(path, set ? lines.filter((l) => l !== line) : [...lines, line]);
+    return !set;
+  }
+  /// Replace a file's breakpoint set (sorted + deduped; empty clears the key).
+  setBreakpoints(path: string, lines: number[]) {
+    const clean = [...new Set(lines.filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+    if (clean.length) this.project.breakpoints[path] = clean;
+    else delete this.project.breakpoints[path];
+    // Persist on the debounced timer without a full re-render (the gutter
+    // updates its own decorations synchronously).
+    clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => this.save(), 400);
   }
 
   open(path: string) {

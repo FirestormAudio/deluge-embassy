@@ -9,6 +9,7 @@ import { WebMidi } from "./midi";
 import { ProjectStore, loadInitialProject, projectFromExample } from "./project";
 import { Tabs } from "./tabs";
 import { FileBrowser } from "./filebrowser";
+import { setupBreakpointGutter } from "./debug/gutter";
 import { EXAMPLES } from "./examples";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
@@ -33,10 +34,13 @@ async function boot() {
   // Project: a virtual filesystem with tabs + a file tree. The active file's
   // Monaco model is shown in the shared editor (a #p= permalink wins over the
   // saved project, which wins over the default example).
-  const { editor } = createEditor($("#editor"), "");
+  const { editor, monaco } = createEditor($("#editor"), "");
   const store = new ProjectStore(loadInitialProject());
   const tabs = new Tabs(editor, $("#tab-bar"), store);
   const browser = new FileBrowser($("#file-browser"), store);
+  // Breakpoint gutter: glyph-margin clicks toggle amber breakpoints, stored in
+  // the project (persisted, and read by 4.2's debug launch).
+  const gutter = setupBreakpointGutter(monaco, editor, tabs, store);
   tabs.render();
   browser.render();
 
@@ -147,6 +151,7 @@ async function boot() {
   store.onChange = () => {
     browser.render();
     tabs.render();
+    gutter.renderActive(); // repaint the active file's breakpoints after a tab/model switch
     reanalyze();
   };
 
@@ -253,6 +258,8 @@ async function boot() {
     activate: (p: string) => store.activate(p),
     setEntry: (p: string) => store.setEntry(p),
     run: () => run(),
+    // Breakpoint inspection (used by tests).
+    breakpoints: (p: string) => store.breakpointsFor(p),
   };
 }
 
