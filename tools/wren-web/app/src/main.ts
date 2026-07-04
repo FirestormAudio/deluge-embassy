@@ -200,12 +200,14 @@ async function boot() {
     const entryModel = tabs.model(store.project.entry);
     const clear = () => monaco.editor.setModelMarkers(entryModel, "wren-check", []);
     if (ok || !error) return clear();
-    // Contention guard: defer to the analyzer whenever it has an opinion.
-    const analyzerFlagsAnything = Object.keys(store.project.files).some((p) =>
-      analyzerMarkers(tabs.model(p)).some((m) => m.severity === monaco.MarkerSeverity.Error),
-    );
-    if (analyzerFlagsAnything) return clear();
     const line = Math.max(1, Math.min(errorLine, entryModel.getLineCount()));
+    // Contention is per-ISSUE, not per-file: defer only if the analyzer already
+    // marks this exact line (the same problem) — so the check still surfaces an
+    // error the analyzer misses even when the analyzer flags something elsewhere.
+    const analyzerCoversLine = analyzerMarkers(entryModel).some(
+      (m) => m.severity === monaco.MarkerSeverity.Error && m.startLineNumber <= line && line <= m.endLineNumber,
+    );
+    if (analyzerCoversLine) return clear();
     const lineText = entryModel.getLineContent(line);
     monaco.editor.setModelMarkers(entryModel, "wren-check", [
       {
