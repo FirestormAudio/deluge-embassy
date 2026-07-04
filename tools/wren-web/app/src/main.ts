@@ -184,14 +184,75 @@ async function boot() {
     }, 300);
   };
 
+  // ── Background compile/run check (the full compiler surface, off-thread) ─────
+  // A throwaway sim VM in a Worker compiles+runs the whole project through the
+  // REAL wren compiler on a debounce, surfacing errors the static analyzer can't
+  // (undefined module vars, arity, top-level runtime). It works IN CONJUNCTION
+  // with the analyzer, never against it: if the analyzer already flags any file,
+  // the check defers (the analyzer's per-file diagnostics are more precise); the
+  // check only speaks when static analysis is clean but the compiler/runtime
+  // still fails. Owner "wren-check" keeps it separate from analyzer/vm markers.
+  const checkWasmUrl = new URL(wasmUrl, location.href).href;
+  let checkWorker: Worker;
+  let checkSeq = 0;
+  let checkTimeout = 0;
+  const applyCheckResult = (ok: boolean, error: string, errorLine: number) => {
+    const entryModel = tabs.model(store.project.entry);
+    const clear = () => monaco.editor.setModelMarkers(entryModel, "wren-check", []);
+    if (ok || !error) return clear();
+    // Contention guard: defer to the analyzer whenever it has an opinion.
+    const analyzerFlagsAnything = Object.keys(store.project.files).some((p) =>
+      analyzerMarkers(tabs.model(p)).some((m) => m.severity === monaco.MarkerSeverity.Error),
+    );
+    if (analyzerFlagsAnything) return clear();
+    const line = Math.max(1, Math.min(errorLine, entryModel.getLineCount()));
+    const lineText = entryModel.getLineContent(line);
+    monaco.editor.setModelMarkers(entryModel, "wren-check", [
+      {
+        severity: monaco.MarkerSeverity.Error,
+        message: error.split("\n")[0] ?? "error",
+        startLineNumber: line,
+        startColumn: 1,
+        endLineNumber: line,
+        endColumn: lineText.length + 1,
+      },
+    ]);
+  };
+  const spawnCheckWorker = () => {
+    checkWorker?.terminate();
+    checkWorker = new Worker(new URL("./check-worker.ts", import.meta.url), { type: "module" });
+    checkWorker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === "result" && m.seq === checkSeq) {
+        clearTimeout(checkTimeout);
+        applyCheckResult(m.ok, m.error, m.errorLine);
+      }
+    };
+    checkWorker.postMessage({ type: "init", wasmUrl: checkWasmUrl });
+  };
+  spawnCheckWorker();
+  let checkDebounce = 0;
+  const scheduleCheck = () => {
+    clearTimeout(checkDebounce);
+    checkDebounce = window.setTimeout(() => {
+      const seq = ++checkSeq;
+      checkWorker.postMessage({ type: "check", seq, files: { ...store.project.files }, entry: store.project.entry });
+      // Kill + respawn a check that hangs (e.g. a top-level infinite loop) so a
+      // stuck VM never blocks future checks; the editor itself never blocked.
+      clearTimeout(checkTimeout);
+      checkTimeout = window.setTimeout(spawnCheckWorker, 4000);
+    }, 600);
+  };
+
   // A Run writes a `wren-vm` error marker on the entry that otherwise lingers
   // until the *next* Run — so a fixed error keeps squiggling. Clear it on any
-  // edit; the live analyzer now carries current (incl. import) errors.
+  // edit; the live analyzer + background check now carry current errors.
   const clearRunError = () => setErrorMarker(tabs.model(store.project.entry), -1, "");
   editor.onDidChangeModelContent(() => {
     store.writeQuiet(store.project.active, editor.getValue()); // mirror + autosave
     clearRunError();
     scheduleReanalyze();
+    scheduleCheck();
   });
   // Structural changes (open/close/create/rename/delete/load) re-render the tree
   // + tabs and re-analyze the (possibly new) active file + its dependents.
@@ -201,6 +262,7 @@ async function boot() {
     gutter.renderActive(); // repaint the active file's breakpoints after a tab/model switch
     clearRunError();
     scheduleReanalyze();
+    scheduleCheck();
   };
 
   // Share: copy a permalink whose hash encodes the whole project.
@@ -314,6 +376,7 @@ async function boot() {
 
   run();
   scheduleReanalyze(); // initial diagnostics for the starting script
+  scheduleCheck(); // initial full-compiler check
   requestAnimationFrame(tick);
 
   // Small inspection hook (handy in the console / for verification).
@@ -339,6 +402,11 @@ async function boot() {
     breakpoints: (p: string) => store.breakpointsFor(p),
     // Analyzer markers for any file's model (not just the active one).
     markersOf: (p: string) => analyzerMarkers(tabs.model(p)).map((m) => m.message),
+    // Background-check markers on the entry (owner "wren-check"), for tests.
+    checkMarkers: () =>
+      monaco.editor
+        .getModelMarkers({ owner: "wren-check", resource: tabs.model(store.project.entry).uri })
+        .map((m) => m.message),
     // Debug session inspection (used by tests): current state + selected frame.
     debugState: () => debugSession.state,
     selectedFrame: () => debugSession.selectedFrameId,
