@@ -184,8 +184,13 @@ async function boot() {
     }, 300);
   };
 
+  // A Run writes a `wren-vm` error marker on the entry that otherwise lingers
+  // until the *next* Run — so a fixed error keeps squiggling. Clear it on any
+  // edit; the live analyzer now carries current (incl. import) errors.
+  const clearRunError = () => setErrorMarker(tabs.model(store.project.entry), -1, "");
   editor.onDidChangeModelContent(() => {
     store.writeQuiet(store.project.active, editor.getValue()); // mirror + autosave
+    clearRunError();
     scheduleReanalyze();
   });
   // Structural changes (open/close/create/rename/delete/load) re-render the tree
@@ -194,6 +199,7 @@ async function boot() {
     browser.render();
     tabs.render();
     gutter.renderActive(); // repaint the active file's breakpoints after a tab/model switch
+    clearRunError();
     scheduleReanalyze();
   };
 
