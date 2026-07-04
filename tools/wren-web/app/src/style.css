@@ -127,12 +127,14 @@ select {
 
 /* ── Bench: files | editor | instrument pane ─────────────────────────────── */
 .bench {
-  /* Left width + console height are drag-resizable (see src/resize.ts); Monaco
-     reflows via automaticLayout. */
+  /* Left width, console height, and the instrument-pane width are all
+     drag-resizable (see src/resize.ts); Monaco reflows via automaticLayout and
+     the instrument contents zoom-scale to the pane (600px design width). */
   --left-w: 210px;
   --console-h: 156px;
+  --inst-w: 600px;
   display: grid;
-  grid-template-columns: var(--left-w) 1fr 600px;
+  grid-template-columns: var(--left-w) 1fr var(--inst-w);
   min-height: 0;
 }
 .file-browser, .editor-pane, .instrument-pane {
@@ -147,6 +149,9 @@ select {
 .resizer:hover, .resizer.dragging { background: #8fe9ff40; }
 .resizer:focus-visible { background: #8fe9ff66; outline: none; }
 .resizer-x { top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; }
+/* Instrument pane's left edge: fully inside (the pane has overflow-x:hidden and
+   abuts Monaco's scrollbar, so an overhang would clip / fight the editor). */
+.resizer-x.resizer-left { right: auto; left: 0; }
 .resizer-y { top: -3px; left: 0; width: 100%; height: 6px; cursor: row-resize; }
 /* While dragging, lock the cursor + kill selection across the whole page. */
 body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-select: none; }
@@ -154,8 +159,12 @@ body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-sel
 .instrument-pane {
   border-left: 1px solid var(--hairline);
   background: linear-gradient(180deg, var(--panel) 0%, var(--chassis) 100%);
-  overflow-y: auto;
+  overflow-y: auto; overflow-x: hidden;
 }
+/* The instrument contents are laid out for a 600px design width; `zoom` scales
+   the whole rig (OLED, faceplate, scopes, keyboard) proportionally as the pane
+   is resized, so nothing overflows or leaves gaps. */
+.instrument-scale { zoom: calc(var(--inst-w) / 600px); }
 #editor { flex: 1; min-height: 0; }
 
 /* ── File browser ─────────────────────────────────────────────────────────── */
@@ -220,10 +229,14 @@ body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-sel
 .dbg-section { display: flex; flex-direction: column; flex: none; }
 .dbg-section-head {
   display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%;
-  background: none; cursor: pointer; text-align: left;
+  background: none; border: none; cursor: pointer; text-align: left;
 }
 .dbg-section-head:hover { color: var(--ink); }
 .dbg-section-head .fb-twisty { font-size: 9px; }
+/* Read like the folder-collapse rows: twisty + label together on the left. The
+   `.file-browser .pane-legend` space-between rule (for the files header) would
+   otherwise shove these labels to the right edge. */
+.file-browser .dbg-section-head, .file-browser .dbg-scope-head { justify-content: flex-start; }
 .dbg-section.collapsed .dbg-section-body { display: none; }
 .dbg-section-body { padding: 4px 0; font-size: 12.5px; }
 
@@ -526,6 +539,7 @@ body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-sel
   border-top: 1px solid var(--hairline);
   background: var(--chassis-deep);
   display: flex; flex-direction: column; height: var(--console-h);
+  position: relative; /* anchor #resize-console to the console's top edge */
 }
 .console {
   flex: 1; overflow-y: auto; padding: 8px 14px;
@@ -606,6 +620,9 @@ body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-sel
   .tagline { display: none; }
   .console-pane { height: 120px; }
   .resizer { display: none; } /* single-column layout: nothing to resize */
+  /* Single column: scale the instrument rig to the viewport, not the (now
+     full-width) --inst-w, so the 600px design never overflows horizontally. */
+  .instrument-scale { zoom: calc((100vw - 4px) / 600px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

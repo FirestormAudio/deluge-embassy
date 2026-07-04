@@ -22,6 +22,21 @@ test("dragging the splitters resizes the left panel + console and persists", asy
   await page.mouse.up();
   expect(await fbWidth()).toBeGreaterThan(w0 + 80);
 
+  // Drag the instrument splitter ~140px left → wider instrument pane, and its
+  // contents zoom-scale up (the OLED grows with the pane).
+  const instW = () => page.locator(".instrument-pane").evaluate((el) => Math.round(el.getBoundingClientRect().width));
+  const oledW = () => page.locator("#oled").evaluate((el) => Math.round(el.getBoundingClientRect().width));
+  const iw0 = await instW();
+  const ow0 = await oledW();
+  const inst = page.locator("#resize-instrument");
+  const ib = (await inst.boundingBox())!;
+  await page.mouse.move(ib.x + ib.width / 2, ib.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(ib.x - 140, ib.y + 200, { steps: 8 });
+  await page.mouse.up();
+  expect(await instW()).toBeGreaterThan(iw0 + 100);
+  expect(await oledW()).toBeGreaterThan(ow0 + 40); // contents scaled with the pane
+
   // Drag the console splitter ~90px up → taller console.
   const con = page.locator("#resize-console");
   const cb = (await con.boundingBox())!;

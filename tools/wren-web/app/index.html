@@ -58,6 +58,8 @@
       </section>
 
       <section class="instrument-pane">
+        <div id="resize-instrument" class="resizer resizer-x resizer-left" role="separator" aria-orientation="vertical" aria-label="resize the instrument panel" tabindex="0"></div>
+        <div class="instrument-scale">
         <div class="screen">
           <div class="pane-legend">oled · 128×48</div>
           <canvas id="oled" role="img" aria-label="OLED display, 128 by 48 pixels"></canvas>
@@ -106,6 +108,7 @@
             <div class="pane-legend">midi · monitor</div>
             <div id="midi-monitor" class="midi-monitor" role="log" aria-live="polite" aria-label="MIDI monitor"></div>
           </div>
+        </div>
         </div>
       </section>
     </main>

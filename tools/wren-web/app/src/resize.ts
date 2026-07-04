@@ -4,6 +4,7 @@
 // automaticLayout reflows the editor) and the size is persisted to localStorage.
 const LEFT_KEY = "wren-deluge:left-w";
 const CONSOLE_KEY = "wren-deluge:console-h";
+const INST_KEY = "wren-deluge:inst-w";
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
@@ -12,13 +13,16 @@ export function setupResizers() {
   const editorPane = document.querySelector<HTMLElement>(".editor-pane");
   const leftHandle = document.querySelector<HTMLElement>("#resize-left");
   const consoleHandle = document.querySelector<HTMLElement>("#resize-console");
+  const instHandle = document.querySelector<HTMLElement>("#resize-instrument");
   if (!bench || !editorPane) return;
 
   // Restore persisted sizes.
   const savedW = localStorage.getItem(LEFT_KEY);
   const savedH = localStorage.getItem(CONSOLE_KEY);
+  const savedI = localStorage.getItem(INST_KEY);
   if (savedW) bench.style.setProperty("--left-w", savedW);
   if (savedH) bench.style.setProperty("--console-h", savedH);
+  if (savedI) bench.style.setProperty("--inst-w", savedI);
 
   // Left panel width: drag X → distance from the bench's left edge.
   if (leftHandle) {
@@ -27,6 +31,16 @@ export function setupResizers() {
       bench.style.setProperty("--left-w", `${w}px`);
       return `${w}px`;
     }, LEFT_KEY);
+  }
+
+  // Instrument panel width: drag X → distance from the bench's right edge.
+  // The pane's contents zoom-scale to this width (CSS `.instrument-scale`).
+  if (instHandle) {
+    dragHandle(instHandle, "col", (e) => {
+      const w = clamp(bench.getBoundingClientRect().right - e.clientX, 260, 1000);
+      bench.style.setProperty("--inst-w", `${w}px`);
+      return `${w}px`;
+    }, INST_KEY);
   }
 
   // Console height: drag Y → distance from the editor pane's bottom edge.
