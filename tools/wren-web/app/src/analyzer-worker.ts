@@ -145,9 +145,9 @@ function completions(source: string): Completion[] {
 const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
 
 // Handle an analyze/query once the wasm is ready.
-function handle(msg: { type: string; version?: number; source: string; id?: number; kind?: QueryKind; offset?: number; modules?: Record<string, string> }) {
+function handle(msg: { type: string; version?: number; source: string; id?: number; kind?: QueryKind; offset?: number; modules?: Record<string, string>; path?: string }) {
   if (msg.type === "analyze") {
-    post({ type: "diagnostics", version: msg.version, diags: diagnostics(msg.source, msg.modules) });
+    post({ type: "diagnostics", version: msg.version, diags: diagnostics(msg.source, msg.modules), path: msg.path });
   } else if (msg.type === "query") {
     let result: unknown = null;
     if (msg.kind === "hover") result = hover(msg.source, msg.offset!);

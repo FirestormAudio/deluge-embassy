@@ -9,16 +9,17 @@ type QueryKind = "hover" | "definition" | "completions";
 
 export class Analyzer {
   private worker: Worker;
-  private debounce = 0;
   private nextId = 1;
   private pending = new Map<number, (result: unknown) => void>();
-  onDiagnostics: (version: number, diags: Diag[]) => void = () => {};
+  /// Diagnostics for the file at `path` (so multi-file re-analysis can mark each
+  /// file's own model). `version` lets the caller drop stale results per file.
+  onDiagnostics: (version: number, diags: Diag[], path: string) => void = () => {};
 
   constructor(wasmUrl: string) {
     this.worker = new Worker(new URL("./analyzer-worker.ts", import.meta.url), { type: "module" });
     this.worker.onmessage = (e) => {
       const m = e.data;
-      if (m.type === "diagnostics") this.onDiagnostics(m.version, m.diags as Diag[]);
+      if (m.type === "diagnostics") this.onDiagnostics(m.version, m.diags as Diag[], m.path as string);
       else if (m.type === "queryResult") {
         const resolve = this.pending.get(m.id);
         if (resolve) {
@@ -60,14 +61,11 @@ export class Analyzer {
     this.pending.clear();
   }
 
-  /// Schedule analysis of `source` (debounced); `version` lets the caller drop
-  /// stale diagnostics. `modules` are the other project files (module name →
-  /// source) so cross-file imports (`import "lib/x" for Y`) resolve live.
-  analyze(source: string, version: number, modules?: Record<string, string>, delayMs = 250) {
-    clearTimeout(this.debounce);
-    this.debounce = window.setTimeout(() => {
-      this.worker.postMessage({ type: "analyze", source, version, modules });
-    }, delayMs);
+  /// Analyze `source` for the file at `path` (the caller debounces). `version`
+  /// lets the caller drop stale results per file; `modules` are the other
+  /// project files (module name → source) so cross-file imports resolve.
+  analyze(source: string, version: number, path: string, modules?: Record<string, string>) {
+    this.worker.postMessage({ type: "analyze", source, version, path, modules });
   }
 
   private query<T>(kind: QueryKind, source: string, offset: number): Promise<T> {

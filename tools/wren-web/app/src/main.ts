@@ -142,31 +142,59 @@ async function boot() {
   // from the VM's run-time errors (which appear on Run).
   const analyzer = new Analyzer(`${import.meta.env.BASE_URL}wren-analyzer.wasm`);
   registerIntelligence(analyzer); // hover, go-to-def, symbol completion
-  let editVersion = 0;
-  analyzer.onDiagnostics = (version, diags) => {
-    if (version === editVersion) setAnalyzerMarkers(editor.getModel()!, diags);
-  };
-  // Re-analyze the active file, passing the *other* project files as modules so
-  // the analyzer resolves cross-file imports live (no Run needed).
-  const reanalyze = () => {
-    const active = store.project.active;
-    const modules: Record<string, string> = {};
-    for (const [path, content] of Object.entries(store.project.files)) {
-      if (path !== active) modules[moduleName(path)] = content;
+  // Per-file analysis version so multi-file re-analysis can drop stale results
+  // for each file independently.
+  const analyzeVersions = new Map<string, number>();
+  analyzer.onDiagnostics = (version, diags, path) => {
+    if (analyzeVersions.get(path) === version && store.project.files[path] != null) {
+      setAnalyzerMarkers(tabs.model(path), diags);
     }
-    analyzer.analyze(editor.getValue(), ++editVersion, modules);
   };
+
+  // Analyze one file with the *other* project files as modules (so cross-file
+  // imports resolve), and mark that file's own model. The active file uses the
+  // live editor buffer; others use their stored (autosaved) content.
+  const analyzeFile = (path: string) => {
+    if (store.project.files[path] == null) return;
+    const modules: Record<string, string> = {};
+    for (const [p, c] of Object.entries(store.project.files)) {
+      if (p !== path) modules[moduleName(p)] = c;
+    }
+    const src = path === store.project.active ? editor.getValue() : store.project.files[path];
+    const v = (analyzeVersions.get(path) ?? 0) + 1;
+    analyzeVersions.set(path, v);
+    analyzer.analyze(src, v, path, modules);
+  };
+
+  // Re-analyze the active file plus every file that imports it — so editing a
+  // module refreshes the import markers of its dependents (no Run needed) —
+  // coalesced on a short pause so it only runs when you stop typing.
+  const importsModule = (content: string, mod: string) =>
+    new RegExp(`import\\s+"${mod.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`).test(content);
+  let analyzeTimer = 0;
+  const scheduleReanalyze = () => {
+    clearTimeout(analyzeTimer);
+    analyzeTimer = window.setTimeout(() => {
+      const active = store.project.active;
+      analyzeFile(active);
+      const activeMod = moduleName(active);
+      for (const [path, content] of Object.entries(store.project.files)) {
+        if (path !== active && importsModule(content, activeMod)) analyzeFile(path);
+      }
+    }, 300);
+  };
+
   editor.onDidChangeModelContent(() => {
     store.writeQuiet(store.project.active, editor.getValue()); // mirror + autosave
-    reanalyze();
+    scheduleReanalyze();
   });
   // Structural changes (open/close/create/rename/delete/load) re-render the tree
-  // + tabs and re-analyze the (possibly new) active file.
+  // + tabs and re-analyze the (possibly new) active file + its dependents.
   store.onChange = () => {
     browser.render();
     tabs.render();
     gutter.renderActive(); // repaint the active file's breakpoints after a tab/model switch
-    reanalyze();
+    scheduleReanalyze();
   };
 
   // Share: copy a permalink whose hash encodes the whole project.
@@ -279,7 +307,7 @@ async function boot() {
   };
 
   run();
-  reanalyze(); // initial diagnostics for the starting script
+  scheduleReanalyze(); // initial diagnostics for the starting script
   requestAnimationFrame(tick);
 
   // Small inspection hook (handy in the console / for verification).
@@ -303,6 +331,8 @@ async function boot() {
     run: () => run(),
     // Breakpoint inspection (used by tests).
     breakpoints: (p: string) => store.breakpointsFor(p),
+    // Analyzer markers for any file's model (not just the active one).
+    markersOf: (p: string) => analyzerMarkers(tabs.model(p)).map((m) => m.message),
     // Debug session inspection (used by tests): current state + selected frame.
     debugState: () => debugSession.state,
     selectedFrame: () => debugSession.selectedFrameId,

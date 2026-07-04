@@ -11,6 +11,7 @@ type Wren = {
   setEntry: (p: string) => void;
   setSource: (s: string) => void;
   markers: () => { message: string; startLineNumber: number }[];
+  markersOf: (p: string) => string[];
 };
 const wren = (page: import("@playwright/test").Page, fn: (w: Wren) => unknown) =>
   page.evaluate(`(${fn})((window).wren)`);
@@ -53,4 +54,39 @@ test("cross-file import errors appear live and clear when the module is fixed", 
     .not.toContain("Could not find a variable named 'Synth' in module 'lib/mod'.");
 
   expect(pageErrors, `unexpected page errors: ${pageErrors.join("\n")}`).toEqual([]);
+});
+
+test("editing a module refreshes its importers' markers without switching to them", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+
+  // main imports Thing from lib/dep, which currently exports it → main is clean.
+  await wren(page, (w) => {
+    w.createFile("lib/dep.wren", "class Thing {}\n");
+    w.activate("lib/dep.wren");
+    w.setSource("class Thing {}\n");
+  });
+  await page.waitForTimeout(400);
+  await wren(page, (w) => {
+    w.activate("main.wren");
+    w.setEntry("main.wren");
+    w.setSource('import "lib/dep" for Thing\nvar t = Thing\n');
+  });
+  await page.waitForTimeout(500);
+
+  // Edit the DEPENDENCY (lib/dep is active; main is NOT) to drop Thing →
+  // main's import marker must appear on main's own model, no switch needed.
+  await wren(page, (w) => {
+    w.activate("lib/dep.wren");
+    w.setSource("class Renamed {}\n");
+  });
+  await expect
+    .poll(async () => (await wren(page, (w) => w.markersOf("main.wren"))) as string[], { timeout: 8000 })
+    .toContain("Could not find a variable named 'Thing' in module 'lib/dep'.");
+
+  // Fix the dependency → main's marker clears live, still without switching.
+  await wren(page, (w) => w.setSource("class Thing {}\n"));
+  await expect
+    .poll(async () => (await wren(page, (w) => w.markersOf("main.wren"))) as string[], { timeout: 8000 })
+    .not.toContain("Could not find a variable named 'Thing' in module 'lib/dep'.");
 });
