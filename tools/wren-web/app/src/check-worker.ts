@@ -39,9 +39,9 @@ self.onmessage = async (e: MessageEvent<InitMsg | CheckMsg>) => {
   const sim = await ready;
   try {
     const res = sim.runProject(msg.files, msg.entry);
-    post({ type: "result", seq: msg.seq, ok: res.ok, error: res.error, errorLine: res.errorLine });
+    post({ type: "result", seq: msg.seq, ok: res.ok, error: res.error, errorLine: res.errorLine, errorModule: res.errorModule });
   } catch (err) {
-    // A wasm trap during the check — report it (line unknown) rather than crash.
-    post({ type: "result", seq: msg.seq, ok: false, error: `check crashed: ${String(err)}`, errorLine: 1 });
+    // A wasm trap during the check — report it (module/line unknown) rather than crash.
+    post({ type: "result", seq: msg.seq, ok: false, error: `check crashed: ${String(err)}`, errorLine: 1, errorModule: "main" });
   }
 };

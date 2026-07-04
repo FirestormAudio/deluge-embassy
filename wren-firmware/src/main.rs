@@ -311,7 +311,7 @@ extern "C" fn wren_host_write(text: *const c_char) {
 
 /// VM error sink (compile + runtime) → host REPL (+ RTT mirror).
 #[unsafe(no_mangle)]
-extern "C" fn wren_host_error(line: i32, message: *const c_char) {
+extern "C" fn wren_host_error(_module: *const c_char, line: i32, message: *const c_char) {
     let (s, _capped) = unsafe { cstr(message) };
     tx_push(b"!! ");
     tx_push(s.as_bytes());

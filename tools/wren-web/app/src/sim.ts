@@ -35,6 +35,8 @@ interface SimExports {
   sim_err_ptr(): number;
   sim_err_len(): number;
   sim_err_line(): number;
+  sim_err_module_ptr(): number;
+  sim_err_module_len(): number;
   sim_midi_tx_ptr(): number;
   sim_midi_tx_len(): number;
   sim_midi_tx_clear(): void;
@@ -62,6 +64,8 @@ export interface LoadResult {
   output: string;
   error: string;
   errorLine: number;
+  /// Module the error is in ("main" for the entry, else an imported module name).
+  errorModule: string;
 }
 
 export async function loadSim(wasmUrl: string): Promise<Sim> {
@@ -132,7 +136,14 @@ export class Sim {
     if (enc.length > this.x.sim_src_cap()) throw new Error("script too large");
     this.bytes(this.x.sim_src_ptr(), enc.length).set(enc);
     const code = this.x.sim_load(enc.length);
-    return { ok: code === 0, code, output: this.output(), error: this.error(), errorLine: this.x.sim_err_line() };
+    return {
+      ok: code === 0,
+      code,
+      output: this.output(),
+      error: this.error(),
+      errorLine: this.x.sim_err_line(),
+      errorModule: this.str(this.x.sim_err_module_ptr(), this.x.sim_err_module_len()),
+    };
   }
 
   pad(x: number, y: number, down: boolean) { this.x.sim_pad(x, y, down ? 1 : 0); }

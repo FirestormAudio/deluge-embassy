@@ -156,7 +156,7 @@ unsafe extern "C" {
     /// Receives the NUL-terminated text from `System.print` and friends.
     fn wren_host_write(text: *const c_char);
     /// Receives a VM error: `line` (-1 when not applicable) + NUL-terminated message.
-    fn wren_host_error(line: c_int, message: *const c_char);
+    fn wren_host_error(module: *const c_char, line: c_int, message: *const c_char);
     /// Diagnostic numeric trace (M0 bring-up only): `tag` + value. Only the
     /// device SDRAM heap reports through this (runaway-size OOM); unused on host.
     #[cfg(target_os = "none")]
@@ -195,12 +195,12 @@ unsafe extern "C" fn write_trampoline(_vm: *mut WrenVM, text: *const c_char) {
 unsafe extern "C" fn error_trampoline(
     _vm: *mut WrenVM,
     _err_type: c_int,
-    _module: *const c_char,
+    module: *const c_char,
     line: c_int,
     message: *const c_char,
 ) {
     if !message.is_null() {
-        unsafe { wren_host_error(line, message) };
+        unsafe { wren_host_error(module, line, message) };
     }
 }
 

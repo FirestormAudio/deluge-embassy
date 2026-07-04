@@ -196,20 +196,37 @@ async function boot() {
   let checkWorker: Worker;
   let checkSeq = 0;
   let checkTimeout = 0;
-  const applyCheckResult = (ok: boolean, error: string, errorLine: number) => {
-    const entryModel = tabs.model(store.project.entry);
-    const clear = () => monaco.editor.setModelMarkers(entryModel, "wren-check", []);
-    if (ok || !error) return clear();
-    const line = Math.max(1, Math.min(errorLine, entryModel.getLineCount()));
+  const applyCheckResult = (ok: boolean, error: string, errorLine: number, errorModule: string) => {
+    // At most one check error at a time; clear the previous one on every file
+    // (the error may have moved between files as you edit).
+    for (const p of Object.keys(store.project.files)) {
+      monaco.editor.setModelMarkers(tabs.model(p), "wren-check", []);
+    }
+    if (ok || !error) return;
+    // Attribute to the right file: "main" is the entry; any other module name is
+    // an imported file, whose lines are shifted +1 by the auto-prepended prelude
+    // import (see sim.ts runProject). Unknown module → best-effort to the entry.
+    const isEntry = errorModule === "main" || errorModule === "";
+    let path = store.project.entry;
+    let lineOffset = 0;
+    if (!isEntry) {
+      const found = Object.keys(store.project.files).find((p) => moduleName(p) === errorModule);
+      if (found) {
+        path = found;
+        lineOffset = -1;
+      }
+    }
+    const model = tabs.model(path);
+    const line = Math.max(1, Math.min(errorLine + lineOffset, model.getLineCount()));
     // Contention is per-ISSUE, not per-file: defer only if the analyzer already
-    // marks this exact line (the same problem) — so the check still surfaces an
-    // error the analyzer misses even when the analyzer flags something elsewhere.
-    const analyzerCoversLine = analyzerMarkers(entryModel).some(
+    // marks this exact line on THIS file — so the check still surfaces an error
+    // the analyzer misses even when the analyzer flags something elsewhere.
+    const analyzerCoversLine = analyzerMarkers(model).some(
       (m) => m.severity === monaco.MarkerSeverity.Error && m.startLineNumber <= line && line <= m.endLineNumber,
     );
-    if (analyzerCoversLine) return clear();
-    const lineText = entryModel.getLineContent(line);
-    monaco.editor.setModelMarkers(entryModel, "wren-check", [
+    if (analyzerCoversLine) return;
+    const lineText = model.getLineContent(line);
+    monaco.editor.setModelMarkers(model, "wren-check", [
       {
         severity: monaco.MarkerSeverity.Error,
         message: error.split("\n")[0] ?? "error",
@@ -227,7 +244,7 @@ async function boot() {
       const m = e.data;
       if (m.type === "result" && m.seq === checkSeq) {
         clearTimeout(checkTimeout);
-        applyCheckResult(m.ok, m.error, m.errorLine);
+        applyCheckResult(m.ok, m.error, m.errorLine, m.errorModule);
       }
     };
     checkWorker.postMessage({ type: "init", wasmUrl: checkWasmUrl });
@@ -404,10 +421,10 @@ async function boot() {
     breakpoints: (p: string) => store.breakpointsFor(p),
     // Analyzer markers for any file's model (not just the active one).
     markersOf: (p: string) => analyzerMarkers(tabs.model(p)).map((m) => m.message),
-    // Background-check markers on the entry (owner "wren-check"), for tests.
-    checkMarkers: () =>
+    // Background-check markers (owner "wren-check") for a file (default entry).
+    checkMarkers: (p?: string) =>
       monaco.editor
-        .getModelMarkers({ owner: "wren-check", resource: tabs.model(store.project.entry).uri })
+        .getModelMarkers({ owner: "wren-check", resource: tabs.model(p ?? store.project.entry).uri })
         .map((m) => m.message),
     // Debug session inspection (used by tests): current state + selected frame.
     debugState: () => debugSession.state,

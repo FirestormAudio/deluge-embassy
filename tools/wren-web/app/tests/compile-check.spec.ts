@@ -12,7 +12,7 @@ type Wren = {
   setEntry: (p: string) => void;
   setSource: (s: string) => void;
   markersOf: (p: string) => string[];
-  checkMarkers: () => string[];
+  checkMarkers: (p?: string) => string[];
 };
 const wren = (page: import("@playwright/test").Page, fn: (w: Wren) => unknown) =>
   page.evaluate(`(${fn})((window).wren)`);
@@ -60,4 +60,30 @@ test("the check defers to the analyzer (no double squiggle) when the analyzer al
   // …so the check stays quiet (defers), and there's a single squiggle on the line.
   await poll(page, (w) => w.checkMarkers()).toEqual([]);
   await expect(page.locator(".squiggly-error")).toHaveCount(1);
+});
+
+test("a compiler error inside an imported module lands on that module's file, not the entry", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+
+  // lib/mod line 2 references an undefined var — a compile error INSIDE lib/mod.
+  // main imports it (validly). The check must attribute the error to lib/mod's
+  // own model (not the entry), despite the import cascade.
+  await wren(page, (w) => {
+    w.createFile("lib/mod.wren", "class Thing {}\n");
+    w.activate("lib/mod.wren");
+    w.setSource("class Thing {}\nvar y = Undefined\n");
+  });
+  await page.waitForTimeout(300);
+  await wren(page, (w) => {
+    w.activate("main.wren");
+    w.setEntry("main.wren");
+    w.setSource('import "lib/mod" for Thing\nvar t = Thing\n');
+  });
+
+  await poll(page, (w) => w.checkMarkers("lib/mod.wren")).toContain(
+    "Error at 'Undefined': Variable is used but not defined.",
+  );
+  // …and NOT mis-attributed to the entry.
+  await poll(page, (w) => w.checkMarkers("main.wren")).toEqual([]);
 });

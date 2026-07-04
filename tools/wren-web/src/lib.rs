@@ -139,6 +139,11 @@ static mut OUT_LEN: usize = 0;
 static mut ERR: [u8; ERR_CAP] = [0; ERR_CAP];
 static mut ERR_LEN: usize = 0;
 static mut ERR_LINE: i32 = -1;
+/// Module the last error occurred in (`main` for the entry, else an imported
+/// module name), so the editor can attribute a compile error to the right file.
+const ERR_MODULE_CAP: usize = 256;
+static mut ERR_MODULE: [u8; ERR_MODULE_CAP] = [0; ERR_MODULE_CAP];
+static mut ERR_MODULE_LEN: usize = 0;
 static mut AUDIO: [f32; AUDIO_CAP] = [0.0; AUDIO_CAP];
 
 // main→worklet audio-graph command FIFO (serialized).
@@ -196,9 +201,28 @@ extern "C" fn wren_host_write(text: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn wren_host_error(line: c_int, message: *const c_char) {
+extern "C" fn wren_host_error(module: *const c_char, line: c_int, message: *const c_char) {
     unsafe {
-        ERR_LINE = line;
+        // Capture the FIRST error's location + module (the root cause). A failed
+        // import cascades a second error in the *importing* module, and runtime
+        // stack traces list outer frames after the inner one — neither should
+        // overwrite where the real error is, so the editor attributes it right.
+        if ERR_LINE == -1 && line >= 1 {
+            ERR_LINE = line;
+            if !module.is_null() {
+                let dst = &mut *addr_of_mut!(ERR_MODULE);
+                let mut i = 0usize;
+                while i < ERR_MODULE_CAP {
+                    let b = *module.add(i);
+                    if b == 0 {
+                        break;
+                    }
+                    dst[i] = b as u8;
+                    i += 1;
+                }
+                ERR_MODULE_LEN = i;
+            }
+        }
         append_cstr(&mut *addr_of_mut!(ERR), &mut *addr_of_mut!(ERR_LEN), message);
         // Newline so multiple error lines stay readable.
         let e = &mut *addr_of_mut!(ERR);
@@ -357,6 +381,7 @@ pub extern "C" fn sim_load(len: usize) -> i32 {
         OUT_LEN = 0;
         ERR_LEN = 0;
         ERR_LINE = -1;
+        ERR_MODULE_LEN = 0;
         let src = &mut *addr_of_mut!(SRC);
         let n = len.min(SRC_CAP);
         src[n] = 0;
@@ -457,6 +482,16 @@ pub extern "C" fn sim_err_len() -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn sim_err_line() -> i32 {
     unsafe { ERR_LINE }
+}
+/// Name of the module the last error occurred in (`main` for the entry, else an
+/// imported module). Read `[sim_err_module_ptr()..+sim_err_module_len()]`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_err_module_ptr() -> *const u8 {
+    addr_of_mut!(ERR_MODULE) as *const u8
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_err_module_len() -> usize {
+    unsafe { ERR_MODULE_LEN }
 }
 
 #[unsafe(no_mangle)]

@@ -28,7 +28,7 @@ extern "C" fn wren_host_write(_text: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn wren_host_error(line: c_int, message: *const c_char) {
+extern "C" fn wren_host_error(_module: *const c_char, line: c_int, message: *const c_char) {
     LAST_ERR_LINE.store(line, Ordering::Relaxed);
     // SAFETY: single-threaded test helper (see module docs); `message` is a
     // valid NUL-terminated C string for the duration of this call.
