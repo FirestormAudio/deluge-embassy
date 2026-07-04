@@ -61,11 +61,12 @@ export class Analyzer {
   }
 
   /// Schedule analysis of `source` (debounced); `version` lets the caller drop
-  /// stale diagnostics.
-  analyze(source: string, version: number, delayMs = 250) {
+  /// stale diagnostics. `modules` are the other project files (module name →
+  /// source) so cross-file imports (`import "lib/x" for Y`) resolve live.
+  analyze(source: string, version: number, modules?: Record<string, string>, delayMs = 250) {
     clearTimeout(this.debounce);
     this.debounce = window.setTimeout(() => {
-      this.worker.postMessage({ type: "analyze", source, version });
+      this.worker.postMessage({ type: "analyze", source, version, modules });
     }, delayMs);
   }
 

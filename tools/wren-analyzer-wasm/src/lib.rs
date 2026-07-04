@@ -16,12 +16,21 @@
 //! ```
 use std::ptr::addr_of_mut;
 
+use wren_analyzer::AnalyzerDiagnostic;
 use wren_analyzer::analyze;
 use wren_analyzer::index::{SymKind, SymbolDef, SymbolIndex};
 use wren_syntax::ast::Severity;
+use wren_syntax::span::Span;
 
 static mut SRC: Vec<u8> = Vec::new();
 static mut OUT: Vec<u8> = Vec::new();
+/// A scratch buffer for a module *name* passed to `add_module`.
+static mut MOD_NAME: Vec<u8> = Vec::new();
+/// The other project files, keyed by module name (path without `.wren`), so
+/// `analyze_run` can validate cross-file imports (`import "lib/x" for Y`) live —
+/// otherwise import errors only surface on Run. Rebuilt each analyze via
+/// `clear_modules` + `add_module`.
+static mut MODULES: Vec<(String, String)> = Vec::new();
 
 /// The Deluge prelude (same file the firmware/VM compile), prepended when
 /// building the symbol index so `Osc`/`Output`/`Midi`/`output[]`/… resolve for
@@ -39,12 +48,89 @@ pub extern "C" fn src_reserve(len: usize) -> *mut u8 {
     s.as_mut_ptr()
 }
 
+/// Reserve `len` bytes of the module-name buffer for JS to fill (paired with
+/// `add_module`).
+#[unsafe(no_mangle)]
+pub extern "C" fn mod_name_reserve(len: usize) -> *mut u8 {
+    let n = unsafe { &mut *addr_of_mut!(MOD_NAME) };
+    n.clear();
+    n.resize(len, 0);
+    n.as_mut_ptr()
+}
+
+/// Drop all registered project modules (call before re-registering for a fresh
+/// analyze).
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_modules() {
+    unsafe { (*addr_of_mut!(MODULES)).clear() };
+}
+
+/// Register the module whose name is in `MOD_NAME[..name_len]` and whose source
+/// is the current `SRC` buffer contents. (JS writes the name via
+/// `mod_name_reserve`, the source via `src_reserve`, then calls this.)
+#[unsafe(no_mangle)]
+pub extern "C" fn add_module(name_len: usize) {
+    let name = {
+        let n = unsafe { &*addr_of_mut!(MOD_NAME) };
+        core::str::from_utf8(&n[..name_len.min(n.len())]).unwrap_or("").to_string()
+    };
+    let src = {
+        let s = unsafe { &*addr_of_mut!(SRC) };
+        core::str::from_utf8(s).unwrap_or("").to_string()
+    };
+    unsafe { (*addr_of_mut!(MODULES)).push((name, src)) };
+}
+
+/// The top-level names a module source exports (classes, module variables, and
+/// re-exported imports) — what an `import "M" for X` can pull out of module `M`.
+fn module_exports(src: &str) -> Vec<String> {
+    let module = wren_syntax::parser::parse(src).module;
+    let index = SymbolIndex::build(&module);
+    index
+        .completion_candidates()
+        .into_iter()
+        .filter(|d| matches!(d.kind, SymKind::Class | SymKind::ModuleVariable | SymKind::ImportedSymbol))
+        .map(|d| d.name.clone())
+        .collect()
+}
+
+/// Validate the active source's `import "M" for A, B` against the registered
+/// project modules: for each imported name a *known* module doesn't export,
+/// emit an error at that name (mirrors the wren compiler's message). Imports of
+/// modules we don't have (builtins / external) are left alone.
+fn import_diagnostics(src: &str) -> Vec<AnalyzerDiagnostic> {
+    let module = wren_syntax::parser::parse(src).module;
+    let index = SymbolIndex::build(&module);
+    let modules = unsafe { &*addr_of_mut!(MODULES) };
+    let mut out = Vec::new();
+    for imp in &index.imports {
+        let Some((_, mod_src)) = modules.iter().find(|(n, _)| *n == imp.module_name) else { continue };
+        let exports = module_exports(mod_src);
+        for var in &imp.variables {
+            if !exports.iter().any(|e| e == &var.name) {
+                out.push(AnalyzerDiagnostic {
+                    message: format!(
+                        "Could not find a variable named '{}' in module '{}'.",
+                        var.name, imp.module_name
+                    ),
+                    span: Span { start: var.name_span.start, end: var.name_span.end },
+                    severity: Severity::Error,
+                    related: None,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Analyze the source currently in the buffer; returns the result byte length.
 #[unsafe(no_mangle)]
 pub extern "C" fn analyze_run() -> usize {
     let s = unsafe { &*addr_of_mut!(SRC) };
     let src = core::str::from_utf8(s).unwrap_or("");
-    let diags = analyze(src);
+    let mut diags = analyze(src);
+    // Live cross-file import validation against the registered project modules.
+    diags.extend(import_diagnostics(src));
 
     let out = unsafe { &mut *addr_of_mut!(OUT) };
     out.clear();

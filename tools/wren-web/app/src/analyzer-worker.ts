@@ -11,6 +11,10 @@ interface AnalyzerExports {
   hover_at(byteOffset: number): number;
   definition_at(byteOffset: number): number;
   completions(): number;
+  // Project modules for cross-file import validation.
+  mod_name_reserve(len: number): number;
+  clear_modules(): void;
+  add_module(nameLen: number): void;
 }
 
 export interface Diag {
@@ -43,6 +47,24 @@ function setSource(source: string): number {
   new Uint8Array(x!.memory.buffer, ptr, enc.length).set(enc);
   return enc.length;
 }
+
+/// Register the other project files as modules so `analyze_run` can validate
+/// cross-file imports. Each module's source is staged through the SRC buffer
+/// (add_module copies it), so this must run BEFORE the active source is set.
+function registerModules(modules: Record<string, string> | undefined): void {
+  x!.clear_modules();
+  if (!modules) return;
+  const enc = new TextEncoder();
+  for (const [name, src] of Object.entries(modules)) {
+    const nb = enc.encode(name);
+    // Reserve BEFORE reading memory.buffer — the reserve may grow wasm memory,
+    // detaching the previous buffer.
+    const ptr = x!.mod_name_reserve(nb.length);
+    new Uint8Array(x!.memory.buffer, ptr, nb.length).set(nb);
+    setSource(src); // stage the module source in SRC
+    x!.add_module(nb.length);
+  }
+}
 function out(len: number): { buf: Uint8Array; dv: DataView } {
   const buf = new Uint8Array(x!.memory.buffer, x!.result_ptr(), len).slice();
   return { buf, dv: new DataView(buf.buffer) };
@@ -52,7 +74,8 @@ function byteOffset(source: string, utf16: number): number {
   return new TextEncoder().encode(source.slice(0, utf16)).length;
 }
 
-function diagnostics(source: string): Diag[] {
+function diagnostics(source: string, modules?: Record<string, string>): Diag[] {
+  registerModules(modules); // stages module sources through SRC — must precede setSource(source)
   setSource(source);
   const len = x!.analyze_run();
   const { buf, dv } = out(len);
@@ -122,9 +145,9 @@ function completions(source: string): Completion[] {
 const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
 
 // Handle an analyze/query once the wasm is ready.
-function handle(msg: { type: string; version?: number; source: string; id?: number; kind?: QueryKind; offset?: number }) {
+function handle(msg: { type: string; version?: number; source: string; id?: number; kind?: QueryKind; offset?: number; modules?: Record<string, string> }) {
   if (msg.type === "analyze") {
-    post({ type: "diagnostics", version: msg.version, diags: diagnostics(msg.source) });
+    post({ type: "diagnostics", version: msg.version, diags: diagnostics(msg.source, msg.modules) });
   } else if (msg.type === "query") {
     let result: unknown = null;
     if (msg.kind === "hover") result = hover(msg.source, msg.offset!);

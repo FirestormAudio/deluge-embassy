@@ -6,7 +6,7 @@ import { Panel } from "./panel";
 import { Audio } from "./audio";
 import { Analyzer } from "./analyzer";
 import { WebMidi } from "./midi";
-import { ProjectStore, loadInitialProject, projectFromExample } from "./project";
+import { ProjectStore, loadInitialProject, projectFromExample, moduleName } from "./project";
 import { Tabs } from "./tabs";
 import { FileBrowser } from "./filebrowser";
 import { setupBreakpointGutter } from "./debug/gutter";
@@ -146,7 +146,16 @@ async function boot() {
   analyzer.onDiagnostics = (version, diags) => {
     if (version === editVersion) setAnalyzerMarkers(editor.getModel()!, diags);
   };
-  const reanalyze = () => analyzer.analyze(editor.getValue(), ++editVersion);
+  // Re-analyze the active file, passing the *other* project files as modules so
+  // the analyzer resolves cross-file imports live (no Run needed).
+  const reanalyze = () => {
+    const active = store.project.active;
+    const modules: Record<string, string> = {};
+    for (const [path, content] of Object.entries(store.project.files)) {
+      if (path !== active) modules[moduleName(path)] = content;
+    }
+    analyzer.analyze(editor.getValue(), ++editVersion, modules);
+  };
   editor.onDidChangeModelContent(() => {
     store.writeQuiet(store.project.active, editor.getValue()); // mirror + autosave
     reanalyze();
