@@ -430,7 +430,7 @@ Create `crates/deluge-protocol/tests/golden.rs`:
 //! Golden wire-vector generator + drift guard. The committed JSON at
 //! `tools/deluge-web-sim/src/protocol-golden.json` is the single source the TS
 //! codec is pinned against. Regenerate with:
-//!   UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden
+//!   UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu
 #![cfg(feature = "std")]
 
 use deluge_protocol::{FromDeluge, ToDeluge, cdc_button_id};
@@ -506,15 +506,15 @@ fn golden_vectors_up_to_date() {
         .expect("protocol-golden.json missing — run with UPDATE_GOLDEN=1 to create it");
     assert_eq!(
         committed, generated,
-        "protocol-golden.json is stale — regenerate: UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden"
+        "protocol-golden.json is stale — regenerate: UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu"
     );
 }
 ```
 
 - [ ] **Step 3: Generate the committed fixture and verify the guard**
 
-Run: `UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden`
-Then: `cargo test -p deluge-protocol --features std --test golden`
+Run: `UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu`
+Then: `cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu`
 Expected: first writes `tools/deluge-web-sim/src/protocol-golden.json`; second PASSES (file is current).
 
 - [ ] **Step 4: Write the TS conformance test**
