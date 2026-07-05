@@ -36,6 +36,11 @@ export function defaultProject(): Project {
   return { files: { ...ex.files }, entry: ex.entry, open: [ex.entry], active: ex.entry, breakpoints: {} };
 }
 
+/// A fresh, empty single-file project (New → Blank).
+export function blankProject(): Project {
+  return { files: { "main.wren": "" }, entry: "main.wren", open: ["main.wren"], active: "main.wren", breakpoints: {} };
+}
+
 /// A Project from an example (used by the examples menu).
 export function projectFromExample(ex: { files: Record<string, string>; entry: string }): Project {
   return { files: { ...ex.files }, entry: ex.entry, open: Object.keys(ex.files).includes(ex.entry) ? [ex.entry] : [], active: ex.entry, breakpoints: {} };

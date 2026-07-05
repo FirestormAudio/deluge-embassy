@@ -94,3 +94,29 @@ test("Import returns false when there are no .wren files", async ({ page }) => {
   );
   expect(ok).toBe(false);
 });
+
+test("the Project menu opens and New → Blank clears the project", async ({ page }) => {
+  // New replaces the working copy → it prompts; accept the confirm.
+  page.on("dialog", (d) => d.accept());
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+
+  await page.locator("#project-menu").click();
+  await expect(page.locator(".menu-popover")).toBeVisible();
+
+  await page.getByRole("menuitem", { name: "New" }).click();
+  await page.getByRole("menuitem", { name: "Blank" }).click();
+
+  const files = await wren(page, (w) => w.files());
+  expect(Object.keys(files)).toEqual(["main.wren"]);
+  expect(files["main.wren"]).toBe("");
+});
+
+test("the Project menu closes on Escape", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+  await page.locator("#project-menu").click();
+  await expect(page.locator(".menu-popover")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".menu-popover")).toHaveCount(0);
+});

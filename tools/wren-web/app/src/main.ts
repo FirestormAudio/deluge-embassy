@@ -6,7 +6,8 @@ import { Panel } from "./panel";
 import { Audio } from "./audio";
 import { Analyzer } from "./analyzer";
 import { WebMidi } from "./midi";
-import { ProjectStore, loadInitialProject, projectFromExample, moduleName } from "./project";
+import { ProjectStore, loadInitialProject, projectFromExample, moduleName, blankProject } from "./project";
+import { createMenu, type MenuItem } from "./menu";
 import { Tabs } from "./tabs";
 import { FileBrowser } from "./filebrowser";
 import { setupBreakpointGutter } from "./debug/gutter";
@@ -52,25 +53,21 @@ async function boot() {
   browser.render();
   setupResizers(); // drag-resizable left panel + console (persisted)
 
-  // Examples menu loads a whole project.
-  const select = $<HTMLSelectElement>("#examples");
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "load…";
-  placeholder.hidden = true;
-  select.appendChild(placeholder);
-  for (const ex of EXAMPLES) {
-    const opt = document.createElement("option");
-    opt.value = ex.name;
-    opt.textContent = ex.name;
-    select.appendChild(opt);
-  }
-  select.value = "";
-  select.addEventListener("change", () => {
-    const ex = EXAMPLES.find((e) => e.name === select.value);
-    if (ex) store.replace(projectFromExample(ex));
-    select.value = "";
-  });
+  // Project ▾ menu. Task 4 wires New (Blank + templates); Task 5 adds
+  // Open/Import/Save/Download via setupProjectMenu.
+  const guardReplace = () => confirm("Replace the current project? Save or Download it first to keep it.");
+  createMenu($<HTMLButtonElement>("#project-menu"), (): MenuItem[] => [
+    {
+      label: "New",
+      submenu: () => [
+        { label: "Blank", action: () => { if (guardReplace()) store.replace(blankProject()); } },
+        ...EXAMPLES.map((ex) => ({
+          label: ex.name,
+          action: () => { if (guardReplace()) store.replace(projectFromExample(ex)); },
+        })),
+      ],
+    },
+  ]);
 
   const sim = await loadSim(wasmUrl);
   status.textContent = "booted";
