@@ -898,6 +898,18 @@ const OLED_SCALE = 3;
     }
     ctx.shadowBlur = 0;
 
+    // Pad RGB from the wire (col-major (col*8+row)*3). NOTE: added during
+    // execution — the wren Panel this was copied from renders pads on local
+    // press only; MVP scope requires wire-driven pad RGB. buildPads registers
+    // each pad in `padEls` keyed by (col*PAD_ROWS + wy).
+    const pads = this.client.padRgb();
+    for (const [key, el] of this.padEls) {
+      const o = key * 3;
+      const r = pads[o], g = pads[o + 1], b = pads[o + 2];
+      if (r || g || b) { el.style.background = `rgb(${r},${g},${b})`; el.style.boxShadow = `0 0 8px 1px rgb(${r},${g},${b})`; }
+      else { el.style.background = ""; el.style.boxShadow = ""; }
+    }
+
     // Indicator LEDs light their front-panel buttons (Led.on(id)).
     const leds = this.client.leds();
     for (const [rawId, el] of this.ledEls) el.classList.toggle("lit", leds[rawId] !== 0);
