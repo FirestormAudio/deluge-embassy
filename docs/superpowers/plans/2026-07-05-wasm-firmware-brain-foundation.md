@@ -1,5 +1,31 @@
 # Wasm Firmware Brain — Foundation (A1–A3) Implementation Plan
 
+> **✅ EXECUTED (2026-07-05).** All of A1–A3 are done, on DelugeFirmware branch
+> `feat/wasm-brain-foundation`. The whole firmware compiles + links to
+> `deluge_brain.wasm` and **boots + renders headless under Node WASI** (OLED 411
+> lit px, non-silent audio). Key outcomes for the A4–A6 follow-on:
+> - **A1 resolved:** the firmware **boots without an SD card** ("No SD card
+>   present" → default state, reaches its main loop). Storage is *entirely*
+>   sub-project C — no in-memory FAT image needed.
+> - **Reuse won:** the wasm brain reuses `host_bsp.c`/`host_platform.c`/`host_audio.c`
+>   and swaps only the transport via `src/bsp/wasm/wasm_shim.c` (host_link_send →
+>   in-memory illumination; host_pcm capture; host_midi stub).
+> - **Toolchain gotchas (all handled in `sim-wasm/`):** absolute
+>   `-DCMAKE_TOOLCHAIN_FILE` + `-DCMAKE_MAKE_PROGRAM=/usr/bin/ninja`; set
+>   `DELUGE_HOST` as a CMake **variable** (gates the DSP lib's `-marm`);
+>   system clang lacks the wasm compiler-rt builtins → an **empty** builtins
+>   archive suffices (firmware references none); wasi `libc++abi` is
+>   **exceptions-disabled** → `wasm_eh_stub.c` supplies `__cxa_throw` /
+>   `__cxa_allocate_exception` / `__cxa_thread_atexit` (throw → abort).
+> - **5 upstream-worthy app portability fixes** (heaps `__builtin_return_address`
+>   guard; libc++ `.begin()`→`.data()`; l10n `std::string_view name_`) — verified
+>   host-safe.
+> - **A4–A6 (deferred):** browser Worker + AudioWorklet + SAB + `WasmBrain`/Panel,
+>   audio, input — and a `dbt web` command (`scripts/tasks/task-web.py`) to build
+>   the wasm + serve the page. A live browser view needs a shared-memory (atomics)
+>   build so the main thread can read illumination while the worker runs the
+>   non-returning `deluge_main` loop.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Compile the DelugeFirmware host application to `wasm32-wasip1` against a new browser-oriented BSP, and prove — headless, under Node's WASI — that it **links, boots to its render loop, and produces audio blocks** without trapping.
