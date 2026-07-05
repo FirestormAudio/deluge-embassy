@@ -15,6 +15,7 @@ import { DebugSession } from "./debug/session";
 import { DebugToolbar } from "./debug/ui";
 import { DebugSidebar } from "./debug/panels";
 import { EXAMPLES } from "./examples";
+import { zipFiles } from "./zip";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
 const wasmUrl = `${import.meta.env.BASE_URL}wren_web.wasm`;
@@ -430,6 +431,7 @@ async function boot() {
     debugState: () => debugSession.state,
     selectedFrame: () => debugSession.selectedFrameId,
     debugPane: () => debugSidebar.shown,
+    zipBytes: (files: Record<string, string>) => Array.from(zipFiles(files)),
   };
 }
 
