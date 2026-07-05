@@ -67,7 +67,7 @@ function fromLocal(): Project | null {
 }
 
 /// Fill in/repair any missing fields so the rest of the app can trust a Project.
-function normalize(p: Partial<Project>): Project {
+export function normalize(p: Partial<Project>): Project {
   const files = p.files && Object.keys(p.files).length ? p.files : { "main.wren": "" };
   const paths = Object.keys(files);
   const entry = p.entry && files[p.entry] != null ? p.entry : paths.find((x) => x.endsWith(".wren")) ?? paths[0];
@@ -129,6 +129,9 @@ export function fileTree(files: Record<string, string>): TreeNode[] {
 export class ProjectStore {
   project: Project;
   onChange: () => void = () => {};
+  // Fired inside replace(), before onChange, so views holding per-file state
+  // (e.g. cached editor models) can discard it before the re-render.
+  onReplace: () => void = () => {};
   private saveTimer = 0;
 
   constructor(initial: Project) {
@@ -235,9 +238,10 @@ export class ProjectStore {
     this.changed();
   }
 
-  /// Replace the whole project (loading an example).
+  /// Replace the whole project (loading an example, a slot, or an import).
   replace(p: Project) {
     this.project = clone(p);
+    this.onReplace();
     this.changed();
   }
 

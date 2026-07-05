@@ -16,6 +16,7 @@ import { DebugToolbar } from "./debug/ui";
 import { DebugSidebar } from "./debug/panels";
 import { EXAMPLES } from "./examples";
 import { zipFiles } from "./zip";
+import { listSlots, readSlot, writeSlot, deleteSlot } from "./slots";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
 const wasmUrl = `${import.meta.env.BASE_URL}wren_web.wasm`;
@@ -274,6 +275,9 @@ async function boot() {
     scheduleReanalyze();
     scheduleCheck();
   });
+  // A wholesale replace (New/Open/Import/example) invalidates every cached
+  // editor model — drop them so the re-render rebuilds from the new contents.
+  store.onReplace = () => tabs.reset();
   // Structural changes (open/close/create/rename/delete/load) re-render the tree
   // + tabs and re-analyze the (possibly new) active file + its dependents.
   store.onChange = () => {
@@ -432,6 +436,13 @@ async function boot() {
     selectedFrame: () => debugSession.selectedFrameId,
     debugPane: () => debugSidebar.shown,
     zipBytes: (files: Record<string, string>) => Array.from(zipFiles(files)),
+    saveSlot: (name: string) => writeSlot(name, store.project),
+    openSlot: (name: string) => {
+      const p = readSlot(name);
+      if (p) store.replace(p);
+    },
+    slots: () => listSlots(),
+    deleteSlot: (name: string) => deleteSlot(name),
   };
 }
 

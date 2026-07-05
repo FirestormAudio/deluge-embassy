@@ -36,6 +36,15 @@ export class Tabs {
     if (m && this.editor.getModel() !== m) this.editor.setModel(m);
   }
 
+  /// Discard every cached model — the whole project was replaced, so any
+  /// surviving same-path model still holds the old file's text and must be
+  /// rebuilt from the new store contents on the next render().
+  reset() {
+    this.editor.setModel(null); // detach before disposing the current model
+    for (const m of this.models.values()) m.dispose();
+    this.models.clear();
+  }
+
   /// Drop models for files that no longer exist (deleted/renamed).
   private prune() {
     for (const [path, m] of this.models) {

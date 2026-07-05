@@ -6,6 +6,14 @@ import { test, expect } from "@playwright/test";
 
 type Wren = {
   zipBytes: (files: Record<string, string>) => number[];
+  setSource: (s: string) => void;
+  getSource: () => string;
+  files: () => Record<string, string>;
+  breakpoints: (p: string) => number[];
+  saveSlot: (name: string) => boolean;
+  openSlot: (name: string) => void;
+  slots: () => string[];
+  deleteSlot: (name: string) => void;
 };
 const wren = <T,>(page: import("@playwright/test").Page, fn: (w: Wren) => T) =>
   page.evaluate(`(${fn})((window).wren)`) as Promise<T>;
@@ -36,4 +44,26 @@ test("Download zips the project's file tree", async ({ page }) => {
   );
   const names = zipEntryNames(Uint8Array.from(arr));
   expect(names.sort()).toEqual(["lib/voice.wren", "main.wren"]);
+});
+
+test("a saved slot round-trips through Open", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+  await wren(page, (w) => w.setSource("var saved = 42\n"));
+  await wren(page, (w) => w.saveSlot("mysong"));
+  expect(await wren(page, (w) => w.slots())).toContain("mysong");
+
+  // Change the working copy, then Open the slot → the saved content returns.
+  await wren(page, (w) => w.setSource("var changed = 0\n"));
+  await wren(page, (w) => w.openSlot("mysong"));
+  expect(await wren(page, (w) => w.getSource())).toContain("var saved = 42");
+});
+
+test("deleting a slot removes it", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+  await wren(page, (w) => w.saveSlot("scratch"));
+  expect(await wren(page, (w) => w.slots())).toContain("scratch");
+  await wren(page, (w) => w.deleteSlot("scratch"));
+  expect(await wren(page, (w) => w.slots())).not.toContain("scratch");
 });
