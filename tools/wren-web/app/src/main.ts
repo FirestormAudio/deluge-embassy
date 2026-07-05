@@ -6,8 +6,8 @@ import { Panel } from "./panel";
 import { Audio } from "./audio";
 import { Analyzer } from "./analyzer";
 import { WebMidi } from "./midi";
-import { ProjectStore, loadInitialProject, projectFromExample, moduleName, blankProject } from "./project";
-import { createMenu, type MenuItem } from "./menu";
+import { ProjectStore, loadInitialProject, moduleName } from "./project";
+import { setupProjectMenu } from "./project-io";
 import { Tabs } from "./tabs";
 import { FileBrowser } from "./filebrowser";
 import { setupBreakpointGutter } from "./debug/gutter";
@@ -53,21 +53,13 @@ async function boot() {
   browser.render();
   setupResizers(); // drag-resizable left panel + console (persisted)
 
-  // Project ▾ menu. Task 4 wires New (Blank + templates); Task 5 adds
-  // Open/Import/Save/Download via setupProjectMenu.
-  const guardReplace = () => confirm("Replace the current project? Save or Download it first to keep it.");
-  createMenu($<HTMLButtonElement>("#project-menu"), (): MenuItem[] => [
-    {
-      label: "New",
-      submenu: () => [
-        { label: "Blank", action: () => { if (guardReplace()) store.replace(blankProject()); } },
-        ...EXAMPLES.map((ex) => ({
-          label: ex.name,
-          action: () => { if (guardReplace()) store.replace(projectFromExample(ex)); },
-        })),
-      ],
-    },
-  ]);
+  // Project ▾ menu: New / Open / Import / Save / Download over localStorage.
+  setupProjectMenu({
+    button: $<HTMLButtonElement>("#project-menu"),
+    store,
+    examples: EXAMPLES,
+    setStatus: (m) => { status.textContent = m; },
+  });
 
   const sim = await loadSim(wasmUrl);
   status.textContent = "booted";

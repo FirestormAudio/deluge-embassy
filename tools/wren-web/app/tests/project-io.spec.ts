@@ -120,3 +120,37 @@ test("the Project menu closes on Escape", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(page.locator(".menu-popover")).toHaveCount(0);
 });
+
+test("New → Blank is aborted when the confirm is dismissed (guard)", async ({ page }) => {
+  page.on("dialog", (d) => d.dismiss()); // reject the guard
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+  await wren(page, (w) => w.setSource("var keep = 1\n"));
+  await page.locator("#project-menu").click();
+  await page.getByRole("menuitem", { name: "New" }).click();
+  await page.getByRole("menuitem", { name: "Blank" }).click();
+  expect(await wren(page, (w) => w.getSource())).toContain("var keep = 1");
+});
+
+test("Save As names the current project and Download uses that name", async ({ page }) => {
+  page.on("dialog", (d) =>
+    d.type() === "prompt" ? d.accept("mytrack") : d.accept(),
+  );
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+  await wren(page, (w) => w.setSource("var t = 1\n"));
+
+  await page.locator("#project-menu").click();
+  await page.getByRole("menuitem", { name: "Save As" }).click();
+  await expect(page.locator("#project-menu")).toHaveText(/mytrack/);
+  expect(await wren(page, (w) => w.slots())).toContain("mytrack");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    (async () => {
+      await page.locator("#project-menu").click();
+      await page.getByRole("menuitem", { name: "Download" }).click();
+    })(),
+  ]);
+  expect(download.suggestedFilename()).toBe("mytrack.zip");
+});
