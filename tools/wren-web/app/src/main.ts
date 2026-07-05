@@ -17,6 +17,7 @@ import { DebugSidebar } from "./debug/panels";
 import { EXAMPLES } from "./examples";
 import { zipFiles } from "./zip";
 import { listSlots, readSlot, writeSlot, deleteSlot } from "./slots";
+import { projectFromTree, type TreeEntry } from "./import-tree";
 
 // Served from public/ at the app's base URL; fetched + instantiated in sim.ts.
 const wasmUrl = `${import.meta.env.BASE_URL}wren_web.wasm`;
@@ -443,6 +444,11 @@ async function boot() {
     },
     slots: () => listSlots(),
     deleteSlot: (name: string) => deleteSlot(name),
+    importTree: (entries: TreeEntry[]) => {
+      const p = projectFromTree(entries);
+      if (p) store.replace(p);
+      return p != null;
+    },
   };
 }
 

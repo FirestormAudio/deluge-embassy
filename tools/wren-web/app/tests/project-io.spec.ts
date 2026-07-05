@@ -14,6 +14,8 @@ type Wren = {
   openSlot: (name: string) => void;
   slots: () => string[];
   deleteSlot: (name: string) => void;
+  importTree: (entries: { path: string; content: string }[]) => boolean;
+  entry: () => string;
 };
 const wren = <T,>(page: import("@playwright/test").Page, fn: (w: Wren) => T) =>
   page.evaluate(`(${fn})((window).wren)`) as Promise<T>;
@@ -66,4 +68,29 @@ test("deleting a slot removes it", async ({ page }) => {
   expect(await wren(page, (w) => w.slots())).toContain("scratch");
   await wren(page, (w) => w.deleteSlot("scratch"));
   expect(await wren(page, (w) => w.slots())).not.toContain("scratch");
+});
+
+test("Import builds a project from a picked tree, stripping the top folder", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+  const ok = await wren(page, (w) =>
+    w.importTree([
+      { path: "SDCARD/main.wren", content: "var m = 1\n" },
+      { path: "SDCARD/lib/voice.wren", content: "class Voice {}\n" },
+      { path: "SDCARD/notes.txt", content: "ignore me" },
+    ]),
+  );
+  expect(ok).toBe(true);
+  const files = await wren(page, (w) => w.files());
+  expect(Object.keys(files).sort()).toEqual(["lib/voice.wren", "main.wren"]);
+  expect(await wren(page, (w) => w.entry())).toBe("main.wren");
+});
+
+test("Import returns false when there are no .wren files", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".monaco-editor").first().waitFor();
+  const ok = await wren(page, (w) =>
+    w.importTree([{ path: "SDCARD/readme.txt", content: "nothing here" }]),
+  );
+  expect(ok).toBe(false);
 });
