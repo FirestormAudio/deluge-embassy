@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Deluge Web Simulator</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <div class="topbar">
+        <label>brain <input id="ws-url" value="ws://127.0.0.1:9000" size="24" /></label>
+        <button id="connect">Connect</button>
+        <span id="status">idle</span>
+      </div>
+      <canvas id="oled" role="img" aria-label="OLED display"></canvas>
+      <div id="faceplate" class="faceplate" data-face-theme="hardware">
+        <img class="face-svg" src="./deluge.svg" alt="" aria-hidden="true" />
+        <div id="face-overlay" class="face-overlay"></div>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

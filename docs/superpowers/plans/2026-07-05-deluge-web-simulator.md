@@ -430,7 +430,7 @@ Create `crates/deluge-protocol/tests/golden.rs`:
 //! Golden wire-vector generator + drift guard. The committed JSON at
 //! `tools/deluge-web-sim/src/protocol-golden.json` is the single source the TS
 //! codec is pinned against. Regenerate with:
-//!   UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden
+//!   UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu
 #![cfg(feature = "std")]
 
 use deluge_protocol::{FromDeluge, ToDeluge, cdc_button_id};
@@ -506,15 +506,15 @@ fn golden_vectors_up_to_date() {
         .expect("protocol-golden.json missing — run with UPDATE_GOLDEN=1 to create it");
     assert_eq!(
         committed, generated,
-        "protocol-golden.json is stale — regenerate: UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden"
+        "protocol-golden.json is stale — regenerate: UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu"
     );
 }
 ```
 
 - [ ] **Step 3: Generate the committed fixture and verify the guard**
 
-Run: `UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden`
-Then: `cargo test -p deluge-protocol --features std --test golden`
+Run: `UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu`
+Then: `cargo test -p deluge-protocol --features std --test golden --target x86_64-unknown-linux-gnu`
 Expected: first writes `tools/deluge-web-sim/src/protocol-golden.json`; second PASSES (file is current).
 
 - [ ] **Step 4: Write the TS conformance test**
@@ -898,6 +898,18 @@ const OLED_SCALE = 3;
     }
     ctx.shadowBlur = 0;
 
+    // Pad RGB from the wire (col-major (col*8+row)*3). NOTE: added during
+    // execution — the wren Panel this was copied from renders pads on local
+    // press only; MVP scope requires wire-driven pad RGB. buildPads registers
+    // each pad in `padEls` keyed by (col*PAD_ROWS + wy).
+    const pads = this.client.padRgb();
+    for (const [key, el] of this.padEls) {
+      const o = key * 3;
+      const r = pads[o], g = pads[o + 1], b = pads[o + 2];
+      if (r || g || b) { el.style.background = `rgb(${r},${g},${b})`; el.style.boxShadow = `0 0 8px 1px rgb(${r},${g},${b})`; }
+      else { el.style.background = ""; el.style.boxShadow = ""; }
+    }
+
     // Indicator LEDs light their front-panel buttons (Led.on(id)).
     const leds = this.client.leds();
     for (const [rawId, el] of this.ledEls) el.classList.toggle("lit", leds[rawId] !== 0);
@@ -1215,15 +1227,20 @@ The full browser side is now complete and tested against a mock brain. Task 7 ma
 - Create: `src/bsp/host/host_ws.h`
 - Create: `src/bsp/host/host_ws.c`
 - Modify: `src/bsp/host/host_link.c` (recognise `ws://` target; call `host_ws` after `accept()` and in send/recv)
+- Modify: `sim/CMakeLists.txt` (add `host_ws.c` next to each `host_link.c` in the source lists — three `deluge_host*` targets; the lists are explicit, not globbed, so a reconfigure is required and `cmake --build` triggers it automatically)
 - Test: `src/bsp/host/host_ws_test.c` (standalone unit test for handshake + frame codec)
 
 **Interfaces:**
 - Consumes: the existing `host_link.c` accepted-socket fd and its `[len][type][data]` framing.
-- Produces (in `host_ws.h`):
-  - `int host_ws_accept(int fd);` — read the HTTP upgrade request from `fd`, write the `101` response; return 0 on success, −1 on failure.
-  - `int host_ws_send(int fd, const uint8_t* payload, size_t n);` — write one unmasked binary WS frame. Return 0/−1.
-  - `int host_ws_recv_frame(int fd, uint8_t* out, size_t cap, size_t* out_len);` — read one binary frame, unmask, store payload; handle/skip control frames (reply to ping, return −1 on close). Return 0 on a data frame, 1 if only a control frame was handled, −1 on error/close.
+- Produces (in `host_ws.h`). **NOTE (execution correction):** `host_link.c` reads
+  non-blocking in a cooperative loop, so an fd-reading `host_ws_recv_frame` would
+  stall the firmware. The recv side is therefore a *pure buffer* decoder that
+  `host_link` feeds from its existing `rx_buf`; only the one-shot handshake reads
+  the fd directly.
   - `void host_ws_accept_key(const char* client_key, char out_accept[29]);` — pure helper: `base64(SHA1(client_key + GUID))`. Exposed for the unit test.
+  - `int host_ws_accept(int fd);` — read the HTTP upgrade request from `fd` (blocking, pre-`O_NONBLOCK`), write the `101` response; 0 on success, −1 on failure.
+  - `size_t host_ws_encode(uint8_t* out, size_t cap, uint8_t opcode, const uint8_t* payload, size_t n);` — build one FIN frame (unmasked) with `opcode` (`HOST_WS_OP_BINARY`/`HOST_WS_OP_PONG`); returns frame length or 0 if `cap` too small (7-bit + 16-bit length forms).
+  - `ssize_t host_ws_decode(const uint8_t* buf, size_t buflen, uint8_t* out, size_t out_cap, size_t* out_len, int* is_ping);` — parse one frame from the front of `buf`: returns bytes consumed (>0), 0 if more bytes needed, −1 on close/error. Data-frame payload → `out`/`*out_len`; ping sets `*is_ping` (caller echoes a pong); pong reported as an empty data frame.
 
 - [ ] **Step 1: Write the failing unit test**
 
