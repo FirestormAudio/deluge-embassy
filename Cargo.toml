@@ -18,6 +18,7 @@ members = [
   "crates/deluge-ui-toolkit",
   "crates/deluge-grid-toolkit",
   "crates/deluge-protocol",
+  "crates/deluge-wren-core",
   "examples/blinky",
   "examples/oled_hello",
   "examples/oled_menu",
@@ -41,7 +42,18 @@ members = [
 # `crates/deluge-sim-link` is the std-only in-process simulator link: it is a
 # path-dependency of deluge-bsp/deluge-sdk *only* under cfg(not(target_os="none")),
 # so it must never build for the device — keep it out of the workspace too.
-exclude = ["tools/cargo-deluge", "tools/deluge-simulator", "crates/deluge-sim-link"]
+# `tools/wren-web` is the wasm core for the web simulator: a cdylib built for
+# wasm32-unknown-unknown (not the device triple), so it is excluded too.
+# `tools/wren-web-debug` is the host-side, std, wren-core-based debug harness:
+# also built for the host triple, not the device triple, so it is excluded too.
+exclude = [
+  "tools/cargo-deluge",
+  "tools/deluge-simulator",
+  "tools/wren-web",
+  "tools/wren-web-debug",
+  "tools/wren-analyzer-wasm",
+  "crates/deluge-sim-link",
+]
 resolver = "2"
 
 [workspace.package]

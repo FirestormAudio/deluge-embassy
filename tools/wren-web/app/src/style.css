@@ -1,0 +1,684 @@
+/* wren · deluge — a lit instrument on a dark bench.
+   Palette and type derived from the Deluge's own materials: matte chassis,
+   monochrome OLED phosphor, glowing silicone pads, gold CV jacks. */
+:root {
+  --chassis: #15171c;
+  --chassis-deep: #0f1115;
+  --panel: #1d2026;
+  --panel-raised: #23272f;
+  --hairline: #2c313a;
+  --ink: #c9d2dd;
+  --ink-dim: #6b7480;
+  --ink-faint: #444c57;
+  --phosphor: #8fe9ff;
+  --voltage: #f2b549;
+  --radius: 7px;
+  --legend: 10px/1 "Space Grotesk", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  background:
+    radial-gradient(1200px 600px at 70% -10%, #1b1f27 0%, transparent 60%),
+    var(--chassis-deep);
+  color: var(--ink);
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  display: grid;
+  grid-template-rows: auto 1fr; /* topbar + bench; the console lives in the editor pane */
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Scrollbars (match the chassis) ──────────────────────────────────────── */
+* {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: #313945 transparent;
+}
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #2c333d;
+  border: 3px solid transparent; /* padding via transparent border + clip */
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #3b4654; }
+::-webkit-scrollbar-thumb:active { background: var(--phosphor); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+.pane-legend {
+  font: var(--legend);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--hairline);
+  user-select: none;
+}
+
+/* ── Topbar ─────────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  height: 56px;
+  background: linear-gradient(var(--panel), var(--chassis));
+  border-bottom: 1px solid var(--hairline);
+}
+.brand { display: flex; align-items: baseline; gap: 12px; }
+.mark {
+  width: 11px; height: 11px; align-self: center;
+  background: var(--phosphor);
+  box-shadow: 0 0 10px var(--phosphor), 0 0 2px #fff;
+  border-radius: 2px;
+}
+.wordmark { font-weight: 700; font-size: 17px; letter-spacing: 0.01em; }
+.wordmark i { color: var(--voltage); font-style: normal; padding: 0 1px; }
+.tagline { color: var(--ink-dim); font-size: 12px; letter-spacing: 0.02em; }
+
+.controls { display: flex; align-items: center; gap: 14px; }
+.field { display: flex; flex-direction: row; align-items: center; gap: 7px; }
+.field .legend {
+  font: var(--legend); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-faint);
+}
+select {
+  background: var(--panel-raised); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: 5px;
+  padding: 5px 8px; font-family: "IBM Plex Mono", monospace; font-size: 12px;
+}
+.status {
+  font: 11px/1 "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--ink-dim); padding-left: 14px; position: relative;
+}
+.status::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint);
+}
+.status.ok { color: var(--phosphor); }
+.status.ok::before { background: var(--phosphor); box-shadow: 0 0 8px var(--phosphor); }
+.status.err { color: #ff6b6b; }
+.status.err::before { background: #ff6b6b; box-shadow: 0 0 8px #ff6b6b; }
+
+.run {
+  background: var(--voltage); color: #20170a; border: none;
+  font-family: "Space Grotesk"; font-weight: 600; font-size: 13px;
+  padding: 8px 16px; border-radius: 6px; cursor: pointer;
+  display: flex; align-items: center; gap: 8px;
+  box-shadow: 0 0 0 1px #f2b54933, 0 4px 16px -6px var(--voltage);
+}
+.run:hover { filter: brightness(1.08); }
+.run:active { transform: translateY(1px); }
+.ghost-btn {
+  background: transparent; color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 6px;
+  font-family: "Space Grotesk"; font-weight: 500; font-size: 12px;
+  padding: 7px 13px; cursor: pointer;
+}
+.ghost-btn:hover { color: var(--phosphor); border-color: #8fe9ff44; }
+
+.run kbd {
+  font-family: "IBM Plex Mono"; font-size: 10px; background: #00000026;
+  padding: 2px 5px; border-radius: 3px;
+}
+
+/* ── Bench: files | editor | instrument pane ─────────────────────────────── */
+.bench {
+  /* Left width, console height, and the instrument-pane width are all
+     drag-resizable (see src/resize.ts); Monaco reflows via automaticLayout and
+     the instrument contents zoom-scale to the pane (600px design width). */
+  --left-w: 210px;
+  --console-h: 156px;
+  --inst-w: 600px;
+  display: grid;
+  grid-template-columns: var(--left-w) 1fr var(--inst-w);
+  min-height: 0;
+}
+.file-browser, .editor-pane, .instrument-pane {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  background: var(--panel);
+  position: relative; /* anchor the resize handles */
+}
+
+/* ── Resize handles (splitters) ──────────────────────────────────────────────
+   A thin hit-strip on a pane border; phosphor-tinted while hovered/dragged. */
+.resizer { position: absolute; z-index: 6; background: transparent; transition: background 0.1s; }
+.resizer:hover, .resizer.dragging { background: #8fe9ff40; }
+.resizer:focus-visible { background: #8fe9ff66; outline: none; }
+.resizer-x { top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; }
+/* Instrument pane's left edge: fully inside (the pane has overflow-x:hidden and
+   abuts Monaco's scrollbar, so an overhang would clip / fight the editor). */
+.resizer-x.resizer-left { right: auto; left: 0; }
+.resizer-y { top: -3px; left: 0; width: 100%; height: 6px; cursor: row-resize; }
+/* While dragging, lock the cursor + kill selection across the whole page. */
+body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-select: none; }
+body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-select: none; }
+.instrument-pane {
+  border-left: 1px solid var(--hairline);
+  background: linear-gradient(180deg, var(--panel) 0%, var(--chassis) 100%);
+  overflow-y: auto; overflow-x: hidden;
+}
+/* The instrument contents are laid out for a 600px design width; `zoom` scales
+   the whole rig (OLED, faceplate, scopes, keyboard) proportionally as the pane
+   is resized, so nothing overflows or leaves gaps. */
+.instrument-scale { zoom: calc(var(--inst-w) / 600px); }
+#editor { flex: 1; min-height: 0; }
+
+/* ── File browser ─────────────────────────────────────────────────────────── */
+.file-browser { border-right: 1px solid var(--hairline); }
+.file-browser .pane-legend { display: flex; align-items: center; justify-content: space-between; }
+#fb-new {
+  display: inline-grid; place-items: center; padding: 0;
+  background: var(--panel-raised); color: var(--ink-dim); border: 1px solid var(--hairline);
+  border-radius: 4px; width: 20px; height: 20px; cursor: pointer;
+  font-size: 15px; font-weight: 400; line-height: 1;
+}
+#fb-new:hover { color: var(--phosphor); border-color: #8fe9ff44; }
+.fb-tree { flex: 1; overflow-y: auto; padding: 4px 0; font-size: 12.5px; }
+.fb-folder, .fb-file {
+  display: flex; align-items: center; gap: 4px; height: 24px; cursor: pointer;
+  color: var(--ink-dim); padding-right: 6px;
+}
+.fb-folder:hover, .fb-file:hover { background: #ffffff08; color: var(--ink); }
+.fb-twisty { width: 12px; color: var(--ink-faint); font-size: 9px; flex: none; }
+.fb-folder .fb-label { font-weight: 600; letter-spacing: 0.02em; }
+.fb-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "IBM Plex Mono", monospace; }
+.fb-file.is-active { color: var(--ink); background: #8fe9ff10; }
+.fb-file.is-entry .fb-label { color: var(--phosphor); }
+.fb-entry { background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 11px; width: 16px; flex: none; }
+.fb-file.is-entry .fb-entry { color: var(--phosphor); }
+.fb-add, .fb-act {
+  background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 12px;
+  opacity: 0; flex: none; padding: 0 2px;
+}
+.fb-folder:hover .fb-add, .fb-file:hover .fb-act { opacity: 1; }
+.fb-act:hover, .fb-add:hover { color: var(--phosphor); }
+.fb-del:hover { color: #ff6b6b; }
+
+/* ── Left-pane switch [ files · debug ] (VSCode-style) ─────────────────────────
+   A segmented header at the top of the left pane; the active segment gets the
+   phosphor underline from .tab.active. Selecting a segment swaps the pane body
+   between the file tree (#fb-body) and the debug view (#debug-view). */
+.pane-switch {
+  display: flex; align-items: stretch; flex: none;
+  border-bottom: 1px solid var(--hairline); background: var(--chassis);
+}
+.pane-seg {
+  font: var(--legend); letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ink-dim); background: none; border: none; cursor: pointer;
+  padding: 10px 12px; user-select: none;
+}
+.pane-seg:hover { color: var(--ink); }
+.pane-seg.is-active { color: var(--ink); box-shadow: inset 0 -2px 0 var(--phosphor); }
+.pane-switch-add { margin-left: auto; align-self: center; margin-right: 8px; }
+/* `display: inline-grid` on #fb-new would otherwise defeat [hidden]; the
+   id-qualified rule out-specifies it so the button hides in the debug view. */
+#fb-new[hidden] { display: none; }
+
+.fb-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.fb-body[hidden] { display: none; }
+
+/* ── Debug view (accordion of collapsible sections) ───────────────────────────
+   Reuses the .pane-legend head + .fb-twisty glyph. The selected frame mirrors
+   .fb-file.is-active (phosphor-tinted bg); the current ▶ marker is phosphor. */
+.dbg-view { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
+.dbg-view[hidden] { display: none; }
+.dbg-section { display: flex; flex-direction: column; flex: none; }
+.dbg-section-head {
+  display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%;
+  background: none; border: none; cursor: pointer; text-align: left;
+}
+.dbg-section-head:hover { color: var(--ink); }
+.dbg-section-head .fb-twisty { font-size: 9px; }
+/* Read like the folder-collapse rows: twisty + label together on the left. The
+   `.file-browser .pane-legend` space-between rule (for the files header) would
+   otherwise shove these labels to the right edge. */
+.file-browser .dbg-section-head, .file-browser .dbg-scope-head { justify-content: flex-start; }
+.dbg-section.collapsed .dbg-section-body { display: none; }
+.dbg-section-body { padding: 4px 0; font-size: 12.5px; }
+
+.dbg-hint {
+  color: var(--ink-faint); font-style: italic; font-size: 12px; padding: 6px 12px;
+}
+
+.dbg-frame {
+  display: flex; align-items: center; gap: 4px; height: 24px; cursor: pointer;
+  color: var(--ink-dim); padding: 0 8px;
+}
+.dbg-frame:hover { background: #ffffff08; color: var(--ink); }
+.dbg-frame.selected { background: #8fe9ff10; color: var(--ink); }
+.dbg-frame-mark { width: 12px; flex: none; font-size: 9px; color: var(--phosphor); text-align: center; }
+.dbg-frame-mark.dim { color: var(--ink-faint); }
+.dbg-frame-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "IBM Plex Mono", monospace; }
+.dbg-frame-loc { flex: none; color: var(--ink-dim); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+
+/* ── Variables (locals tree) ──────────────────────────────────────────────────
+   Scope sub-groups carry a lighter .pane-legend head; rows read `name = value`
+   with the value in --voltage mono (like .jack-val) — live instrument data.
+   Expandable rows reuse the .fb-twisty glyph and expand lazily. */
+.dbg-scope { display: flex; flex-direction: column; }
+.dbg-scope-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 6px 12px 4px; background: none; border: none; cursor: pointer; text-align: left;
+}
+.dbg-scope-head:hover { color: var(--ink); }
+.dbg-scope-head .fb-twisty { font-size: 9px; }
+.dbg-scope-body[hidden] { display: none; }
+.dbg-scope-body { padding-bottom: 2px; }
+
+.dbg-var-row {
+  display: flex; align-items: center; gap: 4px; min-height: 20px; padding: 0 8px;
+  font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-dim);
+}
+.dbg-var-row[role="button"] { cursor: pointer; }
+.dbg-var-row[role="button"]:hover { background: #ffffff08; }
+.dbg-var-row .fb-twisty { flex: none; text-align: center; }
+.dbg-var-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbg-var-eq { color: var(--ink-faint); flex: none; }
+.dbg-var-val {
+  color: var(--voltage); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dbg-var-children { padding-left: 12px; }
+
+/* ── Drive form (Task 5.2) ────────────────────────────────────────────────────
+   A launch-time input probe: pick a MIDI note (+ block count) fired on Debug so
+   a breakpoint inside a driven callback stops. Inputs reuse the .oct-ctrl idiom
+   (panel-raised, hairline, phosphor hover/focus) — no new palette. */
+.dbg-drive-form { padding: 6px 12px 8px; display: flex; flex-direction: column; gap: 6px; }
+.dbg-drive-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: default; }
+.dbg-drive-label {
+  font: 10px/1 "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-dim);
+}
+.dbg-drive-input {
+  width: 62px; padding: 3px 6px; text-align: right;
+  background: var(--panel-raised); color: var(--phosphor);
+  border: 1px solid var(--hairline); border-radius: 4px;
+  font: 12px/1 "IBM Plex Mono", monospace;
+}
+.dbg-drive-input::placeholder { color: var(--ink-faint); }
+.dbg-drive-input:hover { border-color: #8fe9ff44; }
+.dbg-drive-input:focus-visible { outline: none; border-color: var(--phosphor); box-shadow: 0 0 6px #8fe9ff55; }
+.dbg-drive-hint { padding: 2px 0 0; }
+
+/* ── Editor tab strip ─────────────────────────────────────────────────────── */
+.tab-bar {
+  display: flex; align-items: stretch; gap: 1px; height: 34px; flex: none;
+  background: var(--chassis); border-bottom: 1px solid var(--hairline); overflow-x: auto;
+}
+.tab {
+  display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px; cursor: pointer;
+  background: var(--panel); color: var(--ink-dim); border-right: 1px solid var(--hairline);
+  font-size: 12px; white-space: nowrap;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); background: var(--panel-raised); box-shadow: inset 0 -2px 0 var(--phosphor); }
+.tab.entry .tab-name::before { content: "▶ "; color: var(--phosphor); font-size: 9px; }
+.tab-name { font-family: "IBM Plex Mono", monospace; }
+.tab-close {
+  background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 14px;
+  width: 16px; border-radius: 3px;
+}
+.tab-close:hover { color: var(--ink); background: #ffffff14; }
+
+/* ── OLED screen (separate + readable) ───────────────────────────────────── */
+.screen { display: flex; flex-direction: column; }
+#oled {
+  margin: 14px auto 10px;
+  width: 384px; height: 144px;
+  background: #0a0e10; border-radius: 4px; padding: 6px;
+  box-shadow:
+    inset 0 0 0 1px #000, inset 0 0 24px #04181c,
+    0 0 30px -8px #8fe9ff55, 0 8px 24px -10px #000;
+}
+
+/* ── Faceplate: controls placed at real Deluge coordinates ───────────────── */
+.face-wrap { display: flex; flex-direction: column; }
+.faceplate {
+  position: relative;
+  margin: 4px 14px 14px;
+  aspect-ratio: 2178 / 1482;
+  border-radius: 9px;
+  overflow: hidden;
+  box-shadow: 0 10px 26px -14px #000, inset 0 0 0 1px #0008;
+}
+.face-svg {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  display: block; user-select: none; pointer-events: none;
+}
+.face-overlay { position: absolute; inset: 0; }
+.face-overlay > * {
+  position: absolute; transform: translate(-50%, -50%);
+  box-sizing: border-box; padding: 0; margin: 0; touch-action: none;
+}
+
+/* Pads — transparent over the art; glow on press (no sim-driven colour) */
+.pad {
+  border: none; cursor: pointer; border-radius: 14%;
+  background: transparent; transition: box-shadow 0.08s, background 0.08s;
+}
+.pad:hover { box-shadow: inset 0 0 0 1px hsl(var(--hue) 60% 60% / 0.45); }
+.pad.lit {
+  background: radial-gradient(circle at 50% 40%, hsl(var(--hue) 92% 66%), hsl(var(--hue) 82% 46%));
+  box-shadow: 0 0 10px 1px hsl(var(--hue) 90% 55% / 0.75), inset 0 0 4px #fff8;
+}
+
+/* Buttons — transparent hotspots; LED glow + press feedback over the art */
+.fbtn {
+  border: none; cursor: pointer; border-radius: 50%;
+  background: transparent; color: transparent; font-size: 0;
+}
+.fbtn:hover { box-shadow: 0 0 0 1px #8fe9ff55; }
+.fbtn.lit { box-shadow: 0 0 14px 2px var(--voltage), inset 0 0 6px #fff8; }
+.fbtn.pressed { transform: translate(-50%, -50%) scale(0.86); background: #ffffff22; }
+
+/* Encoders — a rotating tick over the art; gold + nav variants */
+.enc { cursor: ns-resize; border-radius: 50%; display: grid; place-items: center; }
+.enc-knob {
+  width: 100%; height: 100%; border-radius: 50%;
+  position: relative; background: transparent;
+}
+/* Rotating layer (holds the tick); the bezel above stays static. */
+.enc-dial { position: absolute; inset: 0; display: grid; place-items: start center; }
+.enc-tick {
+  width: 8%; height: 32%; margin-top: 8%; border-radius: 2px;
+  background: var(--phosphor); box-shadow: 0 0 5px var(--phosphor);
+}
+.enc.gold .enc-tick { background: #2a1f08; box-shadow: none; }
+.enc.inert { pointer-events: none; }
+.enc:focus-visible { outline: 2px solid var(--phosphor); outline-offset: 1px; }
+
+/* ── Faceplate themes ────────────────────────────────────────────────────── */
+[data-face-theme="chassis"] .face-svg { filter: brightness(0.42) saturate(0.55) contrast(1.05); }
+[data-face-theme="chassis"] .faceplate { background: var(--chassis-deep); }
+
+[data-face-theme="emissive"] .face-svg { display: none; }
+[data-face-theme="emissive"] .faceplate {
+  background: linear-gradient(180deg, #1c2027, #131519);
+  box-shadow: inset 0 0 0 1px #000, inset 0 0 60px #0009;
+}
+[data-face-theme="emissive"] .pad {
+  background: radial-gradient(circle at 50% 40%, hsl(var(--hue) 55% 50% / 0.18), hsl(var(--hue) 50% 30% / 0.06)), #14171d;
+  box-shadow: inset 0 0 0 1px #ffffff0a, inset 0 -2px 3px #0006;
+}
+[data-face-theme="emissive"] .fbtn {
+  border-radius: 28%; background: linear-gradient(#262a31, #1a1d23);
+  box-shadow: inset 0 0 0 1px #ffffff0a, inset 0 -2px 3px #0007;
+}
+[data-face-theme="emissive"] .fbtn.fn { border-radius: 50%; }
+[data-face-theme="emissive"] .fbtn.lit { background: linear-gradient(var(--voltage), #c98f2e); }
+[data-face-theme="emissive"] .enc-knob {
+  background: radial-gradient(circle at 50% 32%, #3a4049, #181b21 70%);
+  box-shadow: inset 0 1px 1px #ffffff14, inset 0 -3px 6px #0008, 0 2px 5px #0006;
+}
+[data-face-theme="emissive"] .enc.gold .enc-knob {
+  background: radial-gradient(circle at 50% 32%, #e6bf63, #8a6a1e 72%);
+  box-shadow: inset 0 1px 1px #fff6, inset 0 -3px 6px #0007, 0 2px 5px #0006;
+}
+
+/* ── Rack: sim-only instruments below the faceplate ──────────────────────── */
+.rack { display: flex; flex-direction: column; border-top: 1px solid var(--hairline); padding-bottom: 12px; }
+
+/* ── CV / gate jacks ────────────────────────────────────────────────────── */
+.cv-row {
+  display: flex; align-items: center; gap: 18px;
+  padding: 6px 16px 12px; flex-wrap: wrap;
+}
+.jack { display: flex; align-items: center; gap: 8px; }
+.jack-led {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #3a3f48, #0c0e12);
+  box-shadow: inset 0 0 0 2px #000, inset 0 0 0 3px #d9a23a55;
+}
+.jack-legend, .gates .jack-legend {
+  font: var(--legend); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-dim);
+}
+.jack-val {
+  font-family: "IBM Plex Mono"; font-size: 14px; color: var(--voltage);
+  min-width: 62px;
+}
+.jack-val i { color: var(--ink-dim); font-style: normal; font-size: 11px; margin-left: 1px; }
+.gates { display: flex; align-items: center; gap: 6px; }
+.cv-jacks { display: flex; align-items: center; gap: 18px; margin-left: auto; }
+.gate-led {
+  width: 9px; height: 9px; border-radius: 2px; background: #20242b;
+  box-shadow: inset 0 0 0 1px #000;
+}
+.gate-led.on { background: var(--phosphor); box-shadow: 0 0 8px var(--phosphor); }
+
+/* ── Scopes (CV/gate timeline + audio out, side by side) ─────────────────── */
+.scopes-row { display: flex; gap: 14px; padding: 0 16px; }
+.scopes-row > * { flex: 1; min-width: 0; }
+.cvscope-wrap { display: flex; flex-direction: column; }
+#cv-scope {
+  width: 100%; height: 60px; margin: 10px 0 6px;
+  background: #0b0f11; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px #000, inset 0 0 14px #04141a;
+}
+
+/* ── MIDI monitor ───────────────────────────────────────────────────────── */
+.midimon-wrap { display: flex; flex-direction: column; }
+.midi-monitor {
+  margin: 8px 16px 4px; height: 92px; overflow-y: auto;
+  background: var(--chassis-deep); border-radius: 4px;
+  box-shadow: inset 0 0 0 1px #000;
+  padding: 6px 10px;
+  font-family: "IBM Plex Mono", monospace; font-size: 11px; line-height: 1.55;
+}
+.midi-row { white-space: pre; color: var(--ink-dim); }
+.midi-row.in { color: var(--phosphor); }
+.midi-row.out { color: var(--voltage); }
+
+/* ── Audio scope ────────────────────────────────────────────────────────── */
+.scope-wrap { display: flex; flex-direction: column; }
+.audio-state {
+  float: right; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.16em;
+}
+.audio-state.on { color: var(--phosphor); }
+#scope {
+  width: 100%; height: 60px; margin: 10px 0 6px;
+  background: #0b0f11; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px #000, inset 0 0 14px #04141a;
+}
+
+/* ── MIDI device control ────────────────────────────────────────────────── */
+.midi-ctrl { float: right; display: inline-flex; gap: 6px; }
+.oct-ctrl { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; vertical-align: middle; }
+.oct-ctrl button {
+  display: inline-grid; place-items: center; padding: 0;
+  width: 20px; height: 18px; line-height: 1; font-size: 14px; cursor: pointer;
+  background: var(--panel-raised); color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 4px;
+}
+.oct-ctrl button:hover { color: var(--phosphor); border-color: #8fe9ff44; }
+#oct-label {
+  font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink);
+  min-width: 24px; text-align: center; letter-spacing: 0;
+}
+#midi-enable, #midi-device {
+  background: var(--panel-raised); color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 4px;
+  font: 10px/1 "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: 0.1em;
+  padding: 3px 7px; cursor: pointer;
+}
+#midi-enable:hover:not(:disabled) { color: var(--phosphor); border-color: #8fe9ff44; }
+#midi-enable:disabled { opacity: 0.5; cursor: default; }
+#midi-device { color: var(--phosphor); text-transform: none; }
+
+/* ── Mini keyboard ──────────────────────────────────────────────────────── */
+.keys-wrap { display: flex; flex-direction: column; margin-top: 6px; }
+.keyboard {
+  display: flex; padding: 12px 16px; height: 132px; align-items: stretch;
+}
+.kb-inner { position: relative; flex: 1; height: 100%; }
+.key-row { display: flex; height: 100%; }
+/* White keys: flush, separated only by a thin seam (no gaps). */
+.key {
+  flex: 1; border: none; cursor: pointer; border-radius: 0 0 4px 4px;
+  background: linear-gradient(#e8edf2, #b9c2cc);
+  box-shadow: inset 0 -3px 4px #0003;
+  border-right: 1px solid #9aa3ae;
+}
+.key-row .key:last-child { border-right: none; }
+/* Black keys: overlaid on the white-key boundaries (width/left set inline). */
+.key.black {
+  position: absolute; top: 0; height: 62%; z-index: 2;
+  border: none; border-radius: 0 0 3px 3px;
+  background: linear-gradient(#2b3038, #14171c);
+  box-shadow: inset 0 -3px 4px #000a, 0 2px 4px #0009;
+}
+.key.down { background: linear-gradient(var(--phosphor), #5cb6cc); box-shadow: 0 0 12px var(--phosphor); }
+.key.black.down { background: linear-gradient(#5cb6cc, #2f7e90); }
+
+/* ── Console ────────────────────────────────────────────────────────────── */
+.console-pane {
+  flex: none;
+  border-top: 1px solid var(--hairline);
+  background: var(--chassis-deep);
+  display: flex; flex-direction: column; height: var(--console-h);
+  position: relative; /* anchor #resize-console to the console's top edge */
+}
+.console {
+  flex: 1; overflow-y: auto; padding: 8px 14px;
+  font-family: "IBM Plex Mono", monospace; font-size: 12.5px; line-height: 1.6;
+}
+.console:empty::before {
+  content: "— run a script to see System.print output —";
+  color: var(--ink-faint); font-style: italic;
+}
+.midi-monitor:empty::before {
+  content: "— play a note or send MIDI —";
+  color: var(--ink-faint); font-style: italic;
+}
+.line { white-space: pre-wrap; }
+.line.out { color: var(--ink); }
+.line.out::before { content: "› "; color: var(--phosphor); }
+.line.err { color: #ff8585; }
+.line.err::before { content: "! "; color: #ff6b6b; }
+
+/* ── Debug: breakpoint gutter ───────────────────────────────────────────────
+   A breakpoint is a control probe you placed, so it's amber (--voltage), never
+   red (red = errors only). The empty-gutter hover shows a dim ghost dot to cue
+   "click to set." The dot hugs the RIGHT of the glyph margin so it sits right
+   next to the line numbers (VSCode-like), not floating at the far-left edge. */
+.dbg-breakpoint { cursor: pointer; }
+.dbg-breakpoint::before {
+  content: ""; position: absolute; top: 50%; right: 2px;
+  width: 9px; height: 9px; transform: translateY(-50%);
+  border-radius: 50%; background: var(--voltage);
+  box-shadow: 0 0 6px var(--voltage);
+}
+/* Ghost cue on hover over an empty glyph-margin line (no glow, dim ink). */
+.dbg-breakpoint-ghost { cursor: pointer; }
+.dbg-breakpoint-ghost::before {
+  content: ""; position: absolute; top: 50%; right: 2px;
+  width: 9px; height: 9px; transform: translateY(-50%);
+  border-radius: 50%; background: var(--ink-faint);
+}
+
+/* ── Debug: transport toolbar (topbar, left of Run) ─────────────────────────
+   The Debug trigger is a ghost button with a PHOSPHOR hover accent (cyan =
+   "probe/instrument"), distinct from Run's amber "play." While a session is
+   live it hides and the transport cluster shows: small panel-raised buttons in
+   the idiom of .oct-ctrl, phosphor hover, 0.5 opacity when disabled. */
+.dbg-toolbar { display: inline-flex; align-items: center; gap: 8px; }
+.dbg-start:hover:not(:disabled) { color: var(--phosphor); border-color: #8fe9ff44; }
+.dbg-start:disabled { opacity: 0.5; cursor: default; }
+.dbg-transport { display: inline-flex; align-items: center; gap: 4px; }
+/* `display` on the class would otherwise defeat the [hidden] attribute. */
+.dbg-transport[hidden] { display: none; }
+.dbg-transport button {
+  display: inline-grid; place-items: center; padding: 0;
+  width: 26px; height: 26px; line-height: 1; font-size: 13px; cursor: pointer;
+  background: var(--panel-raised); color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 5px;
+}
+.dbg-transport button:hover:not(:disabled) { color: var(--phosphor); border-color: #8fe9ff44; }
+.dbg-transport button:disabled { opacity: 0.5; cursor: default; }
+.dbg-transport #dbg-stop:hover:not(:disabled) { color: #ff8585; border-color: #ff6b6b55; }
+
+/* ── Debug: paused line (the execution beam rests here — phosphor) ──────────── */
+.dbg-current-line { background: #8fe9ff12; }
+.dbg-current-bar { box-shadow: inset 2px 0 0 var(--phosphor); }
+.dbg-current-glyph::before {
+  content: "▶"; position: absolute; top: 50%; right: 1px;
+  transform: translateY(-50%); font-size: 9px;
+  color: var(--phosphor); text-shadow: 0 0 6px var(--phosphor);
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 880px) {
+  body { overflow: auto; height: auto; }
+  .bench { grid-template-columns: 1fr; }
+  .file-browser { display: none; } /* collapse the tree on narrow screens */
+  .instrument-pane { border-left: none; border-top: 1px solid var(--hairline); }
+  #editor { height: 50vh; }
+  .topbar { height: auto; flex-wrap: wrap; gap: 8px; padding: 8px 14px; }
+  .tagline { display: none; }
+  .console-pane { height: 120px; }
+  .resizer { display: none; } /* single-column layout: nothing to resize */
+  /* Single column: scale the instrument rig to the viewport, not the (now
+     full-width) --inst-w, so the 600px design never overflows horizontally. */
+  .instrument-scale { zoom: calc((100vw - 4px) / 600px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+:focus-visible { outline: 2px solid var(--phosphor); outline-offset: 2px; }
+
+/* Project ▾ menu ---------------------------------------------------------- */
+.field { position: relative; }
+.menu-btn {
+  background: transparent; color: var(--ink-dim);
+  border: 1px solid var(--hairline); border-radius: 6px;
+  font-family: "Space Grotesk"; font-weight: 500; font-size: 12px;
+  padding: 7px 13px; cursor: pointer;
+}
+.menu-btn:hover { color: var(--phosphor); border-color: #8fe9ff44; }
+.menu-btn:focus-visible { outline: 2px solid var(--voltage); outline-offset: 1px; }
+.menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--panel-raised);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.menu-list { list-style: none; margin: 0; padding: 0; }
+.menu-sub { margin-left: 10px; }
+.menu-row { display: flex; align-items: center; }
+.menu-item {
+  flex: 1;
+  text-align: left;
+  font-family: "Space Grotesk"; font-size: 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.menu-item:hover, .menu-item:focus-visible {
+  background: color-mix(in srgb, var(--voltage) 16%, transparent);
+  outline: none;
+}
+.menu-danger { color: #e0685f; }
+.menu-del {
+  font-family: "Space Grotesk"; font-size: 12px;
+  color: var(--ink-dim);
+  opacity: 0.5;
+  background: transparent;
+  border: 0;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.menu-del:hover { opacity: 1; color: #e0685f; }

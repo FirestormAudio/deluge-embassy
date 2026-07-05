@@ -1,0 +1,40 @@
+[package]
+name = "wren-web-debug"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Deluge Wren debugger core: runs the shared deluge foreign bindings under wren-core's Rust-compiler VM (named locals for source-level debugging)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# The threaded-wasm entry bin (Task 3.2). A command module whose `_start`
+# bootstraps the main thread's TLS for `wasm32-wasip1-threads` (see
+# src/bin/dbg_threads.rs). Gated behind the `threads` feature via
+# `required-features` so it is NOT built by the native `cargo test` or the
+# single-threaded `wasm32-wasip1` (Task 3.1) build — where it would fail to
+# link (`crt1-command.o` needs `__wasi_init_tp`, absent off the threads
+# sysroot). build-threads.sh passes `--features threads --bin dbg_threads`.
+[[bin]]
+name = "dbg_threads"
+required-features = ["threads"]
+
+[features]
+# Marker feature that turns on the threaded-wasm bin target. No code depends
+# on it (the SAB code is gated on `target_feature = "atomics"`); it exists so
+# `required-features` can keep the bin out of the default/native/3.1 builds.
+threads = []
+
+[dependencies]
+wren-core = { path = "../../../wren-rs/crates/wren-core", features = ["debug"] }
+# default-features = false is MANDATORY: it disables `wren-sys-backend` so this
+# crate links ONLY wren-core's C VM (no double-VM). We use the backend-agnostic
+# SlotApi trait + generic binding bodies, never deluge-wren-core's Vm surface or
+# its wren-sys-based `test_support`.
+deluge-wren-core = { path = "../../crates/deluge-wren-core", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true

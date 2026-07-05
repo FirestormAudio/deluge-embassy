@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wren · deluge</title>
+    <!-- Fonts are self-hosted (see src/fonts.ts) so the page can be cross-origin
+         isolated under COEP: require-corp for the SharedArrayBuffer audio ring. -->
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark"></span>
+        <span class="wordmark">deluge<i>/</i>wren</span>
+        <span class="tagline">coding enviroment</span>
+      </div>
+      <div class="controls">
+        <div class="field">
+          <button id="project-menu" class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Project ▾</button>
+        </div>
+        <label class="field">
+          <span class="legend">face</span>
+          <select id="face-theme" aria-label="faceplate theme">
+            <option value="hardware">hardware</option>
+            <option value="chassis">chassis</option>
+            <option value="emissive">emissive</option>
+          </select>
+        </label>
+        <span id="status" class="status">booting…</span>
+        <button id="share" class="ghost-btn" aria-label="copy a shareable link to this script">Share</button>
+        <button id="run" class="run">Run <kbd>⌘↵</kbd></button>
+      </div>
+    </header>
+
+    <main class="bench">
+      <section class="file-browser" id="file-browser">
+        <div class="pane-switch" role="tablist" aria-label="left panel">
+          <button id="pane-files" class="pane-seg is-active" type="button" role="tab" aria-selected="true" aria-controls="fb-body">files</button>
+          <button id="pane-debug" class="pane-seg" type="button" role="tab" aria-selected="false" aria-controls="debug-view">debug</button>
+          <button id="fb-new" class="pane-switch-add" type="button" title="new file" aria-label="new file">+</button>
+        </div>
+        <div id="fb-body" class="fb-body">
+          <div id="fb-tree" class="fb-tree"></div>
+        </div>
+        <div id="debug-view" class="dbg-view" hidden></div>
+        <div id="resize-left" class="resizer resizer-x" role="separator" aria-orientation="vertical" aria-label="resize the file panel" tabindex="0"></div>
+      </section>
+
+      <section class="editor-pane">
+        <div id="tab-bar" class="tab-bar" role="tablist"></div>
+        <div id="editor"></div>
+        <footer class="console-pane">
+          <div id="resize-console" class="resizer resizer-y" role="separator" aria-orientation="horizontal" aria-label="resize the console" tabindex="0"></div>
+          <div class="pane-legend">console · System.print</div>
+          <div id="console" class="console" role="log" aria-live="polite" aria-label="script output"></div>
+        </footer>
+      </section>
+
+      <section class="instrument-pane">
+        <div id="resize-instrument" class="resizer resizer-x resizer-left" role="separator" aria-orientation="vertical" aria-label="resize the instrument panel" tabindex="0"></div>
+        <div class="instrument-scale">
+        <div class="screen">
+          <div class="pane-legend">oled · 128×48</div>
+          <canvas id="oled" role="img" aria-label="OLED display, 128 by 48 pixels"></canvas>
+        </div>
+
+        <div id="cv-row" class="cv-row"></div>
+
+        <div class="face-wrap">
+          <div class="pane-legend">deluge</div>
+          <div id="faceplate" class="faceplate" data-face-theme="hardware">
+            <img class="face-svg" src="./deluge.svg" alt="" aria-hidden="true" />
+            <div id="face-overlay" class="face-overlay"></div>
+          </div>
+        </div>
+
+        <div class="rack">
+          <div class="scopes-row">
+            <div class="cvscope-wrap">
+              <div class="pane-legend">cv · gate · timeline</div>
+              <canvas id="cv-scope" role="img" aria-label="CV and gate timeline"></canvas>
+            </div>
+
+            <div class="scope-wrap">
+              <div class="pane-legend">audio · out <span id="audio-state" class="audio-state">muted</span></div>
+              <canvas id="scope" role="img" aria-label="audio output waveform"></canvas>
+            </div>
+          </div>
+
+          <div class="keys-wrap">
+            <div class="pane-legend">
+              midi in
+              <span class="oct-ctrl">
+                <button id="oct-down" title="octave down" aria-label="octave down">−</button>
+                <span id="oct-label">C3</span>
+                <button id="oct-up" title="octave up" aria-label="octave up">+</button>
+              </span>
+              <span class="midi-ctrl">
+                <button id="midi-enable" aria-label="connect a MIDI input device">connect device</button>
+                <select id="midi-device" hidden aria-label="MIDI input device"></select>
+              </span>
+            </div>
+            <div id="keyboard" class="keyboard"></div>
+          </div>
+
+          <div class="midimon-wrap">
+            <div class="pane-legend">midi · monitor</div>
+            <div id="midi-monitor" class="midi-monitor" role="log" aria-live="polite" aria-label="MIDI monitor"></div>
+          </div>
+        </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

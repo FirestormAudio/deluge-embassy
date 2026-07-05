@@ -54,5 +54,6 @@ cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit
 cargo test --target "$HOST" -p deluge-sdk-macros
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
+cargo test --target "$HOST" --manifest-path tools/wren-web-debug/Cargo.toml
 
 echo "==> All tests passed."

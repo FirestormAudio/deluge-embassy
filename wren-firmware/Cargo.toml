@@ -15,6 +15,9 @@ test = false
 # (e.g. the hand-built USB CDC stack).
 deluge-sdk = { path = "../crates/deluge-sdk", default-features = false }
 wren-sys = { path = "../wren-sys" }
+# The portable Wren runtime: bindings + DSP engine + the `Host` trait this
+# firmware implements. Shared with the web simulator so the two never drift.
+deluge-wren-core = { path = "../crates/deluge-wren-core" }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-sync.workspace = true
 embassy-futures.workspace = true

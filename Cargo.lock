@@ -1498,6 +1498,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge-wren-core"
+version = "0.1.0"
+dependencies = [
+ "deluge-wren-core",
+ "wren-sys",
+]
+
+[[package]]
 name = "demo-firmware"
 version = "0.1.0"
 dependencies = [
@@ -6794,6 +6802,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "deluge-sdk",
+ "deluge-wren-core",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync",

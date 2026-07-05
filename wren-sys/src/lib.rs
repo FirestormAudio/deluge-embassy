@@ -140,17 +140,50 @@ unsafe extern "C" {
     pub fn wrenSetSlotHandle(vm: *mut WrenVM, slot: c_int, handle: *mut WrenHandle);
 }
 
+// wasm: wasi-libc provides `time`/`clock_getres` but not `clock()`, which
+// `wren_opt_random` calls once to seed its RNG. A constant is fine for the
+// simulator (deterministic `Random`); a real clock can be wired later.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+extern "C" fn clock() -> core::ffi::c_longlong {
+    // wasi-libc's `clock_t` is `long long`.
+    0
+}
+
 // ── Host hooks (provided by the firmware) ────────────────────────────────────
 
 unsafe extern "C" {
     /// Receives the NUL-terminated text from `System.print` and friends.
     fn wren_host_write(text: *const c_char);
     /// Receives a VM error: `line` (-1 when not applicable) + NUL-terminated message.
-    fn wren_host_error(line: c_int, message: *const c_char);
+    fn wren_host_error(module: *const c_char, line: c_int, message: *const c_char);
     /// Diagnostic numeric trace (M0 bring-up only): `tag` + value. Only the
     /// device SDRAM heap reports through this (runaway-size OOM); unused on host.
     #[cfg(target_os = "none")]
     fn wren_host_debug(tag: c_int, value: usize);
+    /// Resolve an `import "name"` to the module's NUL-terminated source, or NULL
+    /// if not found. The returned buffer must stay valid until the next VM reset
+    /// (the host owns it — no `onComplete` free). Enables multi-file projects.
+    fn wren_host_load_module(name: *const c_char) -> *const c_char;
+}
+
+/// Result of a `loadModuleFn` call (mirrors `WrenLoadModuleResult` in `wren.h`).
+#[repr(C)]
+pub struct WrenLoadModuleResult {
+    pub source: *const c_char,
+    pub on_complete:
+        Option<unsafe extern "C" fn(*mut WrenVM, *const c_char, WrenLoadModuleResult)>,
+    pub user_data: *mut c_void,
+}
+
+/// `loadModuleFn`: hand an imported module's source to the VM. The host registry
+/// owns the buffer (valid until reset), so `on_complete` is NULL.
+unsafe extern "C" fn load_module_trampoline(
+    _vm: *mut WrenVM,
+    name: *const c_char,
+) -> WrenLoadModuleResult {
+    let source = if name.is_null() { ptr::null() } else { unsafe { wren_host_load_module(name) } };
+    WrenLoadModuleResult { source, on_complete: None, user_data: ptr::null_mut() }
 }
 
 unsafe extern "C" fn write_trampoline(_vm: *mut WrenVM, text: *const c_char) {
@@ -162,12 +195,12 @@ unsafe extern "C" fn write_trampoline(_vm: *mut WrenVM, text: *const c_char) {
 unsafe extern "C" fn error_trampoline(
     _vm: *mut WrenVM,
     _err_type: c_int,
-    _module: *const c_char,
+    module: *const c_char,
     line: c_int,
     message: *const c_char,
 ) {
     if !message.is_null() {
-        unsafe { wren_host_error(line, message) };
+        unsafe { wren_host_error(module, line, message) };
     }
 }
 
@@ -399,6 +432,8 @@ fn make_config() -> WrenConfiguration {
     cfg.error_fn = Some(error_trampoline);
     cfg.bind_foreign_method_fn = Some(foreign::bind_method);
     cfg.bind_foreign_class_fn = Some(foreign::bind_class);
+    // Module imports resolve through the host registry (multi-file projects).
+    cfg.load_module_fn = load_module_trampoline as *const c_void;
     // Modest GC thresholds for the embedded heap (defaults are 10 MB / 1 MB).
     cfg.initial_heap_size = 1 << 20; // 1 MB
     cfg.min_heap_size = 1 << 18; //    256 KB
