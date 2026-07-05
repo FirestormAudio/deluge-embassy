@@ -1423,6 +1423,9 @@ version = "0.1.0"
 [[package]]
 name = "deluge-protocol"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "deluge-sdk"
