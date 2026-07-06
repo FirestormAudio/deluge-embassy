@@ -43,11 +43,15 @@ supersedes it.
   budget so it fits constrained targets; the Deluge is the first such host.
 - **One core, every host renders identically** — so the device and the web
   simulator agree bit-for-bit, pinned by golden audio vectors.
-- **`f32` block kernels, SIMD-ready.** DSP kernels operate on `f32` blocks (the
-  prototype's proven representation). They are block-oriented so a NEON *float*
-  SIMD path can be added later as a pure optimization; `armv7-dsp-intrinsics` (a
-  *fixed-point* crate) is not the substrate but stays available for any
-  fixed-point hot spot that profiling later justifies.
+- **`f32` block kernels with portable SIMD.** DSP kernels operate on `f32` blocks
+  (the prototype's proven representation) and use `core::simd` (portable SIMD →
+  NEON on ARM, SSE/AVX on host) for the **data-parallel** ones — math, mixing,
+  gain, waveshaping, constant-freq oscillators. Serial-recurrence kernels (IIR
+  filters, the noise stream, stateful envelopes) stay scalar; their SIMD path is
+  **cross-voice batching** (SoA, needs the voice layer — later). The SIMD path is
+  behind a feature gate with a scalar fallback, so the crate still builds on
+  stable. `armv7-dsp-intrinsics` (a *fixed-point* crate) is not the substrate but
+  stays available for any fixed-point hot spot profiling later justifies.
 
 **Non-goals (explicitly out, or deferred to their own future work)**
 
@@ -79,7 +83,7 @@ Rust portable core
  ├─ UGen library  oscillators · filters · envelopes · effects · samples · dynamics
  └─ Cmd transport (Host trait) → firmware ring · web direct-apply
         ▼
-DSP kernels  (f32 block math; NEON-float SIMD path is a later optimization)
+DSP kernels  (f32 block math; core::simd → NEON for data-parallel kernels)
 ```
 
 ### 2.1 The block engine

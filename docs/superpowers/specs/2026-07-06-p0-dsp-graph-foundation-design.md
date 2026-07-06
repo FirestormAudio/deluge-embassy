@@ -39,9 +39,12 @@ edit of it. The prototype is removed once `deluge-audio-graph` reaches parity
 - A **`Host` transport seam** (the prototype's `audio_cmd`) and a **`Cmd`
   vocabulary** that expresses the whole model.
 - `deluge-dsp-kernels`: the DSP math as **pure, self-contained `f32` structs**
-  with a `process_block`, testable in isolation, block-oriented so a NEON-float
-  SIMD path can be added later, with **no graph knowledge**. No dependency on
-  `armv7-dsp-intrinsics` in P0 (that crate is fixed-point).
+  with a `process_block`, testable in isolation, with **no graph knowledge**.
+  Data-parallel kernels (math, mixing, gain, constant-freq oscillators) use
+  `core::simd` (→ NEON on ARM) behind a `simd` feature with a scalar fallback;
+  serial-recurrence kernels (IIR filters, noise, envelopes) stay scalar (their
+  SIMD path is cross-voice batching, out of P0). No dependency on
+  `armv7-dsp-intrinsics` (that crate is fixed-point).
 - A **validation set**: the ~10 prototype primitives re-implemented on this
   substrate, proving the model and seeding the golden vectors.
 
@@ -62,8 +65,9 @@ edit of it. The prototype is removed once `deluge-audio-graph` reaches parity
 
 ```
 deluge-dsp-kernels     pure DSP: struct + process_block over &[f32]/&mut [f32].
-                       No NodeId, no Input, no graph. Pure f32 scalar in P0; a
-                       NEON-float SIMD path is a later, additive optimization.
+                       No NodeId, no Input, no graph. f32; core::simd (→NEON)
+                       for data-parallel kernels behind a `simd` feature (scalar
+                       fallback); serial-recurrence kernels stay scalar.
         ▲
 deluge-audio-graph     the engine: node arena + free-list, pooled output arena,
                        buses, rate model, Cmd vocabulary, Host trait, GraphConfig.
@@ -268,8 +272,9 @@ Parity target: an equivalent patch renders sample-identical to the prototype
 
 - **Kernels** (`deluge-dsp-kernels`): property tests (bounded output, no
   NaN/denormal, phase wrap) + **null tests** against a naïve scalar reference
-  within tolerance. (Once a SIMD path exists, it null-tests against the same
-  reference — out of scope for P0.)
+  within tolerance. Where a kernel has a `core::simd` path, it null-tests against
+  its own scalar fallback — and host CI runs that comparison on SSE while device
+  runs it on NEON, so agreement is checked on both ISAs.
 - **Graph** (`deluge-audio-graph`): golden audio vectors at a fixed
   `(sample_rate, N)`; seeded noise for reproducibility; lifecycle tests
   (create/free/reuse preserves eval order and produces no stale reads); a
@@ -286,5 +291,8 @@ Parity target: an equivalent patch renders sample-identical to the prototype
 - Whether `enum_dispatch` (the crate) is used or a small in-tree macro generates
   the dispatch `match`.
 - Chunk size for the buffer-pool allocator.
+- The `simd` feature's exact gating (`#![feature(portable_simd)]` under it, scalar
+  default) and which validation kernels ship a `core::simd` path in P0 vs. land
+  scalar-only and get vectorized when their suite arrives.
 - Exact `Cell` vs documented-`unsafe` choice for the output arena (benchmark both
   on-device).
