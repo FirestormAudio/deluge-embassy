@@ -1,12 +1,18 @@
 # DSP library for Wren — fully-fleshed-out vision & roadmap
 
 Turn the current *basic* Rust DSP library (the prototype audio graph in
-`deluge-wren-core`) into a **device-first, SuperCollider-like audio-scripting
+`deluge-wren-core`) into a **portable, SuperCollider-like audio-scripting
 toolkit** callable from Wren: a broad, composable vocabulary of oscillators,
 filters, envelopes, effects and samples, driven either as a low-level patch graph
-or as high-level `SynthDef`/voice instruments — all running on the real Deluge
-(ARM Cortex-A9, `no_std`, sharing CPU with the rest of the firmware) and mirrored
-bit-for-bit in the web simulator.
+or as high-level `SynthDef`/voice instruments.
+
+The core is a **reusable `no_std` DSP library** with no dependency on any
+particular hardware: all sizing (node count, buffer memory, voice count) and the
+sample rate are supplied by the host, so it drops into *any* `no_std` Rust audio
+project under whatever limitations that target has. The **Deluge is the first
+host and reference target** — ARM Cortex-A9, `no_std`, sharing CPU with the rest
+of the firmware, mirrored bit-for-bit in the web simulator — but nothing in the
+library is Deluge-specific.
 
 > **Status:** umbrella vision. This is the *cluster* spec. It fixes the shared
 > architecture, the crate structure, the decomposition into sub-projects, and the
@@ -30,10 +36,13 @@ supersedes it.
 - **Two authoring layers over one substrate:** a low-level imperative node graph,
   and a high-level `SynthDef`/voice layer (templates, polyphony, MIDI voice
   allocation) built as *recorded* low-layer operations.
-- **Device-first.** Everything must run within a bounded per-block CPU budget on
-  the Deluge, `no_std`, with no heap allocation or locks on the audio path.
-- **One portable core**, so the device and the web simulator render identically,
-  pinned by golden audio vectors.
+- **Portable and reusable.** A `no_std`, hardware-agnostic core usable in *any*
+  Rust audio project. All sizing (nodes, buffers, voices) and the sample rate are
+  host-supplied via const generics / config — the library encodes no target's
+  limits. It must run within a bounded, allocation-free, lock-free per-block
+  budget so it fits constrained targets; the Deluge is the first such host.
+- **One core, every host renders identically** — so the device and the web
+  simulator agree bit-for-bit, pinned by golden audio vectors.
 - **Cashes in `armv7-dsp-intrinsics`** — DSP kernels are block-oriented and
   SIMD-able through the existing NEON crate.
 
@@ -45,7 +54,9 @@ supersedes it.
 - A visual patching UI. Authoring is Wren code.
 - Replacing the Deluge's own native synth engine. This is a *scripting* engine
   that runs alongside the firmware, reached through Wren.
-- Dynamic, unbounded polyphony. Voice count is a fixed, compile-time arena.
+- Dynamic, unbounded polyphony. Voice count is a fixed, host-configured arena.
+- Baking in any host's memory or CPU limits, sample rate, or block size — these
+  are parameters the host supplies, not constants the library owns.
 
 ---
 
@@ -89,9 +100,12 @@ Replaces today's per-sample `render_frame`:
   one-shot effects) can be spawned and **freed** — the precondition for
   polyphony. A full-graph reset still exists but is no longer the only way to
   reclaim nodes.
-- **Buffer pool.** A fixed arena (sized from the Deluge's SDRAM budget) backs
-  delay lines, reverb, and sample buffers — handed out to and returned with the
-  nodes that own them.
+- **Buffer pool.** A fixed arena backs delay lines, reverb, and sample buffers —
+  handed out to and returned with the nodes that own them. Its size (and whether
+  its backing storage is a static array or host-provided memory) is a
+  const-generic / host parameter, not a hardcoded budget. A host with kilobytes
+  and a host with megabytes both work; effects simply fail to allocate (and the
+  patch degrades gracefully) when the pool is exhausted.
 
 Feedback loops carry one block of latency (acceptable), or are expressed via an
 explicit feedback node when sample-tight feedback is needed.
@@ -109,16 +123,23 @@ deluge-dsp-kernels     (new)     block-oriented DSP math: oscillator/filter/env/
         ▲
 deluge-audio-graph     (new)     the block engine: node arena + free-list, buffer
                                   pool, audio/control rate model, stereo buses,
-                                  Cmd vocabulary, Host transport trait.
+                                  Cmd vocabulary, Host transport trait. Arena
+                                  sizes + sample rate are const-generic / config,
+                                  never hardcoded. No Wren, no hardware.
         ▲
 deluge-audio-wren      (new)     Wren bindings — low imperative layer + high
                                   SynthDef/voice layer. Supersedes the prototype
-                                  audio classes in deluge-wren-core.
+                                  audio classes in deluge-wren-core. Optional: a
+                                  non-Wren host depends only on the two crates
+                                  below it.
 ```
 
-Hosts (the firmware audio task, the web/wasm build) wire `deluge-audio-graph` to
-their transports exactly as the prototype does today — that control→audio seam is
-the one thing worth carrying over verbatim.
+The bottom two crates (`deluge-dsp-kernels`, `deluge-audio-graph`) are the
+reusable, hardware- and language-agnostic library; any `no_std` audio project can
+depend on them without Wren. Hosts (the firmware audio task, the web/wasm build,
+or any third-party target) wire `deluge-audio-graph` to their transports exactly
+as the prototype does today — that control→audio seam is the one thing worth
+carrying over verbatim.
 
 ---
 
@@ -153,18 +174,21 @@ mature.
 These bind every sub-project; each later spec inherits them.
 
 **Memory & real-time discipline.**
-- Everything is a **fixed, compile-time-sized arena**: `MAX_NODES`, the buffer
-  pool (delay/reverb/sample RAM from the SDRAM budget), and the voice count. No
-  heap allocation and no locks on the audio path — control→audio stays the
-  lock-free ring the prototype already uses.
+- Everything is a **fixed arena whose size the host chooses** (const generics /
+  config): node count, buffer pool, voice count. The library ships sensible
+  defaults but bakes in no target's budget. No heap allocation and no locks on the
+  audio path — control→audio stays the lock-free ring the prototype already uses.
 - Bounded work per block: no unbounded loops in `render`, denormals flushed,
-  outputs clamped. The **QA profiler enforces a per-block CPU budget as a merge
-  gate** — a UGen that blows the budget does not land.
+  outputs clamped. A per-block CPU budget is a **host-defined** ceiling; the QA
+  profiler enforces whatever ceiling a given host sets as a merge gate for that
+  host — a UGen that blows the Deluge's budget does not land in the Deluge build,
+  but a roomier host may still use it.
 
 **Rate model.** Each param slot resolves to {constant, control-rate source (one
-value/block, broadcast), audio-rate source (full block)}. Block size N is a single
-tunable (start ~32), trading modulation latency against dispatch savings — fixed
-in P0, revisited only with profiler data.
+value/block, broadcast), audio-rate source (full block)}. **Sample rate and block
+size N are host parameters**, not constants — N (start ~32) trades modulation
+latency against dispatch savings. Kernels are written rate-agnostic; the host
+fixes both at graph construction.
 
 **SynthDef mechanics (the device-friendly bit).** A `SynthDef` is a **recorded,
 parameterized Cmd list**, not a live graph. Instantiating a voice = replay that
@@ -180,9 +204,9 @@ stays source-compatible where that is free, so a script like
 The prototype `Engine`/`Cmd`/`audio.rs` are removed once `deluge-audio-graph`
 reaches parity.
 
-**Determinism & parity.** One core, both targets; golden audio vectors pin
-device ≡ sim (the established pattern); noise/random UGens take explicit seeds so
-vectors reproduce.
+**Determinism & parity.** One core, every host; golden audio vectors pin
+device ≡ sim at a fixed sample rate + block size (the established pattern);
+noise/random UGens take explicit seeds so vectors reproduce.
 
 **Testing strategy per layer.**
 - *Kernels* → property tests + **null tests against a reference model** (naïve vs
@@ -195,8 +219,9 @@ vectors reproduce.
 
 ## 5. Open questions (resolved as each sub-project is specced)
 
-- Exact `MAX_NODES`, voice count, and buffer-pool size vs. measured SDRAM/CPU
-  headroom (sized in P0 with the QA profiler).
+- The **default** node count, voice count, and buffer-pool size the library ships
+  with, and the exact const-generic / config API a host uses to override them
+  (designed in P0; the Deluge's values validated with the QA profiler).
 - Anti-aliasing strategy for oscillators — PolyBLEP vs. wavetable vs. both
   (decided in `Osc`).
 - Reverb topology within the CPU budget — Freeverb-style vs. Dattorro (decided in
