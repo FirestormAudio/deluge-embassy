@@ -38,9 +38,10 @@ edit of it. The prototype is removed once `deluge-audio-graph` reaches parity
   and a runtime sample rate — no hardcoded budgets.
 - A **`Host` transport seam** (the prototype's `audio_cmd`) and a **`Cmd`
   vocabulary** that expresses the whole model.
-- `deluge-dsp-kernels`: the DSP math as **pure, self-contained structs** with a
-  `process_block`, testable in isolation, SIMD-able through
-  `armv7-dsp-intrinsics`, with **no graph knowledge**.
+- `deluge-dsp-kernels`: the DSP math as **pure, self-contained `f32` structs**
+  with a `process_block`, testable in isolation, block-oriented so a NEON-float
+  SIMD path can be added later, with **no graph knowledge**. No dependency on
+  `armv7-dsp-intrinsics` in P0 (that crate is fixed-point).
 - A **validation set**: the ~10 prototype primitives re-implemented on this
   substrate, proving the model and seeding the golden vectors.
 
@@ -61,8 +62,8 @@ edit of it. The prototype is removed once `deluge-audio-graph` reaches parity
 
 ```
 deluge-dsp-kernels     pure DSP: struct + process_block over &[f32]/&mut [f32].
-                       No NodeId, no Input, no graph. Depends on
-                       armv7-dsp-intrinsics for SIMD; portable scalar fallback.
+                       No NodeId, no Input, no graph. Pure f32 scalar in P0; a
+                       NEON-float SIMD path is a later, additive optimization.
         ▲
 deluge-audio-graph     the engine: node arena + free-list, pooled output arena,
                        buses, rate model, Cmd vocabulary, Host trait, GraphConfig.
@@ -266,8 +267,9 @@ Parity target: an equivalent patch renders sample-identical to the prototype
 ## 8. Testing
 
 - **Kernels** (`deluge-dsp-kernels`): property tests (bounded output, no
-  NaN/denormal, phase wrap) + **null tests** — SIMD path vs scalar reference agree
-  within tolerance.
+  NaN/denormal, phase wrap) + **null tests** against a naïve scalar reference
+  within tolerance. (Once a SIMD path exists, it null-tests against the same
+  reference — out of scope for P0.)
 - **Graph** (`deluge-audio-graph`): golden audio vectors at a fixed
   `(sample_rate, N)`; seeded noise for reproducibility; lifecycle tests
   (create/free/reuse preserves eval order and produces no stale reads); a

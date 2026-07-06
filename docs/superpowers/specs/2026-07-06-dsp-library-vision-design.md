@@ -43,8 +43,11 @@ supersedes it.
   budget so it fits constrained targets; the Deluge is the first such host.
 - **One core, every host renders identically** — so the device and the web
   simulator agree bit-for-bit, pinned by golden audio vectors.
-- **Cashes in `armv7-dsp-intrinsics`** — DSP kernels are block-oriented and
-  SIMD-able through the existing NEON crate.
+- **`f32` block kernels, SIMD-ready.** DSP kernels operate on `f32` blocks (the
+  prototype's proven representation). They are block-oriented so a NEON *float*
+  SIMD path can be added later as a pure optimization; `armv7-dsp-intrinsics` (a
+  *fixed-point* crate) is not the substrate but stays available for any
+  fixed-point hot spot that profiling later justifies.
 
 **Non-goals (explicitly out, or deferred to their own future work)**
 
@@ -76,7 +79,7 @@ Rust portable core
  ├─ UGen library  oscillators · filters · envelopes · effects · samples · dynamics
  └─ Cmd transport (Host trait) → firmware ring · web direct-apply
         ▼
-DSP kernels  (armv7-dsp-intrinsics / NEON, with portable fallbacks)
+DSP kernels  (f32 block math; NEON-float SIMD path is a later optimization)
 ```
 
 ### 2.1 The block engine
@@ -112,10 +115,12 @@ explicit feedback node when sample-tight feedback is needed.
 
 ### 2.2 Crate structure
 
-New crates (existing `armv7-dsp-intrinsics` unchanged at the bottom):
+New crates (existing `armv7-dsp-intrinsics` available below, but not a required
+dependency of the f32 kernels):
 
 ```
-armv7-dsp-intrinsics   (exists)  NEON intrinsics + portable fallbacks
+armv7-dsp-intrinsics   (exists)  fixed-point DSP intrinsics — available for
+                                 fixed-point hot spots, not the f32 substrate
         ▲
 deluge-dsp-kernels     (new)     block-oriented DSP math: oscillator/filter/env/
                                   effect cores. no_std, no graph knowledge. Pure,
@@ -149,7 +154,7 @@ Each row is its own future design → plan → implementation cycle.
 
 | # | Sub-project | Delivers | Depends on |
 |---|---|---|---|
-| **P0** | **Kernels + graph foundation** | `deluge-dsp-kernels` + `deluge-audio-graph`: block render, free-list lifecycle, buffer pool, rate model, stereo buses, host transport. Ports the ~10 prototype primitives as its validation set. | intrinsics |
+| **P0** | **Kernels + graph foundation** | `deluge-dsp-kernels` + `deluge-audio-graph`: block render, free-list lifecycle, buffer pool, rate model, stereo buses, host transport. Ports the ~10 prototype primitives as its validation set. | — (f32; no intrinsics dep) |
 | **P1** | **Low-level Wren layer** | `deluge-audio-wren` imperative API: build/patch/spawn/free nodes, buses. Reaches parity with today's `Osc/Env/Out`, then exceeds it. | P0 |
 | **QA** | **Validation & profiling harness** | DSP null-tests, frequency-response checks, NaN/denormal guards, per-block CPU-budget profiler (device + sim), golden audio vectors. Stood up early, grows with the library. | P0 |
 | **Osc** | **Oscillator suite** | Anti-aliased osc (PolyBLEP/wavetable), wavetable, FM operators, hard sync, sub, noise variants. | P0 |
@@ -209,8 +214,8 @@ device ≡ sim at a fixed sample rate + block size (the established pattern);
 noise/random UGens take explicit seeds so vectors reproduce.
 
 **Testing strategy per layer.**
-- *Kernels* → property tests + **null tests against a reference model** (naïve vs
-  SIMD implementations must agree).
+- *Kernels* → property tests + **null tests against a reference model** (a naïve
+  scalar reference; and, once a SIMD path exists, SIMD vs scalar must agree).
 - *Graph* → golden audio vectors.
 - *Voice layer* → allocation/stealing unit tests.
 - *Device* → the per-block CPU-budget profiler gate.
