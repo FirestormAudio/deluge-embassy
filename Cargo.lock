@@ -1381,6 +1381,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge-dsp-kernels"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "deluge-fft"
 version = "0.1.0"
 dependencies = [

@@ -7,6 +7,7 @@ members = [
   "crates/rza1l-hal",
   "crates/deluge-alloc",
   "crates/deluge-bsp",
+  "crates/deluge-dsp-kernels",
   "crates/deluge-fft",
   "app-loader",
   "crates/deluge-sdk",

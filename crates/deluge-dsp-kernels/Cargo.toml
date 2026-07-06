@@ -1,0 +1,25 @@
+[package]
+name = "deluge-dsp-kernels"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable f32 DSP kernels (oscillators, filters, envelopes) for the Deluge audio graph"
+categories = ["embedded", "no-std", "multimedia::audio"]
+keywords = ["dsp", "audio", "no-std", "synthesis"]
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+default = []
+# core::simd path (portable SIMD → NEON on ARM). Requires nightly.
+simd = []
+
+[lib]
+name = "deluge_dsp_kernels"
+path = "src/lib.rs"
