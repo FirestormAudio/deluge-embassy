@@ -18,6 +18,17 @@ sources — built-in named static tables **and** user-supplied dynamic tables
 (Pool-backed). **Deferred:** multi-frame morphing wavetables (position/scan),
 hard sync, noise variants (separate sub-projects).
 
+**Execution split (three plans under this one spec):**
+- **3a — named static wavetables** (MERGED): `mipgen` additive builder, kernel
+  `WtOsc`, generated static consts, `Osc.wavetable(WT.x, freq)`.
+- **3b — user-supplied dynamic tables** (this plan): Pool-in-Engine, a
+  `Host::upload_table` seam, `SlotApi` list-read, `Wavetable.from`,
+  `TableSrc::Pooled`, `Node.free()` → pool free — all on the **additive**
+  `mipgen` (no `deluge-fft` change).
+- **3c — IRFFT optimization**: add an inverse real FFT to `deluge-fft`, switch
+  `mipgen` to the IFFT build path (~16× cheaper per table), with additive kept
+  as the equivalence oracle. Pure performance; ships after 3b.
+
 ---
 
 ## 1. Goals & non-goals
