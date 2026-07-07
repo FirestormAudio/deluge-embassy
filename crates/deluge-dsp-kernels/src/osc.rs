@@ -80,12 +80,10 @@ impl Osc {
                 Wave::Sine => fast_sin(p),
                 Wave::Saw => (2.0 * p - 1.0) - poly_blep(p, dtp),
                 Wave::Square => {
-                    // (filled in Task 2 — keep the naïve value for now)
-                    if p < 0.5 {
-                        1.0
-                    } else {
-                        -1.0
-                    }
+                    let naive = if p < 0.5 { 1.0 } else { -1.0 };
+                    let p2 = p + 0.5;
+                    let p2 = p2 - floorf(p2);
+                    naive + poly_blep(p, dtp) - poly_blep(p2, dtp)
                 }
                 Wave::Tri => 1.0 - 4.0 * (p - 0.5).abs(), // (band-limited in Task 3)
             };
@@ -182,6 +180,46 @@ mod tests {
         let improvement = spec_n.worst_alias_db(f0, tol) - spec_bl.worst_alias_db(f0, tol);
         // 4-point PolyBLEP: ~+16.7 dB over naïve at 5 kHz; gate at 12 with margin.
         assert!(improvement > 12.0, "band-limited should beat naïve by >12 dB, got {improvement}");
+    }
+
+    #[test]
+    fn square_is_band_limited() {
+        let sr = 48_000.0;
+        for &f0 in &[2_000.0f32, 5_000.0, 8_000.0] {
+            let mut osc = Osc::new();
+            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+            osc.process(Wave::Square, In::K(f0), 1.0 / sr, &mut buf);
+            let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
+            let wa = spec.worst_alias_db(f0, 3.0 * spec.bin_hz);
+            // Measured: 2kHz -41.1 dB, 5kHz -30.5 dB (hardest case), 8kHz -41.1 dB.
+            // Matches saw's floor (same 4-point PolyBLEP, two edges); gate at -28 with margin.
+            assert!(wa < -28.0, "square f0={f0}: worst_alias {wa} dB should be < -28");
+        }
+    }
+
+    #[test]
+    fn band_limited_square_beats_naive() {
+        let sr = 48_000.0;
+        let f0 = 5_000.0;
+        // Naïve square rendered inline (no PolyBLEP).
+        let mut naive = [0.0f32; deluge_dsp_test::FFT_N];
+        let mut ph = 0.0f32;
+        for s in naive.iter_mut() {
+            *s = if ph < 0.5 { 1.0 } else { -1.0 };
+            ph += f0 / sr;
+            ph -= ph.floor();
+        }
+        let spec_n = deluge_dsp_test::spectrum::analyze_buf(sr, &naive);
+
+        let mut osc = Osc::new();
+        let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+        osc.process(Wave::Square, In::K(f0), 1.0 / sr, &mut buf);
+        let spec_bl = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
+
+        let tol = 3.0 * spec_bl.bin_hz;
+        let improvement = spec_n.worst_alias_db(f0, tol) - spec_bl.worst_alias_db(f0, tol);
+        // Measured: +16.7 dB over naïve at 5 kHz (matches saw's improvement); gate at 12 with margin.
+        assert!(improvement > 12.0, "band-limited square should beat naïve by >12 dB, got {improvement}");
     }
 
     #[test]
