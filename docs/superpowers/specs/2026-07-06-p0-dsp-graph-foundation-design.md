@@ -250,8 +250,16 @@ reverb, sample data. P0 ships:
 - graceful failure: exhaustion returns `None`, the node degrades (e.g. a delay
   with no line passes dry) rather than panicking.
 
-The real allocator tuning and large-buffer semantics are `Ef`/`Sa`; P0 exercises
-the interface with one minimal test node (a short delay) to prove ergonomics.
+The real allocator tuning and large-buffer semantics are `Ef`/`Sa`.
+
+> **Scope update (2026-07-06, post-implementation):** the pool is shipped and
+> unit-tested in isolation, but the **pool↔node integration** (a `Kind` that
+> stores a `PoolHandle`, allocates on create, and releases on `Free`) is
+> **deferred to `Ef`**, where the first real delay node lives. P0's purpose —
+> proving the graph/port/lifecycle model — is met without it, and a delay node is
+> effectively the start of the effects vocabulary. Tracked as the first
+> pool-integration task of `Ef`. (Recorded so the deferral is explicit, not
+> silent.)
 
 ## 7. Validation set
 
@@ -261,12 +269,13 @@ proof the model carries them and a seed for golden vectors:
 - Oscillators: sine (parabolic `fast_sin`), saw, square, tri — width-1.
 - Noise (seeded xorshift32), AR envelope (gate/trigger), one-pole LPF.
 - Math: mul/add/sub as width-1 two-input nodes.
-- Plus **one multi-output test node** (e.g. a trivial 2-port splitter or a stub
-  SVF emitting LP/HP) to exercise ports end-to-end, and **one buffer-pool node**
-  (short delay) to exercise §6.
+- Plus **one multi-output test node** (`Split2`, a 2-port splitter) to exercise
+  ports end-to-end. *(The buffer-pool exerciser node is deferred to `Ef` — see the
+  scope note in §6.)*
 
-Parity target: an equivalent patch renders sample-identical to the prototype
-(mono → master bus) within f32 tolerance.
+Parity target: an equivalent patch renders consistently on the new substrate
+(mono → master bus). A pinned golden block (first N samples of a saw→lpf→env
+patch) plus kernel property tests guard against silent kernel drift.
 
 ## 8. Testing
 

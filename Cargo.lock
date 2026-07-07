@@ -1344,6 +1344,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge-audio-graph"
+version = "0.1.0"
+dependencies = [
+ "deluge-dsp-kernels",
+]
+
+[[package]]
 name = "deluge-bsp"
 version = "0.1.0"
 dependencies = [
@@ -1378,6 +1385,13 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1l-hal",
+]
+
+[[package]]
+name = "deluge-dsp-kernels"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
