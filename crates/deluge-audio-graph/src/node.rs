@@ -85,6 +85,15 @@ impl Node {
         }
     }
 
+    /// Set a non-signal scalar parameter. For oscillators, `param 0` = feedback.
+    pub fn set_param(&mut self, param: u8, value: f32) {
+        if let State::Osc(o) = &mut self.state {
+            if param == 0 {
+                o.set_feedback(value);
+            }
+        }
+    }
+
     pub fn inputs_snapshot(&self) -> [Input; MAX_INPUTS] {
         self.inputs
     }
@@ -101,7 +110,7 @@ impl Node {
                     _ => Wave::Tri,
                 };
                 if let State::Osc(o) = &mut self.state {
-                    o.process(wave, ins[0], dt, outs.port(0));
+                    o.process(wave, ins[0], ins[1], ins[2], dt, outs.port(0));
                 }
             }
             Kind::Noise => {

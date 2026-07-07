@@ -87,7 +87,11 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
                     }
                 }
             }
-            Cmd::SetParam { .. } => { /* no configurable params in the P0 kinds */ }
+            Cmd::SetParam { node, param, value } => {
+                if let Some(n) = self.arena.node_mut(node) {
+                    n.set_param(param, value);
+                }
+            }
             Cmd::Gate { node, on } => {
                 if let Some(n) = self.arena.node_mut(node) {
                     n.gate(on);
@@ -244,7 +248,7 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
 mod tests {
     use super::*;
     use crate::node::Kind;
-    use crate::{Input, NodeId};
+    use crate::{Cmd, Input, NodeId};
 
     type E = Engine<16, 8, 8, 4>;
 
@@ -377,5 +381,17 @@ mod tests {
         e2.render_block(); // must not panic
         let consumer_out = e2.node_output(NodeId(1), 0);
         assert!(consumer_out.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn setparam_feedback_renders_bounded() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Sine);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(2_000.0);
+        e.apply(Cmd::SetParam { node: NodeId(0), param: 0, value: 0.8 });
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 4.0));
+        assert!(out.iter().any(|&s| s != 0.0)); // feedback sine still oscillates
     }
 }
