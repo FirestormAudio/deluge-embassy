@@ -65,6 +65,22 @@ impl Default for WtOsc {
     }
 }
 
+/// Identifies one of the named `&'static` mip pyramids baked into
+/// `wavetables_generated::TABLES` (see that module's `TABLES` order for the
+/// id assignment: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct TableId(pub u16);
+
+/// Resolve a named static table to a borrowed `MipSet`. `None` if out of range.
+pub fn static_mipset(id: TableId) -> Option<MipSet<'static>> {
+    let idx = id.0 as usize;
+    let tables = &crate::wavetables_generated::TABLES;
+    if idx >= tables.len() {
+        return None;
+    }
+    Some(MipSet { levels: tables[idx] })
+}
+
 /// 4-point Catmull-Rom at fractional phase `ph` in [0,1) over a length-N table.
 fn interp_cubic(table: &[f32], ph: f32) -> f32 {
     let n = table.len();
@@ -98,6 +114,18 @@ mod tests {
 
     fn mipset(levels: &[[f32; mipgen::N]; mipgen::LEVELS]) -> [&[f32]; mipgen::LEVELS] {
         core::array::from_fn(|i| &levels[i][..])
+    }
+
+    #[test]
+    fn static_saw_table_is_band_limited() {
+        let sr = 48_000.0f32;
+        let m = static_mipset(TableId(0)).expect("saw table");
+        let mut osc = WtOsc::new();
+        let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+        osc.process(m, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+        let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
+            .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+        assert!(wa < -20.0, "static saw worst_alias {wa} dB");
     }
 
     #[test]
