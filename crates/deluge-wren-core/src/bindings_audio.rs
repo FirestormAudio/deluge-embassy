@@ -229,10 +229,23 @@ pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
 /// host's table pool, and return a `Wavetable` handle wrapping the resulting
 /// `Option<PoolHandle>` (`None` on a host with no pool, e.g. the Cmd-capture
 /// test host — the handle stays unbound rather than panicking).
+///
+/// Lifetime note: the pool region backing the returned handle is
+/// node-scoped, not object-scoped — it is freed by `Cmd::Free` on whichever
+/// node gets bound to this `Wavetable` (e.g. via `Node.wavetable_pooled_`),
+/// *not* by the `Wavetable` Wren object's GC. Bind the returned `Wavetable`
+/// to a node and free that node to release the table's memory; don't rely
+/// on GC to free it. Don't free a node while another node still shares the
+/// same `Wavetable` — that reclaims the region out from under the survivor.
+/// Consequences of misuse are always graceful (silence or a finite leak
+/// until the pool exhausts), never UB or a panic, but this is an accepted
+/// limitation pending a proper object-scoped ownership model
+/// (finalizer/refcount) as a follow-on.
 pub(crate) fn wavetable_from_impl<S: SlotApi>(vm: &S) {
     let count = vm.get_list_count(1);
     let mut base = [0.0f32; mipgen::N];
     let n = (count.max(0) as usize).min(base.len());
+    vm.ensure_slots(3); // guarantee slot 2 (scratch, for list-element reads) is valid
     for i in 0..n {
         vm.get_list_element(1, i as i32, 2); // element -> slot 2
         base[i] = vm.get_f(2) as f32;

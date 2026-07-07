@@ -148,6 +148,14 @@ foreign class Port {
 //   Out.patch(Osc.wavetable(w, 220))
 // Distinct from the static `WT` ids below (baked-in tables, e.g. `WT.Saw`) —
 // `Osc.wavetable` accepts either.
+//
+// Lifetime: the table's pool memory is node-scoped, not owned by this Wren
+// object. It is released when the node bound to it (via `Osc.wavetable`) is
+// freed — not by this object's GC. Bind a Wavetable to a node and free that
+// node when done; don't rely on GC to reclaim it, and don't free a node
+// while another node still shares the same Wavetable (that frees the table
+// out from under the survivor). Misuse degrades gracefully (silence, or a
+// leak until the pool is exhausted) — never undefined behavior.
 foreign class Wavetable {
   foreign static from(samples)
 }
