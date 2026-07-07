@@ -6,11 +6,13 @@
 //! `Cmd`s to the engine. Sizes are const-generic; sample rate is runtime.
 #![no_std]
 
+pub mod arena;
 pub mod frame;
 pub mod ids;
 pub mod node;
 pub mod pool;
 
+pub use arena::Arena;
 pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId};
 pub use node::{In, Kind, Node};
