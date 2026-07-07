@@ -116,6 +116,7 @@ foreign class Node {
   foreign static reset_()
   foreign static split_(input)
   foreign static wavetable_(table, freq)
+  foreign static wavetable_pooled_(wt, freq)
   foreign freq=(v)
   foreign cutoff=(v)
   foreign pm=(v)
@@ -141,12 +142,25 @@ foreign class Port {
   lpf(cutoff) { Node.lpf_(this, cutoff) }
 }
 
+// A user-supplied dynamic wavetable, uploaded from a Wren list of samples
+// (one base cycle; a band-limited mip pyramid is built natively on upload):
+//   var w = Wavetable.from([-1, -0.5, 0, 0.5, 1, 0.5, 0, -0.5])
+//   Out.patch(Osc.wavetable(w, 220))
+// Distinct from the static `WT` ids below (baked-in tables, e.g. `WT.Saw`) —
+// `Osc.wavetable` accepts either.
+foreign class Wavetable {
+  foreign static from(samples)
+}
+
 class Osc {
   static sine(f) { Node.src_(0, f) }
   static saw(f) { Node.src_(1, f) }
   static square(f) { Node.src_(2, f) }
   static tri(f) { Node.src_(3, f) }
-  static wavetable(t, f) { Node.wavetable_(t, f) }
+  static wavetable(t, f) {
+    if (t is Wavetable) return Node.wavetable_pooled_(t, f)
+    return Node.wavetable_(t, f) // WT.x numeric id (static table)
+  }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

@@ -192,6 +192,35 @@ fn osc_wavetable_renders_finite_nonsilent() {
 }
 
 #[test]
+fn wavetable_from_unbound_on_cmd_capture_host_no_bogus_bindtable() {
+    // The Cmd-capture host has no pool: `upload_table` returns `None`, so the
+    // `Wavetable` handle stays unbound. `Osc.wavetable(w, freq)` must still
+    // create the node (graceful degrade to silent) — but MUST NOT emit a
+    // `BindTable` with a bogus/default handle.
+    let cmds = run_and_capture_cmds(
+        "var w = Wavetable.from([ -1, -0.5, 0, 0.5, 1, 0.5, 0, -0.5 ])\n\
+         var v = Osc.wavetable(w, 220)",
+    );
+    assert!(cmds.iter().any(|c| matches!(c,
+        Cmd::NewNode { node: NodeId(0), kind: Kind::Wavetable, .. })));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })));
+}
+
+#[test]
+fn wavetable_from_emits_bindtable_pooled_and_renders_finite() {
+    // With a real engine host (`run_and_render`), `upload_table` succeeds, so
+    // `Wavetable.from` yields a bound handle and the node renders non-panicking,
+    // finite audio.
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var w = Wavetable.from([ -1, -0.5, 0, 0.5, 1, 0.5, 0, -0.5 ])\n\
+         Out.patch(Osc.wavetable(w, 220))",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+}
+
+#[test]
 fn engine_host_upload_table_builds_band_limited() {
     let mut host = EngineHost::new(48_000.0);
     let mut base = [0.0f32; mipgen::N];

@@ -17,6 +17,7 @@ use crate::slotapi::{SlotApi, WrenForeign, WrenType};
 pub(crate) const TAG_NODE: u8 = 0;
 pub(crate) const TAG_PORT: u8 = 1;
 pub(crate) const TAG_BUS: u8 = 2;
+pub(crate) const TAG_WT: u8 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -61,6 +62,28 @@ impl WrenForeign for BusObj {
     }
     fn class_name() -> &'static str {
         "Bus"
+    }
+}
+
+/// A handle to a dynamically-uploaded (pooled) wavetable, produced by
+/// `Wavetable.from([samples])` (Task 5). `handle` is `None` when the upload
+/// was rejected (bad host / pool exhaustion) — `PoolHandle` has no public
+/// constructor, so `None` is the only representable "unbound" state; nodes
+/// built from an unbound `Wavetable` skip `BindTable` and render silent
+/// rather than panicking. Larger than the other (4-byte) audio foreigns —
+/// safe, because `arg_input` only ever reads the leading tag *byte* for
+/// unknown tags, never the whole struct.
+#[repr(C)]
+pub(crate) struct WtObj {
+    pub tag: u8,
+    pub handle: Option<deluge_audio_graph::PoolHandle>,
+}
+impl WrenForeign for WtObj {
+    fn module_name() -> &'static str {
+        "main"
+    }
+    fn class_name() -> &'static str {
+        "Wavetable"
     }
 }
 
@@ -199,6 +222,49 @@ pub(crate) fn node_wavetable_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_wavetable_impl(&vm);
+}
+
+/// `Wavetable.from([samples])` — read the Wren list arg (slot 1), copy up to
+/// `mipgen::N` elements into a fixed base-cycle buffer, upload it to the
+/// host's table pool, and return a `Wavetable` handle wrapping the resulting
+/// `Option<PoolHandle>` (`None` on a host with no pool, e.g. the Cmd-capture
+/// test host — the handle stays unbound rather than panicking).
+pub(crate) fn wavetable_from_impl<S: SlotApi>(vm: &S) {
+    let count = vm.get_list_count(1);
+    let mut base = [0.0f32; mipgen::N];
+    let n = (count.max(0) as usize).min(base.len());
+    for i in 0..n {
+        vm.get_list_element(1, i as i32, 2); // element -> slot 2
+        base[i] = vm.get_f(2) as f32;
+    }
+    let handle = audio::upload_table(&base[..n.max(1)]);
+    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle }) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn wavetable_from(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    wavetable_from_impl(&vm);
+}
+
+/// `Node.wavetable_pooled_(wt, freq)` — the pooled-table counterpart of
+/// `node_wavetable_impl` (which binds a static/named table). Reads the
+/// `Wavetable` handle from slot 1: a bound handle emits `NewNode` + a
+/// `BindTable{Pooled}`; an unbound one (upload failed) still creates the
+/// node but skips the bind, so it renders silent instead of panicking.
+pub(crate) fn node_wavetable_pooled_impl<S: SlotApi>(vm: &S) {
+    let handle = unsafe { vm.foreign_mut::<WtObj>(1) }.handle;
+    let freq = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    match handle {
+        Some(h) => audio::new_wavetable_pooled(id, h, freq),
+        None => audio::new_node(id, Kind::Wavetable, [freq, Input::Const(0.0), Input::Const(0.0)]),
+    }
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_wavetable_pooled(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_wavetable_pooled_impl(&vm);
 }
 
 pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
@@ -372,6 +438,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "reset_()", node_reset_impl::<S>);
     method("main", "Node", true, "split_(_)", node_split_impl::<S>);
     method("main", "Node", true, "wavetable_(_,_)", node_wavetable_impl::<S>);
+    method("main", "Node", true, "wavetable_pooled_(_,_)", node_wavetable_pooled_impl::<S>);
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
     method("main", "Node", false, "pm=(_)", node_set_pm_impl::<S>);
@@ -383,4 +450,5 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "free()", node_free_impl::<S>);
     method("main", "Bus", true, "new_()", bus_new_impl::<S>);
     method("main", "Bus", false, "write(_)", bus_write_impl::<S>);
+    method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
 }
