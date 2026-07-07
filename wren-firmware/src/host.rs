@@ -27,13 +27,14 @@ pub struct FwHost;
 /// The single host instance, registered at boot.
 pub static mut FW_HOST: FwHost = FwHost;
 
-// NOTE: `FwHost` intentionally does NOT override `Host::upload_table` — it
-// inherits the trait's default (`None`). Real-time-safe device-side wavetable
-// upload (building a mip pyramid without stalling the audio ISR, and without
-// aliasing the audio_task-owned engine) needs a dedicated design + on-hardware
-// validation; it's a tracked follow-on. On device, `Wavetable.from(...)`
-// therefore currently yields an unbound handle → the node renders silence.
-// The feature is fully implemented and tested host-side (see EngineHost).
+// Device-side `Wavetable.from(...)` now builds + binds a real table inline:
+// `upload_table` below forwards to `crate::audio::upload_table`, which builds
+// the mip pyramid directly into a pool region of the audio engine and returns
+// its handle. This runs synchronously inside the Wren foreign call on the one
+// cooperative executor and is real-time-safe under that model — see
+// `audio.rs`'s `## Concurrency` docs and the device-upload spec for why the
+// sub-millisecond IFFT build fits the audio write-ahead lead without stalling
+// `audio_task` or aliasing its engine borrow.
 impl Host for FwHost {
     fn now_ms(&mut self) -> u64 {
         Instant::now().as_millis()
@@ -69,5 +70,9 @@ impl Host for FwHost {
 
     fn audio_cmd(&mut self, cmd: Cmd) {
         crate::audio::submit(cmd);
+    }
+
+    fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+        crate::audio::upload_table(base)
     }
 }

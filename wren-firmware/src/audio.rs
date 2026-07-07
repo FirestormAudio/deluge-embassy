@@ -98,6 +98,26 @@ pub fn submit(c: Cmd) {
     CMD_RING.lock(|r| r.borrow_mut().push(c));
 }
 
+/// Build a band-limited mip pyramid from `base` into a freshly-allocated pool region
+/// of the audio engine and return its handle. Called synchronously from `vm_task`'s
+/// `Wavetable.from` foreign method (via `FwHost::upload_table`). `None` on pool
+/// exhaustion. Blocks the executor for the (sub-millisecond, IFFT) build — see the
+/// `## Concurrency` docs and the device-upload spec for why this fits the audio
+/// write-ahead lead.
+pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+    // SAFETY: ENGINE was initialized by `init_engine` in `main` before any task ran.
+    // This runs synchronously inside a Wren foreign call on the one cooperative
+    // executor; audio_task is parked at its `.await` holding no ENGINE borrow; no ISR
+    // touches ENGINE — so no two `&mut ENGINE` coexist and none crosses a yield.
+    let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
+    let h = eng.pool_alloc(deluge_wren_core::PYRAMID_LEN)?;
+    deluge_wren_core::build_pyramid_into(base, eng.pool_slice_mut(h));
+    Some(h)
+}
+
+// The firmware pool (PCAP in the `Eng` alias) must hold at least one full pyramid.
+const _: () = assert!(90112 >= deluge_wren_core::PYRAMID_LEN);
+
 // ── Render task ──────────────────────────────────────────────────────────────
 
 /// Renders the DSP graph through the SDK [`Audio`] block callback. Each block:
