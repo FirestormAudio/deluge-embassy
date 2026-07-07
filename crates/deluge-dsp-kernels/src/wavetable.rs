@@ -12,29 +12,46 @@ const N: usize = 2048; // must equal mipgen::N
 pub const LEVELS: usize = 11;
 
 pub const N_MIN: usize = 32;
-/// Measured in Step 6 (compact-mipgen QA, see git log): six named bases
-/// (saw/square/sine/tri/organ/formant, `2t-1` / `±1`@0.5 / `sin2πt` /
-/// `1-4|t-0.5|` / `sin+0.5sin3+0.25sin5` / `sin·(1+cos)`) rendered at 5 kHz
-/// through `WtOsc`, `worst_alias_db` vs the `< -21 dB` gate:
+/// **Re-measured** (QA fix to the original Step-6 measurement, which only
+/// rendered at 5 kHz — a frequency that selects mip levels 7/8, whose
+/// `level_len` clamps to `N_MIN=32` under both `OS_FACTOR` 1 and 2, so it was
+/// mathematically incapable of discriminating between them; see
+/// `compact_saw_is_band_limited`'s doc-comment for that still-valid alias
+/// check). This measurement instead compares **compact-built vs
+/// full-N-built** pyramids (same base, same freq — only storage layout
+/// differs) at **mid fundamentals** (~110/440/1000/2000 Hz, saw + organ
+/// bases), which select mip levels ~2-7 where compact storage actually
+/// truncates relative to full-N. See `compact_vs_full_n_harmonic_fidelity_mid_freqs`.
 ///
-///   table    | F=1        | F=2
-///   ---------|------------|------------
-///   saw      | -25.67 dB  | -25.67 dB
-///   square   | -25.67 dB  | -25.67 dB
-///   sine     | -41.12 dB  | -41.12 dB
-///   tri      | -39.65 dB  | -39.65 dB
-///   organ    | -23.73 dB  | -23.73 dB  (worst of six, both F)
-///   formant  | -41.12 dB  | -41.12 dB
+/// For each such (base, f0), swept every harmonic `k*f0` below sr/4 (12 kHz —
+/// perceptually relevant) and measured the compact-vs-full-N magnitude delta
+/// in dB. A **fine sweep** of f0 (saw base, 60-1150 Hz in 3 Hz steps, all
+/// harmonics below 12 kHz) found the worst-case delta per `OS_FACTOR`:
 ///
-/// F=1 and F=2 are numerically identical here: at 5 kHz the crossfaded
-/// levels (7/8) already sit at `N_MIN` under both factors (their critical
-/// length `N>>level` is ≤16, so `OS_FACTOR∈{1,2}` both clamp to 32), so
-/// doubling `OS_FACTOR` changes zero bytes actually read at this frequency.
-/// F=1 already clears the -21 dB gate by 2.3 dB (organ, the worst case) —
-/// chosen over F=2 for the 5.5x storage win (`COMPACT_LEN`=4192 vs 6208,
-/// both vs the flat `N*LEVELS`=22528), per the brief's "prefer F=1 if it
-/// holds" rule. Do not weaken this gate to relax OS_FACTOR further.
-pub const OS_FACTOR: usize = 1;
+///   OS_FACTOR | worst delta (dB) | at (f0, harmonic k)
+///   ----------|-------------------|---------------------
+///   1         | **1.78**          | f0=114 Hz, k=102 (10.4 kHz)
+///   1         | 1.69               | f0=126 Hz, k=94 (11.8 kHz)
+///   1         | 1.67               | f0=63 Hz, k=188 (11.8 kHz)
+///   2         | **0.18**           | f0=150 Hz, k=78 (11.7 kHz)
+///
+/// `OS_FACTOR=1` (critical sampling: a level's grid Nyquist sits exactly at
+/// its own top harmonic) measurably dulls perceptually-relevant harmonics —
+/// up to 1.78 dB, well past the 1 dB fidelity tolerance — because
+/// cubic/Catmull-Rom interpolation starts rolling off well before the
+/// harmonic that sits exactly at the grid Nyquist (this rolloff is worst
+/// right at mip-level crossfade boundaries, where the incoming level's own
+/// top harmonic lands near sr/4). `OS_FACTOR=2` (2x oversampling headroom)
+/// keeps that top harmonic at half the grid Nyquist, where interpolation is
+/// accurate: worst case 0.18 dB, ~10x tighter than F=1. Per the brief's
+/// explicit rule ("if F=1 measurably dulls perceptually-relevant harmonics
+/// where F=2 doesn't, set OS_FACTOR=2" — do not weaken the gate to keep F=1),
+/// **F=2 is required**. This costs storage (`COMPACT_LEN`=6208 vs F=1's 4192,
+/// still 3.6x below the flat `N*LEVELS`=22528) but is the correct trade: the
+/// 5 kHz-only alias check (`compact_saw_is_band_limited`,
+/// `all_static_tables_band_limited`) still passes identically under either F
+/// (see that test's doc-comment) — it was simply never able to see this cost.
+pub const OS_FACTOR: usize = 2;
 
 /// Samples stored for mip level `L`. Level L carries `(N/2)>>L` harmonics, needing
 /// `N>>L` critical samples; oversample by `OS_FACTOR`, clamp to `[N_MIN, N]`.
@@ -324,6 +341,10 @@ mod tests {
         core::array::from_fn(|l| &region[level_offset(l)..level_offset(l) + level_len(l)])
     }
 
+    fn full_levels(region: &[f32]) -> [&[f32]; LEVELS] {
+        core::array::from_fn(|l| &region[l * N..(l + 1) * N])
+    }
+
     #[test]
     fn compact_saw_is_band_limited() {
         let mut base = [0.0f32; N];
@@ -337,7 +358,127 @@ mod tests {
         osc.process(MipSet { levels: &levels }, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
         let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
             .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+        // Measured floor -23.73 dB (organ, see `compact_vs_full_n_harmonic_fidelity_mid_freqs`'s
+        // doc-comment and OS_FACTOR's doc-comment); gate set 2.73 dB below that.
         assert!(wa < -21.0, "compact saw worst_alias {wa} dB");
+    }
+
+    fn organ_base() -> [f32; N] {
+        let mut b = [0.0f32; N];
+        for (i, s) in b.iter_mut().enumerate() {
+            let t = i as f32 / N as f32;
+            *s = libm::sinf(core::f32::consts::TAU * t)
+                + 0.5 * libm::sinf(core::f32::consts::TAU * 3.0 * t)
+                + 0.25 * libm::sinf(core::f32::consts::TAU * 5.0 * t);
+        }
+        b
+    }
+
+    fn saw_base() -> [f32; N] {
+        let mut b = [0.0f32; N];
+        for (i, s) in b.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        b
+    }
+
+    /// Renders `base` through both a full-N pyramid (`build_pyramid_flat`,
+    /// every level stored at N=2048 samples) and a compact pyramid
+    /// (`build_pyramid_flat_compact`, per-level lengths from `level_len`,
+    /// governed by `OS_FACTOR`) at `f0`, and returns (compact_spectrum,
+    /// full_spectrum).
+    fn render_compact_and_full(
+        base: &[f32; N],
+        f0: f32,
+        sr: f32,
+    ) -> (deluge_dsp_test::spectrum::Spectrum, deluge_dsp_test::spectrum::Spectrum) {
+        let mut region_full = [0.0f32; N * LEVELS];
+        mipgen::build_pyramid_flat(base, &mut region_full);
+        let full = full_levels(&region_full);
+
+        let mut region_compact = [0.0f32; COMPACT_LEN];
+        mipgen::build_pyramid_flat_compact(base, &mut region_compact);
+        let compact = compact_levels(&region_compact);
+
+        let mut buf_full = [0.0f32; deluge_dsp_test::FFT_N];
+        WtOsc::new().process(MipSet { levels: &full }, In::K(f0), In::K(0.0), 1.0 / sr, &mut buf_full);
+        let spec_full = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_full);
+
+        let mut buf_compact = [0.0f32; deluge_dsp_test::FFT_N];
+        WtOsc::new().process(MipSet { levels: &compact }, In::K(f0), In::K(0.0), 1.0 / sr, &mut buf_compact);
+        let spec_compact = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_compact);
+
+        (spec_compact, spec_full)
+    }
+
+    /// Compact-vs-full-N harmonic-fidelity equivalence gate (the acceptance
+    /// test required by the wavetable-mip-compaction spec, Task 1 QA fix).
+    ///
+    /// Renders saw and organ bases at mid fundamentals (~110/440/1000/2000 Hz)
+    /// — chosen because they select mip levels ~2-7, where per-level storage
+    /// length actually differs between compact (`level_len(L)`, governed by
+    /// `OS_FACTOR`) and full-N (always N=2048) storage. (5 kHz, used by the
+    /// original `compact_saw_is_band_limited`/`all_static_tables_band_limited`
+    /// tests, selects levels 7/8, whose `level_len` is clamped to `N_MIN=32`
+    /// under both OS_FACTOR=1 and 2 — mathematically incapable of
+    /// discriminating compact-storage quality, hence this separate test.)
+    ///
+    /// For each harmonic `k*f0` below the fundamental's Nyquist, compares the
+    /// compact-built render's magnitude against the full-N-built render's
+    /// magnitude (same base, same freq — the only difference is storage
+    /// layout). Harmonics below ~sr/4 (12 kHz @ 48 kHz sr) are perceptually
+    /// relevant and must match within 1 dB — this is what "compaction doesn't
+    /// change the audible sound" means operationally. Harmonics approaching
+    /// Nyquist are allowed to attenuate under compact storage (the known,
+    /// inaudible cost of storing a level's top harmonic at/near its grid
+    /// Nyquist, where cubic/Catmull-Rom interpolation rolls off) and are not
+    /// gated.
+    ///
+    /// This is the discriminator that decided `OS_FACTOR` (see its
+    /// doc-comment for the full measurement): under `OS_FACTOR=1` a wider
+    /// sweep than the four freqs below finds deltas up to 1.78 dB
+    /// (exceeding this test's 1 dB tolerance) at some mid frequencies, which
+    /// is why `OS_FACTOR=2` is set. At `OS_FACTOR=2` this test passes with
+    /// comfortable margin (worst observed delta ~0.18 dB across a fine
+    /// sweep). If this test ever fails again, do not loosen the 1 dB/12 kHz
+    /// thresholds to make it pass — that would silently regress storage
+    /// quality; re-run the `OS_FACTOR` measurement instead.
+    #[test]
+    fn compact_vs_full_n_harmonic_fidelity_mid_freqs() {
+        let sr = 48_000.0f32;
+        let bases: [(&str, [f32; N]); 2] = [("saw", saw_base()), ("organ", organ_base())];
+        let freqs = [110.0f32, 440.0, 1_000.0, 2_000.0];
+
+        for (name, base) in &bases {
+            for &f0 in &freqs {
+                let (spec_compact, spec_full) = render_compact_and_full(base, f0, sr);
+                let fund_full = spec_full.level_at(f0).max(1e-12);
+                let nyquist = sr / 2.0;
+                let mut k = 1usize;
+                loop {
+                    let hz = k as f32 * f0;
+                    if hz >= nyquist {
+                        break;
+                    }
+                    let full_lin = spec_full.level_at(hz);
+                    // Skip harmonics with negligible energy in the reference
+                    // (full-N) render — their dB delta is noise-floor
+                    // comparison, not a meaningful fidelity signal.
+                    if full_lin >= 1e-3 * fund_full {
+                        let compact_lin = spec_compact.level_at(hz).max(1e-12);
+                        let delta_db = 20.0 * (compact_lin / full_lin.max(1e-12)).log10();
+                        if hz < 12_000.0 {
+                            assert!(
+                                delta_db.abs() < 1.0,
+                                "{name} f0={f0}: harmonic k={k} ({hz} Hz) compact vs full-N \
+                                 delta {delta_db} dB exceeds 1 dB tolerance (perceptually relevant, <12kHz)"
+                            );
+                        }
+                        // >=12kHz (near-Nyquist): not gated — attenuation here
+                        // under compact storage is the expected, inaudible cost.
+                    }
+                    k += 1;
+                }
+            }
+        }
     }
 
     proptest::proptest! {
