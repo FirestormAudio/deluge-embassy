@@ -83,3 +83,18 @@ fn out_port_resolves_to_that_port() {
         args: [Input::Node { node: NodeId(1), port: 1 }, Input::Const(2.0), Input::Const(0.0)],
     }));
 }
+
+#[test]
+fn free_emits_free_and_reuses_id() {
+    // Allocate n0, free it, allocate again → id 0 reused.
+    let cmds = run_and_capture_cmds(
+        "var a = Osc.saw(110)\n\
+         a.free()\n\
+         var b = Osc.saw(220)",
+    );
+    assert_eq!(cmds, vec![
+        Cmd::NewNode { node: NodeId(0), kind: Kind::Saw, args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)] },
+        Cmd::Free { node: NodeId(0) },
+        Cmd::NewNode { node: NodeId(0), kind: Kind::Saw, args: [Input::Const(220.0), Input::Const(0.0), Input::Const(0.0)] },
+    ]);
+}

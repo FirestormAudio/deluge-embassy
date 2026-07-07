@@ -881,6 +881,7 @@ pub static METHODS: &[MethodEntry] = &[
     method("Node", "gate(_)", bindings_audio::node_gate),
     method("Node", "trigger()", bindings_audio::node_trigger),
     method("Node", "out(_)", bindings_audio::node_out),
+    method("Node", "free()", bindings_audio::node_free),
     static_method("Bus", "new_()", bindings_audio::bus_new),
     method("Bus", "write(_)", bindings_audio::bus_write),
 ];

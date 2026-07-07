@@ -123,9 +123,8 @@ pub fn set_root(bus: u16) {
     }
     host().audio_cmd(Cmd::SetRoot { bus: BusId(bus) });
 }
-// Unused until a `Node.free_()` binding lands (Task 5); part of this task's
-// produced API (ports/buses/free are intentionally out of scope for Task 2).
-#[allow(dead_code)]
+/// Free a node: return its id to the free-list and emit `Cmd::Free`.
+/// Used by `Node.free()`.
 pub fn free(id: u16) {
     if id == NULL_ID {
         return;

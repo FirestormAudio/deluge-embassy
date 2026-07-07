@@ -120,6 +120,7 @@ foreign class Node {
   foreign gate(on)
   foreign trigger()
   foreign out(p)
+  foreign free()
   *(o) { Node.binop_(0, this, o) }
   +(o) { Node.binop_(1, this, o) }
   -(o) { Node.binop_(2, this, o) }

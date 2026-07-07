@@ -302,6 +302,15 @@ pub(crate) unsafe extern "C" fn node_out(raw: *mut WrenVM) {
     node_out_impl(&vm);
 }
 
+pub(crate) fn node_free_impl<S: SlotApi>(vm: &S) {
+    audio::free(self_id(vm));
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_free(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_free_impl(&vm);
+}
+
 /// Register the audio surface into a caller-provided method/class registrar
 /// (called from `bindings::register_foreign`).
 pub(crate) fn register_audio<S: SlotApi>(
@@ -320,6 +329,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
     method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
     method("main", "Node", false, "out(_)", node_out_impl::<S>);
+    method("main", "Node", false, "free()", node_free_impl::<S>);
     method("main", "Bus", true, "new_()", bus_new_impl::<S>);
     method("main", "Bus", false, "write(_)", bus_write_impl::<S>);
 }
