@@ -92,6 +92,11 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
                     n.set_param(param, value);
                 }
             }
+            Cmd::BindTable { node, src } => {
+                if let Some(n) = self.arena.node_mut(node) {
+                    n.bind_table(src);
+                }
+            }
             Cmd::Gate { node, on } => {
                 if let Some(n) = self.arena.node_mut(node) {
                     n.gate(on);
@@ -247,7 +252,7 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::Kind;
+    use crate::node::{Kind, TableSrc};
     use crate::{Cmd, Input, NodeId};
 
     type E = Engine<16, 8, 8, 4>;
@@ -421,5 +426,17 @@ mod tests {
                 .any(|(a, b)| (a - b).abs() > epsilon),
             "feedback=0 and feedback=0.8 outputs must differ"
         );
+    }
+
+    #[test]
+    fn wavetable_node_renders_bounded_nonsilent() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Wavetable);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
+        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(0)) });
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out.iter().any(|&s| s != 0.0));
     }
 }
