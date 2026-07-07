@@ -59,6 +59,15 @@ impl Complex {
     pub fn abs(self) -> f32 {
         sqrt_f32(self.norm_sq())
     }
+
+    /// Complex conjugate: negates the imaginary part.
+    #[inline(always)]
+    pub fn conj(self) -> Self {
+        Self {
+            re: self.re,
+            im: -self.im,
+        }
+    }
 }
 
 impl Add for Complex {

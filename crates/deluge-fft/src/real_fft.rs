@@ -152,4 +152,61 @@ where
             // the same as X[N/2-(k-(N/2))] = conj(X[k]); we don't store it.
         }
     }
+
+    /// Inverse of [`process`]: `N/2+1` one-sided complex bins → `N` real samples.
+    /// Reverses the forward's split → half-size FFT → pack, with a single `1/hn`
+    /// (`hn = N/2`) normalization. Uses `conj(fft(conj(·)))` for the inner
+    /// inverse (reusing the forward radix-4), so no new butterfly code.
+    pub fn process_inverse(bins: &[crate::complex::Complex; N / 2 + 1], out: &mut [f32; N]) {
+        assert!(
+            N >= 8 && N.is_power_of_two(),
+            "RealFft N must be a power of two >= 8"
+        );
+        let hn = N / 2;
+        let tw_off = hn - 1;
+
+        // 1. Inverse-split: recover Z[0..hn], stored as conj(Z) into zbuf (SoA)
+        //    so the inner forward FFT computes conj(fft(conj(Z))) = hn * ifft(Z).
+        let mut zbuf = FftBuf::<{ N / 2 }>::ZERO;
+
+        // Z[0]: X[0] = Z0.re + Z0.im, X[hn] = Z0.re - Z0.im (both real).
+        let x0 = bins[0].re;
+        let xh = bins[hn].re;
+        let z0r = (x0 + xh) * 0.5;
+        let z0i = (x0 - xh) * 0.5;
+        zbuf.re[0] = z0r; // conj(Z[0]).re = Z0.re
+        zbuf.im[0] = -z0i; // conj(Z[0]).im = -Z0.im
+
+        for k in 1..hn {
+            let nk = hn - k;
+            let p = bins[k];
+            let q = bins[nk].conj(); // conj(X[nk])
+            // a = (P + Q)/2
+            let ar = (p.re + q.re) * 0.5;
+            let ai = (p.im + q.im) * 0.5;
+            // s = (P - Q)/2 ; Wd = j*s = (-s.im, s.re)
+            let sr = (p.re - q.re) * 0.5;
+            let si = (p.im - q.im) * 0.5;
+            let wdr = -si;
+            let wdi = sr;
+            // d = conj(W) * Wd,  conj(W) = (wr, -wi)
+            let wr = TwiddleTable::<N>::re(tw_off + k);
+            let wi = TwiddleTable::<N>::im(tw_off + k);
+            let dr = wr * wdr + wi * wdi; // wr*wdr - (-wi)*wdi
+            let di = wr * wdi - wi * wdr; // wr*wdi + (-wi)*wdr
+            // Z[k] = a + d ; store conj(Z[k])
+            zbuf.re[k] = ar + dr;
+            zbuf.im[k] = -(ai + di);
+        }
+
+        // 2. Inner forward FFT of conj(Z).
+        crate::radix4::process_r4_simd_soa::<{ N / 2 }, LANES>(&mut zbuf);
+
+        // 3. z = conj(result) / hn ; unpack z[k] = x[2k] + j*x[2k+1].
+        let inv = 1.0 / hn as f32;
+        for k in 0..hn {
+            out[2 * k] = zbuf.re[k] * inv; // conj → re unchanged
+            out[2 * k + 1] = -zbuf.im[k] * inv; // conj → im negated
+        }
+    }
 }
