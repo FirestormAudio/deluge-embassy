@@ -1,0 +1,23 @@
+[package]
+name = "deluge-audio-graph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable no_std block-rendering audio graph engine (nodes, ports, buses)"
+categories = ["embedded", "no-std", "multimedia::audio"]
+keywords = ["dsp", "audio", "no-std", "graph", "synthesis"]
+
+[dependencies]
+deluge-dsp-kernels = { path = "../deluge-dsp-kernels" }
+
+[features]
+default = []
+# Forward SIMD to the kernels crate.
+simd = ["deluge-dsp-kernels/simd"]
+
+[lib]
+name = "deluge_audio_graph"
+path = "src/lib.rs"
