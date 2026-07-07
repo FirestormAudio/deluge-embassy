@@ -1392,6 +1392,8 @@ name = "deluge-dsp-kernels"
 version = "0.1.0"
 dependencies = [
  "deluge-dsp-test",
+ "libm",
+ "mipgen",
  "proptest",
 ]
 
