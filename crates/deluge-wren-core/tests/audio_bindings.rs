@@ -1,7 +1,8 @@
 #![cfg(feature = "test-support")]
 use deluge_audio_graph::StereoFrame;
 use deluge_audio_graph::node::TableSrc;
-use deluge_wren_core::test_support::{run_and_capture_cmds, run_and_render};
+use deluge_wren_core::Host as _;
+use deluge_wren_core::test_support::{EngineHost, run_and_capture_cmds, run_and_render};
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
 fn saw(freq: f32) -> Cmd {
@@ -188,4 +189,86 @@ fn osc_wavetable_renders_finite_nonsilent() {
     run_and_render("Out.patch(Osc.wavetable(WT.Saw, 220))", &mut out);
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0));
+}
+
+#[test]
+fn wavetable_from_unbound_on_cmd_capture_host_no_bogus_bindtable() {
+    // The Cmd-capture host has no pool: `upload_table` returns `None`, so the
+    // `Wavetable` handle stays unbound. `Osc.wavetable(w, freq)` must still
+    // create the node (graceful degrade to silent) — but MUST NOT emit a
+    // `BindTable` with a bogus/default handle.
+    let cmds = run_and_capture_cmds(
+        "var w = Wavetable.from([ -1, -0.5, 0, 0.5, 1, 0.5, 0, -0.5 ])\n\
+         var v = Osc.wavetable(w, 220)",
+    );
+    assert!(cmds.iter().any(|c| matches!(c,
+        Cmd::NewNode { node: NodeId(0), kind: Kind::Wavetable, .. })));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })));
+}
+
+#[test]
+fn wavetable_from_emits_bindtable_pooled_and_renders_finite() {
+    // With a real engine host (`run_and_render`), `upload_table` succeeds, so
+    // `Wavetable.from` yields a bound handle and the node renders non-panicking,
+    // finite audio.
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var w = Wavetable.from([ -1, -0.5, 0, 0.5, 1, 0.5, 0, -0.5 ])\n\
+         Out.patch(Osc.wavetable(w, 220))",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+}
+
+#[test]
+fn wavetable_from_round_trip_renders_finite_nonsilent_bounded_deterministic() {
+    // End-to-end round-trip through the FULL dynamic-table path with a real
+    // `EngineHost` (not the `CmdCaptureHost` used by the Cmd-shape tests
+    // above): a known single-cycle sawtooth, generated here as a Wren list
+    // literal (deterministic, no reliance on Wren-side loop syntax) ->
+    // `Wavetable.from` (list-read, Task 1) -> `Host::upload_table` (Task 4,
+    // real `pool_alloc` + `build_pyramid_into`) -> `TableSrc::Pooled` bind
+    // (Task 5) -> `Osc.wavetable` render through the real pool region (Task
+    // 3). This is stronger than Task 4's level-0-only pool-readback check and
+    // stronger than `wavetable_from_emits_bindtable_pooled_and_renders_finite`
+    // above (which only checks finite+bounded): it also asserts non-silence
+    // and bit-exact determinism across independent VM/engine lifecycles.
+    let n = 32;
+    let pts: Vec<String> = (0..n)
+        .map(|i| format!("{:.6}", 2.0 * (i as f64 / n as f64) - 1.0))
+        .collect();
+    let script = format!(
+        "var w = Wavetable.from([{}])\nOut.patch(Osc.wavetable(w, 220))",
+        pts.join(", ")
+    );
+
+    let mut out1 = [StereoFrame::default(); 32];
+    run_and_render(&script, &mut out1);
+    assert!(out1.iter().all(|f| f.l.is_finite() && f.r.is_finite()), "non-finite sample: {out1:?}");
+    assert!(out1.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0), "unbounded sample: {out1:?}");
+    assert!(out1.iter().any(|f| f.l != 0.0), "round-trip render must be non-silent");
+
+    // Deterministic: a second, independent VM+engine lifecycle on the same
+    // script renders bit-identical output (no uninitialized pool memory,
+    // no ordering nondeterminism in the upload/bind path).
+    let mut out2 = [StereoFrame::default(); 32];
+    run_and_render(&script, &mut out2);
+    for i in 0..32 {
+        assert_eq!(out1[i].l, out2[i].l, "sample {i}: nondeterministic render");
+        assert_eq!(out1[i].r, out2[i].r, "sample {i}: nondeterministic render");
+    }
+}
+
+#[test]
+fn engine_host_upload_table_builds_band_limited() {
+    let mut host = EngineHost::new(48_000.0);
+    let mut base = [0.0f32; mipgen::N];
+    for (i, s) in base.iter_mut().enumerate() {
+        *s = 2.0 * (i as f32 / mipgen::N as f32) - 1.0;
+    }
+    let h = host.upload_table(&base).expect("upload");
+    // level 0 region round-trips to a saw-ish shape; deeper levels are band-limited.
+    let region = host.engine().pool_slice(h);
+    assert_eq!(region.len(), mipgen::N * mipgen::LEVELS);
+    assert!(region[..mipgen::N].iter().any(|&x| x != 0.0));
 }

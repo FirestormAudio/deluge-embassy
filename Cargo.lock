@@ -1348,6 +1348,7 @@ name = "deluge-audio-graph"
 version = "0.1.0"
 dependencies = [
  "deluge-dsp-kernels",
+ "mipgen",
 ]
 
 [[package]]
@@ -1531,6 +1532,7 @@ dependencies = [
  "deluge-audio-graph",
  "deluge-dsp-kernels",
  "deluge-wren-core",
+ "mipgen",
  "wren-sys",
 ]
 

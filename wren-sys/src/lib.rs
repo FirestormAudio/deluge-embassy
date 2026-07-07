@@ -118,6 +118,8 @@ unsafe extern "C" {
     pub fn wrenSetSlotString(vm: *mut WrenVM, slot: c_int, text: *const c_char);
     pub fn wrenSetSlotBytes(vm: *mut WrenVM, slot: c_int, bytes: *const c_char, length: usize);
     pub fn wrenSetSlotNull(vm: *mut WrenVM, slot: c_int);
+    pub fn wrenGetListCount(vm: *mut WrenVM, slot: c_int) -> c_int;
+    pub fn wrenGetListElement(vm: *mut WrenVM, list_slot: c_int, index: c_int, element_slot: c_int);
     pub fn wrenSetSlotNewForeign(
         vm: *mut WrenVM,
         slot: c_int,

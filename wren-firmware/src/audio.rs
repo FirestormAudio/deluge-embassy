@@ -21,7 +21,7 @@ use deluge_wren_core::Cmd;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 // Sizes satisfy the binding contract: NODES >= WREN_MAX_NODES(64), BUSES >= 8.
-type Eng = Engine<32, 64, 128, 8>; // BLOCK, NODES, OUTS, BUSES
+type Eng = Engine<32, 64, 128, 8, 90112, 2048>; // BLOCK, NODES, OUTS, BUSES, PCAP, PCHUNK
 const _: () = assert!(64 >= deluge_wren_core::WREN_MAX_NODES && 8 >= deluge_wren_core::WREN_MAX_BUSES);
 const SAMPLE_RATE: f32 = 44_100.0;
 

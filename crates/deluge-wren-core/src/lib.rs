@@ -35,5 +35,5 @@ pub use bindings::{
 #[cfg(feature = "wren-sys-backend")]
 pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, tick};
 pub use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId};
-pub use host::{CV_CHANNELS, GATE_CHANNELS, Host, set_host};
+pub use host::{CV_CHANNELS, GATE_CHANNELS, Host, build_pyramid_into, set_host};
 pub use slotapi::{Handle, SlotApi, WrenForeign, WrenType};

@@ -33,6 +33,8 @@ pub trait SlotApi {
     fn set_f(&self, slot: i32, v: f64);
     fn get_bool(&self, slot: i32) -> bool;
     fn get_str(&self, slot: i32) -> &str;
+    fn get_list_count(&self, slot: i32) -> i32;
+    fn get_list_element(&self, list_slot: i32, index: i32, elem_slot: i32);
     /// # Safety: `slot` must hold a foreign of type `T`.
     unsafe fn foreign_mut<T>(&self, slot: i32) -> &mut T;
     /// # Safety: call only from a foreign-class allocator.

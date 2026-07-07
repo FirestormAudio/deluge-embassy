@@ -51,6 +51,37 @@ pub trait Host {
     /// `deluge_audio_graph::Engine` (firmware: a ring drained by the audio task;
     /// web: applied directly on the audio thread).
     fn audio_cmd(&mut self, cmd: Cmd);
+
+    /// Build a band-limited mip pyramid from `base` (one single cycle) into a
+    /// pool region owned by the host's `deluge_audio_graph::Engine`, and return
+    /// its handle. `None` on exhaustion/bad input.
+    ///
+    /// Default: unsupported (no pool) → `None`, so hosts with no audio engine
+    /// (e.g. [`crate::test_support::CmdCaptureHost`]) need not override this.
+    fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+        let _ = base;
+        None
+    }
+}
+
+/// Build a band-limited mip pyramid from `base` (one single cycle, padded or
+/// truncated to `mipgen::N`) into `region`. `region` must be at least
+/// `mipgen::N * mipgen::LEVELS` long — shorter regions are left untouched (no
+/// panic). Shared by every pool-backed [`Host::upload_table`] implementation
+/// so the embedder only has to allocate the region and hand it here.
+pub fn build_pyramid_into(base: &[f32], region: &mut [f32]) {
+    if region.len() < mipgen::N * mipgen::LEVELS {
+        return;
+    }
+    let mut b = [0.0f32; mipgen::N];
+    let n = mipgen::N.min(base.len());
+    b[..n].copy_from_slice(&base[..n]); // pad/truncate to N
+    let harm = mipgen::analyze(&b);
+    let mut lvl = [0.0f32; mipgen::N];
+    for level in 0..mipgen::LEVELS {
+        mipgen::synth_level(&harm, level, &mut lvl);
+        region[level * mipgen::N..(level + 1) * mipgen::N].copy_from_slice(&lvl);
+    }
 }
 
 static mut HOST: Option<*mut (dyn Host + 'static)> = None;

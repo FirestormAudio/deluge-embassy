@@ -108,6 +108,29 @@ pub fn new_wavetable(id: u16, table_id: u16, freq: Input) {
         )),
     });
 }
+/// Upload a base-cycle table (`mipgen::N` samples) to the host's pool, building
+/// its band-limited mip pyramid. `None` on a host with no pool (e.g. the
+/// Cmd-capture test host) or on pool exhaustion. Used by `Wavetable.from`.
+pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+    host().upload_table(base)
+}
+/// Create a `Kind::Wavetable` node and bind it to a pooled (dynamically
+/// uploaded) table. The pooled counterpart of [`new_wavetable`]. Used by
+/// `Node.wavetable_pooled_(wt, freq)`.
+pub fn new_wavetable_pooled(id: u16, handle: deluge_audio_graph::PoolHandle, freq: Input) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind: Kind::Wavetable,
+        args: [freq, Input::Const(0.0), Input::Const(0.0)],
+    });
+    host().audio_cmd(Cmd::BindTable {
+        node: NodeId(id),
+        src: deluge_audio_graph::node::TableSrc::Pooled(handle),
+    });
+}
 pub fn set_input(id: u16, port: u8, src: Input) {
     if id == NULL_ID {
         return;

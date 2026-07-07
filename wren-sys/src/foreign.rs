@@ -17,10 +17,11 @@
 use core::ffi::{c_char, c_int, c_void};
 
 use crate::{
-    WrenHandle, WrenVM, wrenAbortFiber, wrenCall, wrenEnsureSlots, wrenGetSlotBool,
-    wrenGetSlotBytes, wrenGetSlotDouble, wrenGetSlotForeign, wrenGetSlotHandle, wrenGetSlotType,
-    wrenGetVariable, wrenMakeCallHandle, wrenReleaseHandle, wrenSetSlotBool, wrenSetSlotBytes,
-    wrenSetSlotDouble, wrenSetSlotHandle, wrenSetSlotNewForeign, wrenSetSlotNull,
+    WrenHandle, WrenVM, wrenAbortFiber, wrenCall, wrenEnsureSlots, wrenGetListCount,
+    wrenGetListElement, wrenGetSlotBool, wrenGetSlotBytes, wrenGetSlotDouble, wrenGetSlotForeign,
+    wrenGetSlotHandle, wrenGetSlotType, wrenGetVariable, wrenMakeCallHandle, wrenReleaseHandle,
+    wrenSetSlotBool, wrenSetSlotBytes, wrenSetSlotDouble, wrenSetSlotHandle, wrenSetSlotNewForeign,
+    wrenSetSlotNull,
 };
 
 // ── Foreign ABI types (match wren.h) ────────────────────────────────────────
@@ -198,6 +199,14 @@ impl Vm {
     }
     pub fn set_null(&self, slot: i32) {
         unsafe { wrenSetSlotNull(self.0, slot) };
+    }
+
+    // ── lists ───────────────────────────────────────────────────────────
+    pub fn get_list_count(&self, slot: i32) -> i32 {
+        unsafe { wrenGetListCount(self.0, slot) }
+    }
+    pub fn get_list_element(&self, list_slot: i32, index: i32, element_slot: i32) {
+        unsafe { wrenGetListElement(self.0, list_slot, index, element_slot) }
     }
 
     // ── strings (valid only during the call) ─────────────────────────────

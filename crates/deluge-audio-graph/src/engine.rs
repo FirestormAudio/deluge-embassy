@@ -25,6 +25,8 @@ pub struct Engine<
     const NODES: usize,
     const OUTS: usize,
     const BUSES: usize,
+    const PCAP: usize,
+    const PCHUNK: usize,
 > {
     arena: Arena<NODES, OUTS>,
     outs: UnsafeCell<[[f32; BLOCK]; OUTS]>,
@@ -37,10 +39,17 @@ pub struct Engine<
     // table yet — see spec §3.5 / bus.rs).
     writes: [Option<(Input, BusId)>; NODES],
     writes_len: usize,
+    pool: crate::pool::Pool<PCAP, PCHUNK>,
 }
 
-impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usize>
-    Engine<BLOCK, NODES, OUTS, BUSES>
+impl<
+    const BLOCK: usize,
+    const NODES: usize,
+    const OUTS: usize,
+    const BUSES: usize,
+    const PCAP: usize,
+    const PCHUNK: usize,
+> Engine<BLOCK, NODES, OUTS, BUSES, PCAP, PCHUNK>
 {
     pub fn new(sample_rate: f32) -> Self {
         assert!(BLOCK <= MAX_BLOCK, "BLOCK exceeds MAX_BLOCK");
@@ -53,7 +62,21 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
             root: None,
             writes: [None; NODES],
             writes_len: 0,
+            pool: crate::pool::Pool::new(),
         }
+    }
+
+    pub fn pool_alloc(&mut self, len: usize) -> Option<crate::pool::PoolHandle> {
+        self.pool.alloc(len)
+    }
+    pub fn pool_free(&mut self, h: crate::pool::PoolHandle) {
+        self.pool.free(h)
+    }
+    pub fn pool_slice(&self, h: crate::pool::PoolHandle) -> &[f32] {
+        self.pool.slice(h)
+    }
+    pub fn pool_slice_mut(&mut self, h: crate::pool::PoolHandle) -> &mut [f32] {
+        self.pool.slice_mut(h)
     }
 
     pub fn create(&mut self, id: NodeId, kind: crate::node::Kind) -> bool {
@@ -109,7 +132,17 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
             }
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
             Cmd::SetRoot { bus } => self.set_root(bus),
-            Cmd::Free { node } => self.arena.free(node),
+            Cmd::Free { node } => {
+                // Free a pooled table region (if bound) BEFORE reclaiming the
+                // node's arena slot: `table_src()` reads through the node,
+                // which must still be live.
+                if let Some(n) = self.arena.node_mut(node) {
+                    if let Some(crate::node::TableSrc::Pooled(h)) = n.table_src() {
+                        self.pool.free(h);
+                    }
+                }
+                self.arena.free(node);
+            }
             Cmd::Reset => {
                 self.arena.reset();
                 self.writes_len = 0;
@@ -130,9 +163,9 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
 
         for k in 0..live {
             let id = NodeId(order[k]);
-            let (base, width, inputs) = {
+            let (base, width, inputs, table_src) = {
                 let n = self.arena.node(id).expect("eval-order node exists");
-                (n.out_base as usize, Node::out_width(n.kind), n.inputs_snapshot())
+                (n.out_base as usize, Node::out_width(n.kind), n.inputs_snapshot(), n.table_src())
             };
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
@@ -176,8 +209,18 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
             // disjoint `arena` field) to coexist with `arr`.
             let arr = unsafe { &mut *self.outs.get() };
             let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
+            // Resolve a pooled table's flat region (immutable borrow of the
+            // disjoint `self.pool` field) BEFORE the node's `&mut` borrow
+            // below — `self.pool` and `self.arena` are separate fields of
+            // `Engine`, so the borrow checker tracks them independently as
+            // long as each is accessed as a direct field projection (not
+            // through a whole-`&mut self` helper method).
+            let pool_region: Option<&[f32]> = match table_src {
+                Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice(h)),
+                _ => None,
+            };
             if let Some(n) = self.arena.node_mut(id) {
-                n.process_resolved(&ins, self.dt, &mut view);
+                n.process_resolved(&ins, self.dt, &mut view, pool_region);
             }
         }
     }
@@ -255,7 +298,7 @@ mod tests {
     use crate::node::{Kind, TableSrc};
     use crate::{Cmd, Input, NodeId};
 
-    type E = Engine<16, 8, 8, 4>;
+    type E = Engine<16, 8, 8, 4, 45056, 2048>;
 
     #[test]
     fn single_saw_node_renders() {
@@ -429,6 +472,17 @@ mod tests {
     }
 
     #[test]
+    fn engine_pool_alloc_fill_read_free() {
+        let mut e = E::new(48_000.0);
+        let h = e.pool_alloc(16).expect("alloc");
+        e.pool_slice_mut(h).fill(0.25);
+        assert!(e.pool_slice(h).iter().all(|&x| x == 0.25));
+        e.pool_free(h);
+        // After free, a full-capacity alloc succeeds (region reclaimed).
+        assert!(e.pool_alloc(16).is_some());
+    }
+
+    #[test]
     fn wavetable_node_renders_bounded_nonsilent() {
         let mut e = E::new(48_000.0);
         e.create(NodeId(0), Kind::Wavetable);
@@ -438,5 +492,78 @@ mod tests {
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn pooled_wavetable_renders_and_frees() {
+        let mut e = E::new(48_000.0);
+        // Build a saw pyramid directly into the pool (mimics upload_table).
+        let n = mipgen::N;
+        let h = e.pool_alloc(n * mipgen::LEVELS).expect("pool room");
+        let mut base = [0.0f32; mipgen::N];
+        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / n as f32) - 1.0; }
+        let harm = mipgen::analyze(&base);
+        {
+            let region = e.pool_slice_mut(h);
+            let mut lvl = [0.0f32; mipgen::N];
+            for level in 0..mipgen::LEVELS {
+                mipgen::synth_level(&harm, level, &mut lvl);
+                region[level * n..(level + 1) * n].copy_from_slice(&lvl);
+            }
+        }
+        e.create(NodeId(0), Kind::Wavetable);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
+        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(h) });
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out.iter().any(|&s| s != 0.0));
+        // Free the node → pool region reclaimed.
+        e.apply(Cmd::Free { node: NodeId(0) });
+        // First-fit: a genuine free lets the next same-size alloc reclaim the exact
+        // region → same handle. This fails if Cmd::Free didn't actually pool.free(h).
+        assert_eq!(e.pool_alloc(n * mipgen::LEVELS), Some(h));
+    }
+
+    #[test]
+    fn pool_exhaustion_returns_none_not_panic() {
+        // `E`'s pool is PCAP=45056, PCHUNK=2048 → 22 chunks total. One
+        // wavetable pyramid is N*LEVELS = 2048*11 = 22528 f32 = 11 chunks, so
+        // exactly 2 pyramids fit. A 3rd upload-sized alloc must degrade to
+        // `None`, never panic — the caller (Wren `Wavetable.from`) is
+        // expected to leave the table unbound in that case.
+        let mut e = E::new(48_000.0);
+        let n = mipgen::N;
+        let want = n * mipgen::LEVELS;
+        let h1 = e.pool_alloc(want).expect("1st pyramid fits");
+        let h2 = e.pool_alloc(want).expect("2nd pyramid fits");
+        assert!(e.pool_alloc(want).is_none(), "3rd pyramid must not fit a 2-pyramid pool");
+        // Pool is not corrupted by the failed alloc: existing handles still work.
+        e.pool_slice_mut(h1).fill(0.5);
+        e.pool_slice_mut(h2).fill(0.75);
+        assert!(e.pool_slice(h1).iter().all(|&x| x == 0.5));
+        assert!(e.pool_slice(h2).iter().all(|&x| x == 0.75));
+    }
+
+    #[test]
+    fn pooled_wavetable_wrong_sized_region_renders_silence_not_panic() {
+        // A `TableSrc::Pooled` handle whose region isn't exactly N*LEVELS long
+        // (e.g. the upload path allocated the wrong size, or a stale handle
+        // from a different table) must never be sliced into `LEVELS_WT`
+        // chunks — `process_resolved`'s exact-size guard (`region.len() ==
+        // N_WT * LEVELS_WT`) should just leave the output untouched (silence
+        // in a freshly-zeroed arena slot). This is the reachable degrade path
+        // for a "bad pool region": a legitimately-obtained `PoolHandle` (via
+        // the public `pool_alloc`) whose length happens to be wrong, since
+        // `PoolHandle`'s fields are private to `pool.rs` and can't be
+        // hand-forged from `engine::tests`.
+        let mut e = E::new(48_000.0);
+        let bad = e.pool_alloc(64).expect("small alloc fits"); // 64 != N*LEVELS (22528)
+        e.create(NodeId(0), Kind::Wavetable);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
+        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(bad) });
+        e.render_block(); // must not panic
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|&s| s == 0.0), "wrong-sized pool region must render silence: {out:?}");
     }
 }

@@ -270,6 +270,11 @@ identical host/device; the `WtOsc` playback has no RNG.
   synth`) becomes the IRFFT path's **equivalence oracle** in 3b's tests. Not
   needed for 3a (build-time named tables; additive and IFFT are identical for a
   periodic single cycle).
+- **Wavetable region ownership** — pooled table memory is currently freed
+  node-scoped (`Cmd::Free`), not by the `Wavetable` object's GC; an unbound or
+  multiply-bound `Wavetable` can leak or alias its region (graceful →
+  silence, never UB). A proper object-scoped ownership model
+  (finalizer/refcount) is a follow-on.
 
 ---
 

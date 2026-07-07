@@ -27,6 +27,13 @@ pub struct FwHost;
 /// The single host instance, registered at boot.
 pub static mut FW_HOST: FwHost = FwHost;
 
+// NOTE: `FwHost` intentionally does NOT override `Host::upload_table` — it
+// inherits the trait's default (`None`). Real-time-safe device-side wavetable
+// upload (building a mip pyramid without stalling the audio ISR, and without
+// aliasing the audio_task-owned engine) needs a dedicated design + on-hardware
+// validation; it's a tracked follow-on. On device, `Wavetable.from(...)`
+// therefore currently yields an unbound handle → the node renders silence.
+// The feature is fully implemented and tested host-side (see EngineHost).
 impl Host for FwHost {
     fn now_ms(&mut self) -> u64 {
         Instant::now().as_millis()

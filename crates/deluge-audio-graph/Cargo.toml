@@ -13,6 +13,9 @@ keywords = ["dsp", "audio", "no-std", "graph", "synthesis"]
 [dependencies]
 deluge-dsp-kernels = { path = "../deluge-dsp-kernels" }
 
+[dev-dependencies]
+mipgen = { path = "../mipgen" }
+
 [features]
 default = []
 # Forward SIMD to the kernels crate.
