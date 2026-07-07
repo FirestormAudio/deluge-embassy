@@ -21,9 +21,6 @@ deluge-wren-core = { path = "../crates/deluge-wren-core" }
 # The DSP graph engine backing the audio task. Sized to satisfy
 # deluge_wren_core's binding contract (NODES >= WREN_MAX_NODES, BUSES >= 8).
 deluge-audio-graph = { path = "../crates/deluge-audio-graph" }
-# Sizes the `upload_table` scratch region (`mipgen::N`/`LEVELS`); the actual
-# pyramid build runs through `deluge_wren_core::build_pyramid_into`.
-mipgen = { path = "../crates/mipgen" }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-sync.workspace = true
 embassy-futures.workspace = true

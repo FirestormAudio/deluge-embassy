@@ -6859,7 +6859,6 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "log",
- "mipgen",
  "wren-sys",
 ]
 
