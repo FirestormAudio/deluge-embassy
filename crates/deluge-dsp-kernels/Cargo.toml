@@ -14,6 +14,7 @@ keywords = ["dsp", "audio", "no-std", "synthesis"]
 
 [dev-dependencies]
 proptest = "1"
+deluge-dsp-test = { path = "../deluge-dsp-test" }
 
 [features]
 default = []

@@ -1391,7 +1391,15 @@ dependencies = [
 name = "deluge-dsp-kernels"
 version = "0.1.0"
 dependencies = [
+ "deluge-dsp-test",
  "proptest",
+]
+
+[[package]]
+name = "deluge-dsp-test"
+version = "0.1.0"
+dependencies = [
+ "realfft",
 ]
 
 [[package]]
@@ -4645,6 +4653,15 @@ checksum = "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
 dependencies = [
  "bytemuck",
  "font-types 0.11.3",
+]
+
+[[package]]
+name = "realfft"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f821338fddb99d089116342c46e9f1fbf3828dba077674613e734e01d6ea8677"
+dependencies = [
+ "rustfft",
 ]
 
 [[package]]

@@ -115,10 +115,9 @@ fn free_emits_free_and_reuses_id() {
 fn golden_saw_lpf_renders_expected_block() {
     let mut out = [StereoFrame::default(); 32];
     run_and_render("Out.patch(Osc.saw(110).lpf(800))", &mut out);
-    // Characterization golden: pin the first 4 L samples (regenerate only on an
-    // intended, reviewed output change). Values captured from a first run of
-    // this exact test against the current `deluge-audio-graph` DSP kernels.
-    let expected = [-0.11398069, -0.21440116, -0.30280703, -0.38056773];
+    // CHARACTERIZATION golden re-pinned 2026-07-07 after Osc band-limiting (Tasks 1-3).
+    // Regenerate only on an intended, reviewed output change.
+    let expected = [0.0, -0.103913695, -0.204913, -0.29383174];
     for i in 0..4 {
         assert!((out[i].l - expected[i]).abs() < 1e-6, "sample {i}: {} vs {}", out[i].l, expected[i]);
     }

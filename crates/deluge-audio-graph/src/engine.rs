@@ -249,14 +249,22 @@ mod tests {
     type E = Engine<16, 8, 8, 4>;
 
     #[test]
-    fn single_saw_node_renders_expected_ramp() {
+    fn single_saw_node_renders() {
         let mut e = E::new(16.0); // sr so 4 Hz → 0.25/sample
         e.create(NodeId(0), Kind::Saw);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(4.0);
         e.render_block();
         let out = e.node_output(NodeId(0), 0);
-        assert!((out[0] - (-1.0)).abs() < 1e-6);
-        assert!((out[1] - (-0.5)).abs() < 1e-6);
+        // Kernel-agnostic on purpose: this test verifies graph wiring (a
+        // Kind::Saw node renders to its output port), not the oscillator's
+        // exact samples. The naive vs. band-limited kernel shape is covered
+        // by deluge-dsp-kernels; here we only check the output is a finite,
+        // saw-like signal that swings through both polarities within the
+        // expected [-1, 1] range (band-limiting can reduce peak amplitude
+        // relative to the naive ramp, so thresholds are intentionally loose).
+        assert!(out.iter().all(|s| s.is_finite() && *s >= -1.1 && *s <= 1.1));
+        assert!(out.iter().cloned().fold(f32::MAX, f32::min) < -0.3);
+        assert!(out.iter().cloned().fold(f32::MIN, f32::max) > 0.3);
     }
 
     #[test]
