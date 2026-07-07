@@ -4,17 +4,17 @@
 
 **Goal:** Build `deluge-dsp-test`, a host-side measurement toolkit — FFT-based spectral analysis (frequency response, THD, aliasing), a comparison-focused CPU-cost harness, and numeric guards/null-tests — that the vocabulary suites use to prove their DSP.
 
-**Architecture:** A new `std`, host-only crate (workspace-*excluded*, like the other host tooling) depending only on `deluge-fft`. It operates on `&[f32]` buffers and `FnMut(&mut [f32])` renderer closures, never on kernel/graph types. Spectral analysis is Hann-window → `deluge_fft::RealFft` → magnitudes → relative metrics; the CPU harness is median-of-N wall-clock for A/B comparison (not an absolute gate); guards are the reviewed home for finite/bounded/denormal/null checks.
+**Architecture:** A new `std`, host-only crate (workspace-*excluded*, like the other host tooling) depending on the external `realfft`/`rustfft` — no workspace crate, so the harness is an independent oracle (never measures with code that is itself under test). It operates on `&[f32]` buffers and `FnMut(&mut [f32])` renderer closures, never on kernel/graph types. Spectral analysis is Hann-window → `realfft` real FFT → magnitudes → relative metrics; the CPU harness is median-of-N wall-clock for A/B comparison (not an absolute gate); guards are the reviewed home for finite/bounded/denormal/null checks.
 
-**Tech Stack:** Rust, `std` (host-only), nightly toolchain (pinned), `deluge-fft` (portable-SIMD real FFT). Tests run on `x86_64-unknown-linux-gnu`.
+**Tech Stack:** Rust, `std` (host-only), `realfft` (reference-grade real FFT, pulls `rustfft`). Tests run on `x86_64-unknown-linux-gnu`.
 
-**Reference spec:** [QA design](../specs/2026-07-07-qa-measurement-harness-design.md). Depends on P0 only via `deluge-fft` (in the workspace).
+**Reference spec:** [QA design](../specs/2026-07-07-qa-measurement-harness-design.md). A standalone host test crate — no workspace dependency.
 
 ## Global Constraints
 
 - `deluge-dsp-test` is **`std`, host-only**, and **excluded from the workspace** (`cargo build --workspace` on the device target must not try to build it). It is used by suites as a `[dev-dependencies]` path dep.
-- Its only workspace dependency is `deluge-fft` (path). Package fields inherited from `[workspace.package]`.
-- **Fixed FFT size:** `pub const FFT_N: usize = 8192;` with `LANES = 4`. The spec's generic `analyze::<N>` is realized as a fixed-`N` function to avoid propagating `deluge-fft`'s `generic_const_exprs` bounds through this crate (a concrete `RealFft::<8192, 4>` call needs no such feature).
+- Its only dependency is the external `realfft = "3"` (which pulls `rustfft`) — **no workspace crate**. Package fields inherited from `[workspace.package]`.
+- **Fixed default FFT size:** `pub const FFT_N: usize = 8192;`. `realfft` plans any size at runtime, so this is just the chosen default (the spec's generic `analyze::<N>` is realized as a fixed-`N` function for caller simplicity, not because of any const-generic constraint).
 - Spectral metrics are **relative** (dB relative to the fundamental or the peak), so window/scale factors cancel — do not correct for Hann coherent gain.
 - CPU timing is **relative/comparison only** — never assert absolute ns/block; regression assertions use wide tolerance.
 - Test command (this crate is excluded, so use `--manifest-path` + the host target):
@@ -27,7 +27,7 @@
 
 **`crates/deluge-dsp-test/`** (new, std, workspace-excluded):
 - `Cargo.toml`
-- `src/lib.rs` — crate root; `FFT_N`/`LANES` consts; module decls + re-exports.
+- `src/lib.rs` — crate root; `FFT_N` const; module decls + re-exports.
 - `src/guards.rs` — `assert_finite_bounded`, `assert_no_denormals`, `max_abs_diff`, `null`, `rms`.
 - `src/spectrum.rs` — `Spectrum`, `analyze`/`analyze_buf`, `peak_*`/`level_at`, and the harmonic metrics (`harmonics_db`/`thd`/`worst_alias_db`/`noise_floor_db`).
 - `src/cpu.rs` — `CostReport`, `measure`, `compare`.
@@ -44,7 +44,7 @@
 
 **Interfaces:**
 - Produces:
-  - `pub const FFT_N: usize = 8192;` `pub const LANES: usize = 4;`
+  - `pub const FFT_N: usize = 8192;`
   - `guards::assert_finite_bounded(buf: &[f32], max_abs: f32)`
   - `guards::assert_no_denormals(buf: &[f32])`
   - `guards::max_abs_diff(a: &[f32], b: &[f32]) -> f32`
@@ -77,12 +77,14 @@ categories = ["development-tools::testing", "multimedia::audio"]
 keywords = ["dsp", "audio", "testing", "fft", "spectral"]
 
 [dependencies]
-deluge-fft = { path = "../deluge-fft" }
+realfft = "3"
 
 [lib]
 name = "deluge_dsp_test"
 path = "src/lib.rs"
 ```
+
+(`realfft` pulls in `rustfft` + `num-complex`; all MIT/Apache, dev-tree only.)
 
 - [ ] **Step 3: Write the failing guards test**
 
@@ -137,11 +139,9 @@ Expected: FAIL — `assert_finite_bounded` etc. not found (and `lib.rs`/module n
 //! depends on the kernel or graph crates, so any suite can pull it in under
 //! `[dev-dependencies]` and assert on the returned metrics.
 
-/// FFT size used by [`spectrum`] analysis. Fixed (not generic) so callers need
-/// no `generic_const_exprs`; a concrete `RealFft::<FFT_N, LANES>` monomorphizes.
+/// FFT size used by [`spectrum`] analysis. A fixed default for caller simplicity;
+/// `realfft` plans any size at runtime, so this isn't a hard constraint.
 pub const FFT_N: usize = 8192;
-/// SIMD lane count for the real FFT (matches `deluge-fft`'s host tests).
-pub const LANES: usize = 4;
 
 pub mod guards;
 pub mod spectrum;
@@ -227,7 +227,7 @@ git commit -m "feat(dsp-test): scaffold host measurement crate + numeric guards"
 - Modify: `crates/deluge-dsp-test/src/spectrum.rs`
 
 **Interfaces:**
-- Consumes: `FFT_N`, `LANES` (Task 1); `deluge_fft::{RealFft, Complex, apply_hann_window_real}`.
+- Consumes: `FFT_N` (Task 1); `realfft::RealFftPlanner` + `realfft::num_complex::Complex`.
 - Produces:
   - `pub struct Spectrum { pub bins: Vec<f32>, pub bin_hz: f32, pub sample_rate: f32 }` — `bins` are **linear** magnitudes, one-sided (`FFT_N/2 + 1` of them).
   - `pub fn analyze(sample_rate: f32, renderer: impl FnMut(&mut [f32])) -> Spectrum`
@@ -280,11 +280,22 @@ Prepend to `crates/deluge-dsp-test/src/spectrum.rs` (above the tests, replacing 
 
 ```rust
 //! Spectral analysis: render → Hann window → real FFT → linear magnitude bins,
-//! plus relative metrics (Tasks 2–3). Built on `deluge-fft`.
+//! plus relative metrics (Tasks 2–3). Built on `realfft` (an independent,
+//! reference-grade FFT — the harness never measures with code under test).
 
-use deluge_fft::{apply_hann_window_real, Complex, RealFft};
+use realfft::RealFftPlanner;
 
-use crate::{FFT_N, LANES};
+use crate::FFT_N;
+
+/// Periodic Hann window `w[i] = 0.5 - 0.5·cos(2π i / N)`. Periodic (not symmetric)
+/// so a bin-centered tone produces an exact 3-bin spectrum with no far leakage.
+fn hann_in_place(buf: &mut [f32]) {
+    let n = buf.len() as f32;
+    for (i, s) in buf.iter_mut().enumerate() {
+        let w = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n).cos();
+        *s *= w;
+    }
+}
 
 /// One-sided linear magnitude spectrum of a windowed real signal.
 pub struct Spectrum {
@@ -304,16 +315,17 @@ pub fn analyze(sample_rate: f32, mut renderer: impl FnMut(&mut [f32])) -> Spectr
 
 /// Analyze an already-rendered `FFT_N`-length buffer.
 pub fn analyze_buf(sample_rate: f32, signal: &[f32; FFT_N]) -> Spectrum {
-    let mut windowed = *signal;
-    apply_hann_window_real::<FFT_N>(&mut windowed);
+    // realfft's `process` uses its input slice as scratch, so work on a copy.
+    let mut input: Vec<f32> = signal.to_vec();
+    hann_in_place(&mut input);
 
-    let mut out = [Complex::ZERO; FFT_N / 2 + 1];
-    RealFft::<FFT_N, LANES>::process(&windowed, &mut out);
+    // Plan a forward real FFT for FFT_N points (per-call is fine for a test tool).
+    let r2c = RealFftPlanner::<f32>::new().plan_fft_forward(FFT_N);
+    let mut out = r2c.make_output_vec(); // Vec<Complex<f32>>, len FFT_N/2 + 1
+    r2c.process(&mut input, &mut out).expect("realfft forward");
 
-    // Real-FFT gives N/2+1 complex bins; take linear magnitude of each.
-    // (deluge-fft's `magnitude_spectrum` is sized for a full [Complex; N], so we
-    // compute magnitudes directly from the one-sided output here.)
-    let bins: Vec<f32> = out.iter().map(|c| c.abs()).collect();
+    // One-sided complex bins → linear magnitude of each (`num_complex::norm`).
+    let bins: Vec<f32> = out.iter().map(|c| c.norm()).collect();
 
     Spectrum { bins, bin_hz: sample_rate / FFT_N as f32, sample_rate }
 }
@@ -353,9 +365,7 @@ impl Spectrum {
 - [ ] **Step 4: Run, verify pass**
 
 Run: `cargo test --manifest-path crates/deluge-dsp-test/Cargo.toml --target x86_64-unknown-linux-gnu`
-Expected: PASS (guards + the new spectral test), zero warnings.
-
-If a `feature(portable_simd)` error appears when instantiating `RealFft` (it should not, since this crate names only `RealFft`, not `Simd`), add `#![feature(portable_simd)]` to the top of `lib.rs` — the toolchain is nightly.
+Expected: PASS (guards + the new spectral test), zero warnings. (First build fetches `realfft`/`rustfft` from crates.io.)
 
 - [ ] **Step 5: Commit**
 
@@ -643,7 +653,7 @@ git commit -m "feat(dsp-test): CPU-cost harness — measure + compare (relative)
 
 ## Self-review notes
 
-- **Spec coverage:** spectral analysis with `worst_alias_db` aliasing metric (Tasks 2–3); THD + harmonics (Task 3); CPU comparison harness, relative-not-absolute (Task 4); guards/null (Task 1); host-only, workspace-excluded, deluge-fft-only dependency, buffer/closure API (Task 1 scaffold + throughout); self-validation against known signals (pure sine, planted harmonic, planted inharmonic partial, subnormal/NaN — Tasks 1–4).
-- **Deliberate deviations from the spec:** (1) fixed `FFT_N = 8192` instead of `analyze::<N>` generic, to avoid propagating `deluge-fft`'s `generic_const_exprs` bounds (noted in Global Constraints). (2) `Spectrum.bins` stores **linear** magnitudes (not dB); `*_db` methods convert on read — cleaner for `thd` (linear) and keeps metrics relative.
+- **Spec coverage:** spectral analysis with `worst_alias_db` aliasing metric (Tasks 2–3); THD + harmonics (Task 3); CPU comparison harness, relative-not-absolute (Task 4); guards/null (Task 1); host-only, workspace-excluded, `realfft`-only (no workspace crate) dependency, buffer/closure API (Task 1 scaffold + throughout); self-validation against known signals (pure sine, planted harmonic, planted inharmonic partial, subnormal/NaN — Tasks 1–4).
+- **Deliberate deviations from the spec:** (1) fixed default `FFT_N = 8192` rather than a generic `analyze::<N>` — for caller simplicity (`realfft` supports any size at runtime, so this is a convenience default, not a constraint). (2) `Spectrum.bins` stores **linear** magnitudes (not dB); `*_db` methods convert on read — cleaner for `thd` (linear) and keeps metrics relative.
 - **Deferred (per spec §5, not in this plan):** on-device cycle-counter profiler / absolute budget gate; golden-vector regeneration framework; migrating P0's inline guards to `guards`.
 - **Known follow-up:** the `compare` ratio test is timing-based; if it proves flaky in CI, widen the tolerance or mark it `#[ignore]` for CI and keep it as a local check — it is a comparison sanity test, not a correctness gate.

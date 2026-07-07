@@ -7,9 +7,10 @@ THD, aliasing), a CPU-cost comparison harness, and reusable numeric guards +
 null tests. It systematizes the ad-hoc golden/property/null-test patterns P0 and
 P1 scattered inline.
 
-> **Status:** design proposal. Depends on P0 (merged) only via `deluge-fft`
-> (already in the workspace). Meant to be **stood up now and grown** as the
-> suites need more — this is the first cut, focused on what unblocks `Osc`.
+> **Status:** design proposal. A **standalone host test crate** — it depends on
+> no workspace crate (its FFT is the external, reference-grade `realfft`/`rustfft`,
+> deliberately *not* our own `deluge-fft`; see §2). Meant to be **stood up now and
+> grown** as the suites need more — this is the first cut, focused on `Osc`.
 
 **First-cut scope (chosen):** the suite-serving measurement toolkit. **Deferred:**
 on-device (Cortex-A9 cycle-counter) profiling and a systematic golden-vector
@@ -21,7 +22,8 @@ regeneration *framework* — see §5.
 
 **Goals**
 
-- A **spectral analyzer** built on `deluge-fft` that turns a rendered tone into
+- A **spectral analyzer** built on `realfft` (an independent, reference-grade FFT)
+  that turns a rendered tone into
   frequency-domain metrics — fundamental, harmonics, THD, and a **worst-case
   aliasing level** — so a suite can assert e.g. "band-limited saw's worst alias
   is below −60 dB."
@@ -30,8 +32,9 @@ regeneration *framework* — see §5.
 - **Numeric guards + null tests** — finite/bounded/denormal checks, `null(a,b)`,
   `rms`, `max_abs_diff` — one reviewed home for the checks P0/P1 copy-pasted.
 - **Decoupled**: operate on `&[f32]` buffers and `FnMut(&mut [f32])` renderer
-  closures; depend only on `deluge-fft` + `std`, never on `deluge-dsp-kernels`
-  or `deluge-audio-graph`, so any suite can use it without a dependency tangle.
+  closures; depend only on `realfft` + `std`, never on any workspace crate
+  (`deluge-dsp-kernels`/`deluge-audio-graph`/`deluge-fft`), so the harness stays an
+  independent oracle — it never measures with code that is itself under test.
 - **Self-validating**: the harness's own tests pin its analyzers against known
   signals.
 
@@ -56,8 +59,8 @@ It is a workspace member (built/tested on the host triple, like the other
 host-tested crates, via `--target x86_64-unknown-linux-gnu`).
 
 ```
-deluge-fft (exists, no_std) ──► deluge-dsp-test (new, std)
-                                  ├─ src/spectrum.rs   render → windowed RealFFT → metrics
+realfft / rustfft (external) ──► deluge-dsp-test (new, std)
+                                  ├─ src/spectrum.rs   render → windowed real FFT → metrics
                                   ├─ src/cpu.rs        renderer-closure timing harness
                                   ├─ src/guards.rs     finite/denormal/bounds/null helpers
                                   └─ src/lib.rs        re-exports
@@ -66,8 +69,11 @@ deluge-fft (exists, no_std) ──► deluge-dsp-test (new, std)
    and the future Osc/Fi/Mod/Ef suites' tests
 ```
 
-`Cargo.toml`: `[dependencies] deluge-fft = { path = "../deluge-fft" }`; no other
-workspace crates. Package fields inherited from `[workspace.package]`.
+`Cargo.toml`: `[dependencies] realfft = "3"` (pulls `rustfft`) — **no workspace
+crates**. Using an external, reference-grade FFT keeps the measurement harness
+independent of the code it measures (and sidesteps `deluge-fft`'s no_std/
+const-generic constraints, which don't fit a host test tool). Package fields
+inherited from `[workspace.package]`.
 
 **Interface principle:** the toolkit never names a kernel or node type. A suite
 renders its own signal (through its kernel or a built graph) into a buffer or
@@ -110,9 +116,10 @@ let spec = spectrum::analyze::<8192>(48_000.0, |b| render_saw(b, 8_000.0));
 assert!(spec.worst_alias_db(8_000.0, spec_bin_tol) < -60.0);
 ```
 
-Built on `deluge_fft::RealFft::<N, LANES>::process` + `deluge_fft::spectrum`'s
-`apply_hann_window_real` / `magnitude_spectrum`. Windowing (Hann) is applied
-before the FFT so a non-bin-centered `f0` doesn't smear into a false alias floor.
+Built on `realfft::RealFftPlanner` (real input `&[f32]` → one-sided
+`&[Complex<f32>]`), with a small in-crate periodic-Hann window applied before the
+FFT so a non-bin-centered `f0` doesn't smear into a false alias floor. `realfft`
+plans any size at runtime, so `N` is a chosen default (not a hard const-generic).
 
 ### 3.2 CPU-cost harness (`cpu`) — relative, not an absolute gate
 
@@ -184,9 +191,9 @@ Run on the host: `cargo test --target x86_64-unknown-linux-gnu -p deluge-dsp-tes
 
 ## 6. Open questions (resolved during implementation)
 
-- FFT size default (`N` = 8192 vs 4096) and the `LANES` const for `RealFft` on
-  host; the `tol_hz` convention for harmonic/alias bin matching (derived from
-  `bin_hz`).
+- FFT size default (`N` = 8192 vs 4096); whether to cache the `realfft` plan
+  across calls or plan per call (a test tool, so per-call is fine); the `tol_hz`
+  convention for harmonic/alias bin matching (derived from `bin_hz`).
 - Whether `Spectrum` stores bins in a `Vec<f32>` or a fixed `[f32; N/2+1]`
   (host `std`, so `Vec` is fine; pick the simpler ergonomics).
 - `cpu::measure` iteration/warmup counts and the regression tolerance the suites
