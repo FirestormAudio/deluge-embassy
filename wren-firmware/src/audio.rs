@@ -6,14 +6,27 @@
 //! engine. This module is the firmware-specific plumbing around it:
 //!
 //! ## Concurrency
-//! The [`Engine`] is owned solely by [`audio_task`]. `vm_task` (via the `Node`
-//! bindings → [`FwHost::audio_cmd`](crate::host::FwHost)) only enqueues [`Cmd`]s
-//! onto [`CMD_RING`]; `audio_task` drains them between render blocks. Node ids are
-//! handed out by the core's allocator so a foreign ctor can return an id
-//! immediately without touching the graph.
+//! `vm_task` (via the `Node` bindings → [`FwHost::audio_cmd`](crate::host::FwHost))
+//! only enqueues [`Cmd`]s onto [`CMD_RING`]; `audio_task` drains them between
+//! render blocks. Node ids are handed out by the core's allocator so a foreign
+//! ctor can return an id immediately without touching the graph.
+//!
+//! `ENGINE` is eager-initialized once by [`init_engine`], called from `main`
+//! before any task is spawned — so no task can ever observe it uninitialized.
+//! Every subsequent access is a freshly-derived, *scoped* `assume_init_mut`
+//! borrow: `audio_task`'s per-block closure re-derives `&mut Eng` inside the
+//! closure body (never held across the outer `.await`), and a future
+//! `upload_table` will do the same. This is sound because: (1) there is exactly
+//! one cooperative embassy executor with no preemption; (2) both accessors are
+//! synchronous (no `.await` inside either), so they run to completion without
+//! interleaving; (3) neither accessor ever holds a `&mut Eng` across a `.await`,
+//! so two overlapping borrows can never coexist; (4) `ENGINE` is written exactly
+//! once, before either accessor can run, so `assume_init_mut` never observes
+//! uninitialized memory; (5) no ISR touches `ENGINE`.
 
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
+use core::ptr::addr_of_mut;
 
 use deluge::Audio;
 use deluge_audio_graph::Engine;
@@ -25,9 +38,21 @@ type Eng = Engine<32, 64, 128, 8, 90112, 2048>; // BLOCK, NODES, OUTS, BUSES, PC
 const _: () = assert!(64 >= deluge_wren_core::WREN_MAX_NODES && 8 >= deluge_wren_core::WREN_MAX_BUSES);
 const SAMPLE_RATE: f32 = 44_100.0;
 
-// SAFETY: ENGINE is initialized once at the top of audio_task and thereafter
-// touched only by that task (single accessor).
+// SAFETY: ENGINE is written exactly once by `init_engine` (from `main`, before any
+// task is spawned/polled) and thereafter only *scoped* `assume_init_mut` borrows are
+// taken — inside `audio_task`'s synchronous per-block closure and inside
+// `upload_table`, which run on the one cooperative executor and never interleave, and
+// never hold a borrow across an `.await`. No ISR touches ENGINE. See `## Concurrency`.
 static mut ENGINE: MaybeUninit<Eng> = MaybeUninit::uninit();
+
+/// Initialize the audio engine. MUST be called once from `main` before spawning
+/// `audio_task`/`vm_task`, so no task ever observes an uninitialized `ENGINE`.
+pub fn init_engine() {
+    // SAFETY: called once from `main` before any task runs; no other accessor yet.
+    unsafe {
+        (*addr_of_mut!(ENGINE)).write(Eng::new(SAMPLE_RATE));
+    }
+}
 
 // ── Control → audio command queue ────────────────────────────────────────────
 
@@ -73,6 +98,26 @@ pub fn submit(c: Cmd) {
     CMD_RING.lock(|r| r.borrow_mut().push(c));
 }
 
+/// Build a band-limited mip pyramid from `base` into a freshly-allocated pool region
+/// of the audio engine and return its handle. Called synchronously from `vm_task`'s
+/// `Wavetable.from` foreign method (via `FwHost::upload_table`). `None` on pool
+/// exhaustion. Blocks the executor for the (sub-millisecond, IFFT) build — see the
+/// `## Concurrency` docs and the device-upload spec for why this fits the audio
+/// write-ahead lead.
+pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+    // SAFETY: ENGINE was initialized by `init_engine` in `main` before any task ran.
+    // This runs synchronously inside a Wren foreign call on the one cooperative
+    // executor; audio_task is parked at its `.await` holding no ENGINE borrow; no ISR
+    // touches ENGINE — so no two `&mut ENGINE` coexist and none crosses a yield.
+    let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
+    let h = eng.pool_alloc(deluge_wren_core::PYRAMID_LEN)?;
+    deluge_wren_core::build_pyramid_into(base, eng.pool_slice_mut(h));
+    Some(h)
+}
+
+// The firmware pool (PCAP in the `Eng` alias) must hold at least one full pyramid.
+const _: () = assert!(90112 >= deluge_wren_core::PYRAMID_LEN);
+
 // ── Render task ──────────────────────────────────────────────────────────────
 
 /// Renders the DSP graph through the SDK [`Audio`] block callback. Each block:
@@ -83,14 +128,13 @@ pub fn submit(c: Cmd) {
 /// `audio-irq` feature).
 #[embassy_executor::task]
 pub async fn audio_task(audio: Audio) {
-    // SAFETY: audio_task is the sole accessor; init happens once before use.
-    let eng: &mut Eng = unsafe {
-        let p = &mut *core::ptr::addr_of_mut!(ENGINE);
-        p.write(Eng::new(SAMPLE_RATE));
-        p.assume_init_mut()
-    };
     audio
         .process(|block: &mut [deluge::StereoFrame]| {
+            // SAFETY: ENGINE was initialized by `init_engine` in `main` before this
+            // task could be polled. This closure is synchronous (no `.await` inside),
+            // so the borrow never crosses a yield and never overlaps `upload_table`'s
+            // (cooperative executor). See `## Concurrency`.
+            let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
             // Apply all pending control-rate commands.
             while let Some(c) = CMD_RING.lock(|r| r.borrow_mut().pop()) {
                 eng.apply(c);
