@@ -10,7 +10,7 @@ pub use deluge_dsp_kernels::In;
 
 pub const MAX_INPUTS: usize = 3;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Sine,
     Saw,
