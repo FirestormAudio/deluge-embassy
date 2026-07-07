@@ -55,8 +55,10 @@ regeneration *framework* — see §5.
 ## 2. Crate structure
 
 A new crate `crates/deluge-dsp-test` — **host-only, `std`, dev-dependency only**.
-It is a workspace member (built/tested on the host triple, like the other
-host-tested crates, via `--target x86_64-unknown-linux-gnu`).
+It is **excluded from the workspace** (like `crates/deluge-sim-link` and the
+`tools/*` host tooling), since a `std` crate must not be pulled into a device
+`--workspace` build; it carries its own `Cargo.lock` and is tested via
+`--manifest-path crates/deluge-dsp-test/Cargo.toml --target x86_64-unknown-linux-gnu`.
 
 ```
 realfft / rustfft (external) ──► deluge-dsp-test (new, std)

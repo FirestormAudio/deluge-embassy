@@ -55,6 +55,7 @@ exclude = [
   "tools/wren-web-debug",
   "tools/wren-analyzer-wasm",
   "crates/deluge-sim-link",
+  "crates/deluge-dsp-test",
 ]
 resolver = "2"
 

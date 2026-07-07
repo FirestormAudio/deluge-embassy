@@ -1,0 +1,18 @@
+[package]
+name = "deluge-dsp-test"
+version = "0.1.0"
+edition = "2024"
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+homepage = "https://github.com/FirestormAudio/deluge-sdk"
+description = "Host-side DSP measurement & validation harness (spectral analysis, CPU cost, guards) for the Deluge audio suites"
+categories = ["development-tools::testing", "multimedia::audio"]
+keywords = ["dsp", "audio", "testing", "fft", "spectral"]
+
+[dependencies]
+realfft = "3"
+
+[lib]
+name = "deluge_dsp_test"
+path = "src/lib.rs"
