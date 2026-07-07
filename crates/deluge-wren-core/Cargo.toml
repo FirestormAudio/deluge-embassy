@@ -34,6 +34,7 @@ test-support = ["wren-sys-backend"]
 # surface + binding bodies) can depend on this crate with `default-features =
 # false` and pull in a different VM backend instead.
 wren-sys = { path = "../../wren-sys", optional = true }
+deluge-audio-graph = { path = "../deluge-audio-graph" }
 
 [dev-dependencies]
 deluge-wren-core = { path = ".", features = ["test-support"] }

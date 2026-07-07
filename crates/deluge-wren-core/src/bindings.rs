@@ -31,10 +31,10 @@ use core::ffi::c_char;
 #[cfg(feature = "wren-sys-backend")]
 use wren_sys::{ClassEntry, MethodEntry, Vm, WrenVM};
 
-use crate::audio;
-use crate::engine::{Input, K_ENV, K_LPF, K_MUL, K_NOISE};
+#[cfg(feature = "wren-sys-backend")]
+use crate::bindings_audio;
 use crate::host::{CV_CHANNELS, GATE_CHANNELS, host};
-use crate::slotapi::{Handle, SlotApi, WrenForeign, WrenType};
+use crate::slotapi::{Handle, SlotApi, WrenForeign};
 
 const N_CV: usize = CV_CHANNELS; // 2
 const N_GATE: usize = GATE_CHANNELS; // 4
@@ -769,165 +769,6 @@ unsafe extern "C" fn oled_show(raw: *mut WrenVM) {
     oled_show_impl(&vm);
 }
 
-// ── Audio: DSP node graph (`Node` foreign class) ─────────────────────────────
-//
-// The Wren `Node` foreign object just holds a node id into the engine
-// (`crate::audio`/`crate::engine`). Factory statics (`src_`/`env_`/…) allocate a
-// node and return a fresh `Node`; instance methods/operators mutate it via the
-// command queue. The prelude's `Osc`/`Env`/`Noise`/`Out` classes are thin
-// wrappers over these.
-
-#[derive(Clone, Copy)]
-struct NodeObj {
-    id: u32,
-}
-impl WrenForeign for NodeObj {
-    fn module_name() -> &'static str {
-        "main"
-    }
-    fn class_name() -> &'static str {
-        "Node"
-    }
-}
-
-/// Read a "number or Node" argument at `slot` into an engine [`Input`].
-fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
-    match vm.slot_type(slot) {
-        WrenType::Num => Input::Const(vm.get_f(slot) as f32),
-        WrenType::Foreign => Input::Node(unsafe { vm.foreign_mut::<NodeObj>(slot) }.id as u16),
-        _ => Input::Const(0.0),
-    }
-}
-
-/// `id` of the `Node` receiver in slot 0.
-fn self_id<S: SlotApi>(vm: &S) -> u16 {
-    unsafe { vm.foreign_mut::<NodeObj>(0) }.id as u16
-}
-
-/// Return a fresh `Node` wrapping engine node `id` in slot 0.
-unsafe fn return_node<S: SlotApi>(vm: &S, id: u16) {
-    unsafe { vm.new_foreign_in(0, NodeObj { id: id as u32 }) };
-}
-
-// Factory statics (return a Node).
-pub(crate) fn node_src_impl<S: SlotApi>(vm: &S) {
-    let kind = vm.get_f(1) as u8;
-    let freq = arg_input(vm, 2);
-    let id = audio::alloc_node(kind, freq, Input::Const(0.0));
-    unsafe { return_node(vm, id) };
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_src(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_src_impl(&vm);
-}
-
-pub(crate) fn node_env_impl<S: SlotApi>(vm: &S) {
-    let a = arg_input(vm, 1);
-    let b = arg_input(vm, 2);
-    let id = audio::alloc_node(K_ENV, a, b);
-    unsafe { return_node(vm, id) };
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_env(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_env_impl(&vm);
-}
-
-pub(crate) fn node_noise_impl<S: SlotApi>(vm: &S) {
-    let id = audio::alloc_node(K_NOISE, Input::Const(0.0), Input::Const(0.0));
-    unsafe { return_node(vm, id) };
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_noise(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_noise_impl(&vm);
-}
-
-pub(crate) fn node_binop_impl<S: SlotApi>(vm: &S) {
-    let op = vm.get_f(1) as u8; // 0=mul, 1=add, 2=sub
-    let a = arg_input(vm, 2);
-    let b = arg_input(vm, 3);
-    let id = audio::alloc_node(K_MUL + op, a, b);
-    unsafe { return_node(vm, id) };
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_binop(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_binop_impl(&vm);
-}
-
-pub(crate) fn node_lpf_impl<S: SlotApi>(vm: &S) {
-    let input = arg_input(vm, 1);
-    let cutoff = arg_input(vm, 2);
-    let id = audio::alloc_node(K_LPF, input, cutoff);
-    unsafe { return_node(vm, id) };
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_lpf(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_lpf_impl(&vm);
-}
-
-pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
-    let id = unsafe { vm.foreign_mut::<NodeObj>(1) }.id as u16;
-    audio::set_root(id);
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_patch(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_patch_impl(&vm);
-}
-
-pub(crate) fn node_reset_impl<S: SlotApi>(_vm: &S) {
-    audio::reset();
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_reset(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_reset_impl(&vm);
-}
-
-// Instance methods (self = slot 0).
-pub(crate) fn node_set_freq_impl<S: SlotApi>(vm: &S) {
-    let v = arg_input(vm, 1);
-    audio::set_input(self_id(vm), 0, v);
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_set_freq(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_set_freq_impl(&vm);
-}
-
-pub(crate) fn node_set_cutoff_impl<S: SlotApi>(vm: &S) {
-    let v = arg_input(vm, 1);
-    audio::set_input(self_id(vm), 1, v);
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_set_cutoff(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_set_cutoff_impl(&vm);
-}
-
-pub(crate) fn node_gate_impl<S: SlotApi>(vm: &S) {
-    let on = vm.get_bool(1);
-    audio::gate(self_id(vm), on);
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_gate(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_gate_impl(&vm);
-}
-
-pub(crate) fn node_trigger_impl<S: SlotApi>(vm: &S) {
-    audio::trigger(self_id(vm));
-}
-#[cfg(feature = "wren-sys-backend")]
-unsafe extern "C" fn node_trigger(raw: *mut WrenVM) {
-    let vm = Vm(raw);
-    node_trigger_impl(&vm);
-}
-
 // ── Backend-agnostic binding enumeration ─────────────────────────────────────
 
 /// The single source of truth for *which* generic binding bodies exist and how
@@ -981,17 +822,7 @@ pub fn register_foreign<S: SlotApi>(
     method("main", "Oled", true, "pixel(_,_,_)", oled_pixel_impl::<S>);
     method("main", "Oled", true, "show()", oled_show_impl::<S>);
     // Audio: Node factories (static) + instance methods.
-    method("main", "Node", true, "src_(_,_)", node_src_impl::<S>);
-    method("main", "Node", true, "env_(_,_)", node_env_impl::<S>);
-    method("main", "Node", true, "noise_()", node_noise_impl::<S>);
-    method("main", "Node", true, "binop_(_,_,_)", node_binop_impl::<S>);
-    method("main", "Node", true, "lpf_(_,_)", node_lpf_impl::<S>);
-    method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
-    method("main", "Node", true, "reset_()", node_reset_impl::<S>);
-    method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
-    method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
-    method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
-    method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
+    crate::bindings_audio::register_audio(&mut method);
 }
 
 // ── Registry tables ──────────────────────────────────────────────────────────
@@ -1037,17 +868,17 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Oled", "pixel(_,_,_)", oled_pixel),
     static_method("Oled", "show()", oled_show),
     // Audio: Node factories (static) + instance methods
-    static_method("Node", "src_(_,_)", node_src),
-    static_method("Node", "env_(_,_)", node_env),
-    static_method("Node", "noise_()", node_noise),
-    static_method("Node", "binop_(_,_,_)", node_binop),
-    static_method("Node", "lpf_(_,_)", node_lpf),
-    static_method("Node", "patch_(_)", node_patch),
-    static_method("Node", "reset_()", node_reset),
-    method("Node", "freq=(_)", node_set_freq),
-    method("Node", "cutoff=(_)", node_set_cutoff),
-    method("Node", "gate(_)", node_gate),
-    method("Node", "trigger()", node_trigger),
+    static_method("Node", "src_(_,_)", bindings_audio::node_src),
+    static_method("Node", "env_(_,_)", bindings_audio::node_env),
+    static_method("Node", "noise_()", bindings_audio::node_noise),
+    static_method("Node", "binop_(_,_,_)", bindings_audio::node_binop),
+    static_method("Node", "lpf_(_,_)", bindings_audio::node_lpf),
+    static_method("Node", "patch_(_)", bindings_audio::node_patch),
+    static_method("Node", "reset_()", bindings_audio::node_reset),
+    method("Node", "freq=(_)", bindings_audio::node_set_freq),
+    method("Node", "cutoff=(_)", bindings_audio::node_set_cutoff),
+    method("Node", "gate(_)", bindings_audio::node_gate),
+    method("Node", "trigger()", bindings_audio::node_trigger),
 ];
 
 /// Terse instance-`MethodEntry` constructor for the `main` module.
@@ -1121,5 +952,5 @@ pub fn reset() {
     // SAFETY: VM thread is the sole accessor.
     unsafe { CALL_HANDLE = Handle(core::ptr::null_mut()) };
 
-    crate::audio::reset_ids();
+    crate::audio::reset();
 }
