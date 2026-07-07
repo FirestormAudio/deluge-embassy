@@ -1,0 +1,11 @@
+[package]
+name = "mipgen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+deluge-fft = { path = "../deluge-fft" }
+libm = "0.2"
+
+[dev-dependencies]
+deluge-dsp-test = { path = "../deluge-dsp-test" }

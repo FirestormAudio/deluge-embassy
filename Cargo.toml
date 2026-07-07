@@ -10,6 +10,7 @@ members = [
   "crates/deluge-dsp-kernels",
   "crates/deluge-audio-graph",
   "crates/deluge-fft",
+  "crates/mipgen",
   "app-loader",
   "crates/deluge-sdk",
   "crates/deluge-image",
