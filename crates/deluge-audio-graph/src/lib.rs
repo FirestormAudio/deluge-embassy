@@ -7,12 +7,14 @@
 #![no_std]
 
 pub mod arena;
+pub mod engine;
 pub mod frame;
 pub mod ids;
 pub mod node;
 pub mod pool;
 
 pub use arena::Arena;
+pub use engine::Engine;
 pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId};
 pub use node::{In, Kind, Node};
