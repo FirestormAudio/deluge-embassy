@@ -282,7 +282,7 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
 
 /// Block size / node / output-port / bus capacities for [`run_and_render`]'s
 /// engine — generous enough for the small golden scripts this helper runs.
-type TestEng = Engine<32, 64, 128, 8>;
+type TestEng = Engine<32, 64, 128, 8, 90112, 2048>;
 
 /// A host that applies every audio command to a real [`deluge_audio_graph::Engine`],
 /// so a script's rendered audio (not just its emitted `Cmd`s) can be asserted on.

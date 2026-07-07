@@ -35,7 +35,7 @@ mod tests {
     use crate::node::Kind;
     use crate::{BusId, Input, NodeId, StereoFrame};
 
-    type E = Engine<16, 8, 8, 4>;
+    type E = Engine<16, 8, 8, 4, 45056, 2048>;
 
     fn saw_patch(e: &mut E) {
         e.apply(Cmd::NewNode {

@@ -25,6 +25,8 @@ pub struct Engine<
     const NODES: usize,
     const OUTS: usize,
     const BUSES: usize,
+    const PCAP: usize,
+    const PCHUNK: usize,
 > {
     arena: Arena<NODES, OUTS>,
     outs: UnsafeCell<[[f32; BLOCK]; OUTS]>,
@@ -37,10 +39,17 @@ pub struct Engine<
     // table yet — see spec §3.5 / bus.rs).
     writes: [Option<(Input, BusId)>; NODES],
     writes_len: usize,
+    pool: crate::pool::Pool<PCAP, PCHUNK>,
 }
 
-impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usize>
-    Engine<BLOCK, NODES, OUTS, BUSES>
+impl<
+    const BLOCK: usize,
+    const NODES: usize,
+    const OUTS: usize,
+    const BUSES: usize,
+    const PCAP: usize,
+    const PCHUNK: usize,
+> Engine<BLOCK, NODES, OUTS, BUSES, PCAP, PCHUNK>
 {
     pub fn new(sample_rate: f32) -> Self {
         assert!(BLOCK <= MAX_BLOCK, "BLOCK exceeds MAX_BLOCK");
@@ -53,7 +62,21 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
             root: None,
             writes: [None; NODES],
             writes_len: 0,
+            pool: crate::pool::Pool::new(),
         }
+    }
+
+    pub fn pool_alloc(&mut self, len: usize) -> Option<crate::pool::PoolHandle> {
+        self.pool.alloc(len)
+    }
+    pub fn pool_free(&mut self, h: crate::pool::PoolHandle) {
+        self.pool.free(h)
+    }
+    pub fn pool_slice(&self, h: crate::pool::PoolHandle) -> &[f32] {
+        self.pool.slice(h)
+    }
+    pub fn pool_slice_mut(&mut self, h: crate::pool::PoolHandle) -> &mut [f32] {
+        self.pool.slice_mut(h)
     }
 
     pub fn create(&mut self, id: NodeId, kind: crate::node::Kind) -> bool {
@@ -255,7 +278,7 @@ mod tests {
     use crate::node::{Kind, TableSrc};
     use crate::{Cmd, Input, NodeId};
 
-    type E = Engine<16, 8, 8, 4>;
+    type E = Engine<16, 8, 8, 4, 45056, 2048>;
 
     #[test]
     fn single_saw_node_renders() {
@@ -426,6 +449,17 @@ mod tests {
                 .any(|(a, b)| (a - b).abs() > epsilon),
             "feedback=0 and feedback=0.8 outputs must differ"
         );
+    }
+
+    #[test]
+    fn engine_pool_alloc_fill_read_free() {
+        let mut e = E::new(48_000.0);
+        let h = e.pool_alloc(16).expect("alloc");
+        e.pool_slice_mut(h).fill(0.25);
+        assert!(e.pool_slice(h).iter().all(|&x| x == 0.25));
+        e.pool_free(h);
+        // After free, a full-capacity alloc succeeds (region reclaimed).
+        assert!(e.pool_alloc(16).is_some());
     }
 
     #[test]
