@@ -1,5 +1,6 @@
 #![cfg(feature = "test-support")]
 use deluge_audio_graph::StereoFrame;
+use deluge_audio_graph::node::TableSrc;
 use deluge_wren_core::test_support::{run_and_capture_cmds, run_and_render};
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
@@ -169,4 +170,22 @@ fn osc_feedback_emits_setparam() {
     assert!(cmds.iter().any(|c| *c == Cmd::SetParam {
         node: NodeId(0), param: 0, value: 0.8
     }));
+}
+
+#[test]
+fn osc_wavetable_emits_newnode_and_bindtable() {
+    let cmds = run_and_capture_cmds("var s = Osc.wavetable(WT.Saw, 220)");
+    assert!(cmds.iter().any(|c| matches!(c,
+        Cmd::NewNode { node: NodeId(0), kind: Kind::Wavetable, .. })));
+    assert!(cmds.iter().any(|c| matches!(c,
+        Cmd::BindTable { node: NodeId(0), src: TableSrc::Static(id) } if id.0 == 0)));
+    // WT.Saw == id 0 — Saw is index 0 in the generated `TABLES` (Task 3).
+}
+
+#[test]
+fn osc_wavetable_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Osc.wavetable(WT.Saw, 220))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0));
 }

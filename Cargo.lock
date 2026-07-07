@@ -1529,6 +1529,7 @@ name = "deluge-wren-core"
 version = "0.1.0"
 dependencies = [
  "deluge-audio-graph",
+ "deluge-dsp-kernels",
  "deluge-wren-core",
  "wren-sys",
 ]

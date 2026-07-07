@@ -35,6 +35,10 @@ test-support = ["wren-sys-backend"]
 # false` and pull in a different VM backend instead.
 wren-sys = { path = "../../wren-sys", optional = true }
 deluge-audio-graph = { path = "../deluge-audio-graph" }
+# Needed directly (not just transitively via deluge-audio-graph) so this crate
+# and its integration tests can name `deluge_dsp_kernels::wavetable::TableId`
+# when building a `TableSrc::Static` for `Cmd::BindTable` (Task 5).
+deluge-dsp-kernels = { path = "../deluge-dsp-kernels" }
 
 [dev-dependencies]
 deluge-wren-core = { path = ".", features = ["test-support"] }
