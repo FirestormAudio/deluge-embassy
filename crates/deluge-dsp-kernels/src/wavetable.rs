@@ -6,6 +6,64 @@
 use crate::{floorf, In};
 
 const N: usize = 2048; // must equal mipgen::N
+/// Number of mip levels in a pyramid; must equal `mipgen::LEVELS`. Defined
+/// locally (rather than re-exported from `mipgen`, a dev-only dependency) so
+/// the layout below is self-contained for non-test builds.
+pub const LEVELS: usize = 11;
+
+pub const N_MIN: usize = 32;
+/// Measured in Step 6 (compact-mipgen QA, see git log): six named bases
+/// (saw/square/sine/tri/organ/formant, `2t-1` / `±1`@0.5 / `sin2πt` /
+/// `1-4|t-0.5|` / `sin+0.5sin3+0.25sin5` / `sin·(1+cos)`) rendered at 5 kHz
+/// through `WtOsc`, `worst_alias_db` vs the `< -21 dB` gate:
+///
+///   table    | F=1        | F=2
+///   ---------|------------|------------
+///   saw      | -25.67 dB  | -25.67 dB
+///   square   | -25.67 dB  | -25.67 dB
+///   sine     | -41.12 dB  | -41.12 dB
+///   tri      | -39.65 dB  | -39.65 dB
+///   organ    | -23.73 dB  | -23.73 dB  (worst of six, both F)
+///   formant  | -41.12 dB  | -41.12 dB
+///
+/// F=1 and F=2 are numerically identical here: at 5 kHz the crossfaded
+/// levels (7/8) already sit at `N_MIN` under both factors (their critical
+/// length `N>>level` is ≤16, so `OS_FACTOR∈{1,2}` both clamp to 32), so
+/// doubling `OS_FACTOR` changes zero bytes actually read at this frequency.
+/// F=1 already clears the -21 dB gate by 2.3 dB (organ, the worst case) —
+/// chosen over F=2 for the 5.5x storage win (`COMPACT_LEN`=4192 vs 6208,
+/// both vs the flat `N*LEVELS`=22528), per the brief's "prefer F=1 if it
+/// holds" rule. Do not weaken this gate to relax OS_FACTOR further.
+pub const OS_FACTOR: usize = 1;
+
+/// Samples stored for mip level `L`. Level L carries `(N/2)>>L` harmonics, needing
+/// `N>>L` critical samples; oversample by `OS_FACTOR`, clamp to `[N_MIN, N]`.
+/// (`N>>L` and `OS_FACTOR∈{1,2}` are powers of two, so no rounding needed.)
+pub const fn level_len(level: usize) -> usize {
+    let crit = N >> level; // = 2*max_harmonic(level)
+    let mut m = crit.saturating_mul(OS_FACTOR);
+    if m > N {
+        m = N;
+    }
+    if m < N_MIN {
+        m = N_MIN;
+    }
+    m
+}
+
+/// f32 offset of level `L` in a flat compact pyramid (prefix sum of level_len).
+pub const fn level_offset(level: usize) -> usize {
+    let mut off = 0;
+    let mut l = 0;
+    while l < level {
+        off += level_len(l);
+        l += 1;
+    }
+    off
+}
+
+/// Total f32 in one compact pyramid.
+pub const COMPACT_LEN: usize = level_offset(LEVELS);
 
 /// Borrowed view of a mip pyramid: `levels[0]` = fullest band, each higher level
 /// halves the harmonic count. Every level slice has length `N`.
@@ -249,6 +307,37 @@ mod tests {
                 .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
             assert!(wa < -21.0, "table {id}: worst_alias {wa} dB");
         }
+    }
+
+    #[test]
+    fn layout_invariants() {
+        assert_eq!(level_len(0), N);
+        for l in 0..LEVELS { assert!(level_len(l).is_power_of_two() && level_len(l) >= N_MIN); }
+        for l in 1..LEVELS { assert!(level_len(l) <= level_len(l - 1)); }
+        let mut sum = 0;
+        for l in 0..LEVELS { assert_eq!(level_offset(l), sum); sum += level_len(l); }
+        assert_eq!(COMPACT_LEN, sum);
+        assert_eq!(COMPACT_LEN, level_offset(LEVELS));
+    }
+
+    fn compact_levels(region: &[f32]) -> [&[f32]; LEVELS] {
+        core::array::from_fn(|l| &region[level_offset(l)..level_offset(l) + level_len(l)])
+    }
+
+    #[test]
+    fn compact_saw_is_band_limited() {
+        let mut base = [0.0f32; N];
+        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        let mut region = [0.0f32; COMPACT_LEN];
+        mipgen::build_pyramid_flat_compact(&base, &mut region);
+        let levels = compact_levels(&region);
+        let sr = 48_000.0f32;
+        let mut osc = WtOsc::new();
+        let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+        osc.process(MipSet { levels: &levels }, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+        let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
+            .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+        assert!(wa < -21.0, "compact saw worst_alias {wa} dB");
     }
 
     proptest::proptest! {

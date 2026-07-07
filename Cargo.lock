@@ -3384,6 +3384,7 @@ dependencies = [
 name = "mipgen"
 version = "0.1.0"
 dependencies = [
+ "deluge-dsp-kernels",
  "deluge-dsp-test",
  "deluge-fft",
  "libm",

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 deluge-fft = { path = "../deluge-fft" }
+deluge-dsp-kernels = { path = "../deluge-dsp-kernels" }
 libm = "0.2"
 
 [dev-dependencies]
