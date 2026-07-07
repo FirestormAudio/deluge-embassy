@@ -52,7 +52,7 @@ mod tests {
         saw_patch(&mut e);
         let mut out = [StereoFrame::default(); 16];
         e.render(&mut out);
-        assert!((out[1].l - (-0.5)).abs() < 1e-6); // saw at phase .25
+        assert!((out[1].l - (-0.41666675)).abs() < 1e-6); // saw at phase .25 (band-limited)
     }
 
     #[test]
@@ -136,16 +136,17 @@ mod tests {
         let mut out = [StereoFrame::default(); 8];
         e.render(&mut out);
 
-        // Pinned on 2026-07-06 against this exact patch topology at 48kHz.
+        // CHARACTERIZATION golden re-pinned 2026-07-07 after Osc band-limiting (Tasks 1-3).
+        // Regenerate only on an intended, reviewed output change.
         const EXPECTED: [f32; 8] = [
-            -0.000_218_166_17,
-            -0.000_826_899_37,
-            -0.001_764_740_6,
-            -0.002_978_811_3,
-            -0.004_423_692_4,
-            -0.006_060_439_6,
-            -0.007_855_726,
-            -0.009_781_095,
+            0.0,
+            -0.000_399_898_62,
+            -0.001_191_312_4,
+            -0.002_294_306_4,
+            -0.003_657_662_3,
+            -0.005_237_465_3,
+            -0.006_996_135,
+            -0.008_901_581,
         ];
         let actual: [f32; 8] = core::array::from_fn(|i| out[i].l);
         for (i, (a, e)) in actual.iter().zip(EXPECTED.iter()).enumerate() {
