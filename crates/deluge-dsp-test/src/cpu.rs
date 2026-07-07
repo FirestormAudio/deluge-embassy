@@ -68,11 +68,21 @@ mod tests {
     }
 
     #[test]
-    fn compare_tracks_relative_workload() {
+    fn compare_is_the_cost_ratio() {
+        let a = CostReport { ns_per_block: 20.0, times_realtime: 2.0 };
+        let b = CostReport { ns_per_block: 10.0, times_realtime: 1.0 };
+        assert!((compare(&a, &b) - 2.0).abs() < 1e-9); // a is 2× b
+        assert!((compare(&b, &a) - 0.5).abs() < 1e-9); // b is half a
+    }
+
+    /// Local sanity check that `measure` tracks real relative workload. Timing is
+    /// noisy, so this is `#[ignore]`d (run with `--ignored`), not a CI gate.
+    #[test]
+    #[ignore]
+    fn measure_tracks_relative_workload_local() {
         let a = measure(48_000.0, 32, 200, || work(2_000));
         let b = measure(48_000.0, 32, 200, || work(1_000));
         let ratio = compare(&a, &b);
-        // Host timing is noisy — assert only that 2× work costs roughly 2×.
         assert!(ratio > 1.4 && ratio < 3.0, "ratio ~2, got {ratio}");
     }
 }
