@@ -52,6 +52,34 @@ impl Default for Osc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// P0 gate (spec §8): for any wave/freq in the audio range, every
+        /// sample of a rendered block is finite and stays within the
+        /// oscillator's nominal [-1, 1] range (with slack for fast_sin's
+        /// small overshoot).
+        #[test]
+        fn osc_output_is_finite_and_bounded(
+            wave_idx in 0u8..4,
+            freq in 0.0f32..=20_000.0,
+        ) {
+            let wave = match wave_idx {
+                0 => Wave::Sine,
+                1 => Wave::Saw,
+                2 => Wave::Square,
+                _ => Wave::Tri,
+            };
+            let mut osc = Osc::new();
+            let mut out = [0.0f32; 64];
+            let dt = 1.0 / 48_000.0;
+            osc.process(wave, In::K(freq), dt, &mut out);
+            for s in out {
+                prop_assert!(s.is_finite());
+                prop_assert!(s >= -1.001 && s <= 1.001);
+            }
+        }
+    }
 
     #[test]
     fn saw_ramps_from_minus_one_over_one_cycle() {

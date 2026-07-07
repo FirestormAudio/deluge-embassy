@@ -109,4 +109,51 @@ mod tests {
         assert!(out[0].l.abs() < 1e-3);
         assert!(out.iter().all(|f| f.l.abs() <= 1.0 && f.l.is_finite()));
     }
+
+    /// CHARACTERIZATION golden (spec §8 P0 testing gate): pins the first 8
+    /// rendered samples of the deterministic saw→lpf→env patch (same topology
+    /// as `saw_lpf_env_parity_first_samples`) as literal constants. This test
+    /// exists to catch *unintended* drift: if a future kernel refactor
+    /// silently changes the numeric output of the oscillator, filter, or
+    /// envelope, this test fails. Regenerating the pinned constants below is
+    /// the correct response ONLY when the output change is intended and has
+    /// been reviewed — do not "fix" a failure here by blindly re-pinning.
+    #[test]
+    fn golden_saw_lpf_env_first_block() {
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::NewNode { node: NodeId(0), kind: Kind::Saw,
+            args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)] });
+        e.apply(Cmd::NewNode { node: NodeId(1), kind: Kind::Lpf,
+            args: [Input::Node { node: NodeId(0), port: 0 }, Input::Const(800.0), Input::Const(0.0)] });
+        e.apply(Cmd::NewNode { node: NodeId(2), kind: Kind::Env,
+            args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)] });
+        e.apply(Cmd::Gate { node: NodeId(2), on: true });
+        e.apply(Cmd::NewNode { node: NodeId(3), kind: Kind::Mul,
+            args: [Input::Node { node: NodeId(1), port: 0 }, Input::Node { node: NodeId(2), port: 0 }, Input::Const(0.0)] });
+        e.apply(Cmd::BusWrite { src: Input::Node { node: NodeId(3), port: 0 }, bus: BusId(0) });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+        let mut out = [StereoFrame::default(); 8];
+        e.render(&mut out);
+
+        // Pinned on 2026-07-06 against this exact patch topology at 48kHz.
+        const EXPECTED: [f32; 8] = [
+            -0.000_218_166_17,
+            -0.000_826_899_37,
+            -0.001_764_740_6,
+            -0.002_978_811_3,
+            -0.004_423_692_4,
+            -0.006_060_439_6,
+            -0.007_855_726,
+            -0.009_781_095,
+        ];
+        let actual: [f32; 8] = core::array::from_fn(|i| out[i].l);
+        for (i, (a, e)) in actual.iter().zip(EXPECTED.iter()).enumerate() {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "sample {i}: actual {a} vs pinned {e} (diff {})",
+                (a - e).abs()
+            );
+        }
+    }
 }

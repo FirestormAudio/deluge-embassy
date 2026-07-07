@@ -35,6 +35,28 @@ impl Default for OnePole {
 mod tests {
     use super::*;
     use crate::In;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// P0 gate (spec §8): a stable one-pole never overshoots a bounded,
+        /// constant input's range. For any cutoff and constant input in
+        /// [-1, 1], every output sample over a block is finite and stays
+        /// within [-1.001, 1.001].
+        #[test]
+        fn onepole_output_is_finite_and_bounded(
+            cutoff in 1.0f32..=20_000.0,
+            x in -1.0f32..=1.0,
+        ) {
+            let mut f = OnePole::new();
+            let mut out = [0.0f32; 128];
+            let dt = 1.0 / 48_000.0;
+            f.process(In::K(x), In::K(cutoff), dt, &mut out);
+            for s in out {
+                prop_assert!(s.is_finite());
+                prop_assert!(s >= -1.001 && s <= 1.001);
+            }
+        }
+    }
 
     #[test]
     fn onepole_lowpass_attenuates_a_step_toward_it() {

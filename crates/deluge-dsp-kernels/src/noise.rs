@@ -28,6 +28,22 @@ impl Noise {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// P0 gate (spec §8): for any nonzero seed, every sample of a
+        /// rendered block is finite and stays within [-1, 1].
+        #[test]
+        fn noise_output_is_finite_and_bounded(seed in 1u32..=u32::MAX) {
+            let mut nz = Noise::seeded(seed);
+            let mut out = [0.0f32; 64];
+            nz.process(&mut out);
+            for s in out {
+                prop_assert!(s.is_finite());
+                prop_assert!(s >= -1.0 && s <= 1.0);
+            }
+        }
+    }
 
     #[test]
     fn noise_is_bounded_and_deterministic_per_seed() {

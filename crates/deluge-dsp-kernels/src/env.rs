@@ -80,6 +80,30 @@ impl Default for Ar {
 mod tests {
     use super::*;
     use crate::In;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// P0 gate (spec §8): after `gate(true)`, for any attack/release
+        /// time constants, every sample of a rendered block is finite and
+        /// stays within [0, 1.0001] (the envelope's level is clamped to
+        /// [0, 1] each sample; the tiny slack covers the sustain branch's
+        /// exact-1.0 assignment and float rounding).
+        #[test]
+        fn ar_output_is_finite_and_bounded(
+            attack in 0.0001f32..=2.0,
+            release in 0.0001f32..=2.0,
+        ) {
+            let mut env = Ar::new();
+            env.gate(true);
+            let mut out = [0.0f32; 64];
+            let dt = 1.0 / 48_000.0;
+            env.process(In::K(attack), In::K(release), dt, &mut out);
+            for s in out {
+                prop_assert!(s.is_finite());
+                prop_assert!(s >= 0.0 && s <= 1.0001);
+            }
+        }
+    }
 
     #[test]
     fn ar_rises_on_gate_and_falls_on_release() {
