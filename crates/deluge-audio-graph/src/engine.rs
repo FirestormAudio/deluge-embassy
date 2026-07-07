@@ -87,7 +87,11 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
                     }
                 }
             }
-            Cmd::SetParam { .. } => { /* no configurable params in the P0 kinds */ }
+            Cmd::SetParam { node, param, value } => {
+                if let Some(n) = self.arena.node_mut(node) {
+                    n.set_param(param, value);
+                }
+            }
             Cmd::Gate { node, on } => {
                 if let Some(n) = self.arena.node_mut(node) {
                     n.gate(on);
@@ -244,7 +248,7 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
 mod tests {
     use super::*;
     use crate::node::Kind;
-    use crate::{Input, NodeId};
+    use crate::{Cmd, Input, NodeId};
 
     type E = Engine<16, 8, 8, 4>;
 
@@ -377,5 +381,45 @@ mod tests {
         e2.render_block(); // must not panic
         let consumer_out = e2.node_output(NodeId(1), 0);
         assert!(consumer_out.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn setparam_feedback_renders_bounded() {
+        // Render the same sine oscillator config TWICE: once with feedback=0
+        // (no SetParam call), once with feedback=0.8 (via Cmd::SetParam).
+        // Assert the two outputs DIFFER, proving feedback modulation actually
+        // changed the signal. Keep existing finite/bounded checks on feedback=0.8.
+
+        // ── Render with feedback=0 (no SetParam) ──
+        let mut e0 = E::new(48_000.0);
+        e0.create(NodeId(0), Kind::Sine);
+        *e0.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(2_000.0);
+        // No SetParam call → default feedback=0
+        e0.render_block();
+        let out_no_feedback = e0.node_output(NodeId(0), 0).to_vec();
+
+        // ── Render with feedback=0.8 (via Cmd::SetParam) ──
+        let mut e1 = E::new(48_000.0);
+        e1.create(NodeId(0), Kind::Sine);
+        *e1.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(2_000.0);
+        e1.apply(Cmd::SetParam { node: NodeId(0), param: 0, value: 0.8 });
+        e1.render_block();
+        let out_with_feedback = e1.node_output(NodeId(0), 0);
+
+        // ── Assert feedback=0.8 output is finite and bounded ──
+        assert!(out_with_feedback.iter().all(|s| s.is_finite() && s.abs() <= 4.0));
+        assert!(out_with_feedback.iter().any(|&s| s != 0.0)); // feedback sine still oscillates
+
+        // ── Assert the two outputs DIFFER (feedback changed the waveform) ──
+        // A sine with feedback=0.8 must visibly differ from feedback=0.
+        // We check that at least one sample differs beyond a small epsilon.
+        let epsilon = 1e-5;
+        assert!(
+            out_no_feedback
+                .iter()
+                .zip(out_with_feedback.iter())
+                .any(|(a, b)| (a - b).abs() > epsilon),
+            "feedback=0 and feedback=0.8 outputs must differ"
+        );
     }
 }
