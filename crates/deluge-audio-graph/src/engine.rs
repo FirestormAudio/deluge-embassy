@@ -520,6 +520,8 @@ mod tests {
         assert!(out.iter().any(|&s| s != 0.0));
         // Free the node → pool region reclaimed.
         e.apply(Cmd::Free { node: NodeId(0) });
-        assert!(e.pool_alloc(n * mipgen::LEVELS).is_some());
+        // First-fit: a genuine free lets the next same-size alloc reclaim the exact
+        // region → same handle. This fails if Cmd::Free didn't actually pool.free(h).
+        assert_eq!(e.pool_alloc(n * mipgen::LEVELS), Some(h));
     }
 }
