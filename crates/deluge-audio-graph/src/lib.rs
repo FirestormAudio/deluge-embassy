@@ -8,6 +8,7 @@
 
 pub mod arena;
 pub mod bus;
+pub mod cmd;
 pub mod engine;
 pub mod frame;
 pub mod ids;
@@ -15,6 +16,7 @@ pub mod node;
 pub mod pool;
 
 pub use arena::Arena;
+pub use cmd::{Cmd, Host};
 pub use engine::Engine;
 pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId};

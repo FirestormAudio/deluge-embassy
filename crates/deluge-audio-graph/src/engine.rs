@@ -60,6 +60,51 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
         self.arena.node_mut(id)?.input_mut(port)
     }
 
+    /// Apply one control-rate `Cmd`, mutating the arena/engine state it names.
+    pub fn apply(&mut self, cmd: crate::cmd::Cmd) {
+        use crate::cmd::Cmd;
+        match cmd {
+            Cmd::Nop => {}
+            Cmd::NewNode { node, kind, args } => {
+                if self.arena.create(node, kind) {
+                    if let Some(n) = self.arena.node_mut(node) {
+                        for p in 0..crate::cmd::MAX_ARGS {
+                            if let Some(slot) = n.input_mut(p as u8) {
+                                *slot = args[p];
+                            }
+                        }
+                    }
+                }
+            }
+            Cmd::SetInput { node, port, src } => {
+                if let Some(n) = self.arena.node_mut(node) {
+                    if let Some(slot) = n.input_mut(port) {
+                        *slot = src;
+                    }
+                }
+            }
+            Cmd::SetParam { .. } => { /* no configurable params in the P0 kinds */ }
+            Cmd::Gate { node, on } => {
+                if let Some(n) = self.arena.node_mut(node) {
+                    n.gate(on);
+                }
+            }
+            Cmd::Trigger { node } => {
+                if let Some(n) = self.arena.node_mut(node) {
+                    n.trigger();
+                }
+            }
+            Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
+            Cmd::SetRoot { bus } => self.set_root(bus),
+            Cmd::Free { node } => self.arena.free(node),
+            Cmd::Reset => {
+                self.arena.reset();
+                self.writes_len = 0;
+                self.root = None;
+            }
+        }
+    }
+
     /// Evaluate every live node in eval order into the output arena.
     pub fn render_block(&mut self) {
         // Snapshot eval order so we don't borrow the arena across the loop.
