@@ -114,10 +114,22 @@ foreign class Node {
   foreign static lpf_(input, cutoff)
   foreign static patch_(node)
   foreign static reset_()
+  foreign static split_(input)
   foreign freq=(v)
   foreign cutoff=(v)
   foreign gate(on)
   foreign trigger()
+  foreign out(p)
+  *(o) { Node.binop_(0, this, o) }
+  +(o) { Node.binop_(1, this, o) }
+  -(o) { Node.binop_(2, this, o) }
+  lpf(cutoff) { Node.lpf_(this, cutoff) }
+}
+
+// A multi-output port: `node.out(p)` returns a handle to output port `p` of
+// a multi-output node (e.g. `Split`), usable anywhere a Node/number is
+// (including as the left operand of the arithmetic operators below).
+foreign class Port {
   *(o) { Node.binop_(0, this, o) }
   +(o) { Node.binop_(1, this, o) }
   -(o) { Node.binop_(2, this, o) }
@@ -137,6 +149,12 @@ class Env {
 
 class Noise {
   static new() { Node.noise_() }
+}
+
+// A width-2 test node: routes its input to both output ports 0 and 1.
+//   var s = Split.new(osc); s.out(0); s.out(1)
+class Split {
+  static new(input) { Node.split_(input) }
 }
 
 class Out {

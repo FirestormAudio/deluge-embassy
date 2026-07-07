@@ -55,3 +55,17 @@ fn reset_emits_reset() {
     let cmds = run_and_capture_cmds("Out.reset()");
     assert_eq!(cmds, vec![Cmd::Reset]);
 }
+
+#[test]
+fn out_port_resolves_to_that_port() {
+    // Split.new(Osc.saw(110)); consumer reads .out(1)
+    let cmds = run_and_capture_cmds(
+        "var s = Split.new(Osc.saw(110))\n\
+         var c = s.out(1) * 2",
+    );
+    // node0 saw, node1 split2(node0), node2 mul(node1.port1, 2)
+    assert!(cmds.iter().any(|c| *c == Cmd::NewNode {
+        node: NodeId(2), kind: Kind::Mul,
+        args: [Input::Node { node: NodeId(1), port: 1 }, Input::Const(2.0), Input::Const(0.0)],
+    }));
+}

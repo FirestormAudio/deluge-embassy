@@ -875,10 +875,12 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "lpf_(_,_)", bindings_audio::node_lpf),
     static_method("Node", "patch_(_)", bindings_audio::node_patch),
     static_method("Node", "reset_()", bindings_audio::node_reset),
+    static_method("Node", "split_(_)", bindings_audio::node_split),
     method("Node", "freq=(_)", bindings_audio::node_set_freq),
     method("Node", "cutoff=(_)", bindings_audio::node_set_cutoff),
     method("Node", "gate(_)", bindings_audio::node_gate),
     method("Node", "trigger()", bindings_audio::node_trigger),
+    method("Node", "out(_)", bindings_audio::node_out),
 ];
 
 /// Terse instance-`MethodEntry` constructor for the `main` module.

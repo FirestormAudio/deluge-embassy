@@ -15,9 +15,8 @@ use crate::slotapi::{SlotApi, WrenForeign, WrenType};
 // `arg_input` can discriminate a Node/Port/Bus argument by reading that byte —
 // no VM class query, no `SlotApi` change. `Port`/`Bus` land in later tasks.
 pub(crate) const TAG_NODE: u8 = 0;
-#[allow(dead_code)] // read by Tasks 4/5's Port/Bus arg_input arms, not yet added
 pub(crate) const TAG_PORT: u8 = 1;
-#[allow(dead_code)] // read by Tasks 4/5's Port/Bus arg_input arms, not yet added
+#[allow(dead_code)] // read by Task 5's Bus arg_input arm, not yet added
 pub(crate) const TAG_BUS: u8 = 2;
 
 #[repr(C)]
@@ -32,6 +31,22 @@ impl WrenForeign for NodeObj {
     }
     fn class_name() -> &'static str {
         "Node"
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct PortObj {
+    pub tag: u8,
+    pub node: u16,
+    pub port: u8,
+}
+impl WrenForeign for PortObj {
+    fn module_name() -> &'static str {
+        "main"
+    }
+    fn class_name() -> &'static str {
+        "Port"
     }
 }
 
@@ -64,7 +79,11 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
             // objects; the tag is at offset 0 under `repr(C)`.
             let tag = unsafe { *vm.foreign_mut::<u8>(slot) };
             match tag {
-                // Port / Bus arms are inserted here in Tasks 4 / 5.
+                TAG_PORT => {
+                    let p = unsafe { vm.foreign_mut::<PortObj>(slot) };
+                    Input::Node { node: NodeId(p.node), port: p.port }
+                }
+                // Bus arm is inserted here in Task 5.
                 _ => {
                     let id = unsafe { vm.foreign_mut::<NodeObj>(slot) }.id;
                     Input::Node { node: NodeId(id), port: 0 }
@@ -148,6 +167,18 @@ pub(crate) unsafe extern "C" fn node_lpf(raw: *mut WrenVM) {
     node_lpf_impl(&vm);
 }
 
+pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Split2, [input, Input::Const(0.0), Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_split(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_split_impl(&vm);
+}
+
 // ── Out (patch / reset) — master-bus sugar ───────────────────────────────────
 
 pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
@@ -212,6 +243,17 @@ pub(crate) unsafe extern "C" fn node_trigger(raw: *mut WrenVM) {
     node_trigger_impl(&vm);
 }
 
+pub(crate) fn node_out_impl<S: SlotApi>(vm: &S) {
+    let node = self_id(vm);
+    let port = vm.get_f(1) as u8;
+    unsafe { vm.new_foreign_in(0, PortObj { tag: TAG_PORT, node, port }) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_out(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_out_impl(&vm);
+}
+
 /// Register the audio surface into a caller-provided method/class registrar
 /// (called from `bindings::register_foreign`).
 pub(crate) fn register_audio<S: SlotApi>(
@@ -224,8 +266,10 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "lpf_(_,_)", node_lpf_impl::<S>);
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
     method("main", "Node", true, "reset_()", node_reset_impl::<S>);
+    method("main", "Node", true, "split_(_)", node_split_impl::<S>);
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
     method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
     method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
+    method("main", "Node", false, "out(_)", node_out_impl::<S>);
 }
