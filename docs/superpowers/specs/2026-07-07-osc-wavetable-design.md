@@ -253,6 +253,12 @@ identical host/device; the `WtOsc` playback has no RNG.
 - **Hard sync**, **noise variants** (pink/brown) — separate sub-projects.
 - Feedback FM on wavetables; SIMD table interpolation; through-zero refinements.
 - Larger/curated named-table palette; user-table hot-reload.
+- **Inverse real FFT in `deluge-fft`** — added as a companion to **3b** (runtime
+  user-table building), where it cuts per-table build cost ~16× vs additive
+  resynthesis. 3a's additive `mipgen` (`build with deluge-fft forward + additive
+  synth`) becomes the IRFFT path's **equivalence oracle** in 3b's tests. Not
+  needed for 3a (build-time named tables; additive and IFFT are identical for a
+  periodic single cycle).
 
 ---
 
