@@ -25,8 +25,20 @@ pub fn analyze(base: &[f32; N]) -> Harmonics {
     for k in 0..(N / 2 + 1) {
         let re = spec[k].re;
         let im = spec[k].im;
-        // Real-FFT bin magnitude → time-domain sine amplitude: 2/N for 1..N/2-1.
-        amp[k] = 2.0 / N as f32 * libm::sqrtf(re * re + im * im);
+        // Real-FFT bin magnitude → time-domain sine amplitude: 2/N for
+        // interior bins 1..N/2-1. DC (k=0) and Nyquist (k=N/2) are
+        // special-cased to 1/N: those two bins have no "mirror" bin folded
+        // into them (a real N-point DFT only has N/2-1 independent complex
+        // bins plus two purely-real bins at k=0 and k=N/2), so the usual
+        // one-sided doubling does not apply there. Concretely, a pure
+        // Nyquist tone x[n] = A*(-1)^n gives X[N/2] = A*N (real), so
+        // A = |X[N/2]| / N, not the doubled 2*|X[N/2]|/N.
+        let scale = if k == 0 || k == N / 2 {
+            1.0 / N as f32
+        } else {
+            2.0 / N as f32
+        };
+        amp[k] = scale * libm::sqrtf(re * re + im * im);
         // deluge-fft's RealFft uses the standard DFT convention
         // X[k] = sum_n x[n] e^{-j2*pi*k*n/N}. For a real signal built purely
         // from sin(2*pi*k*n/N + phase), this yields X[k] = -j*(N/2)*amp*e^{j*phase},
@@ -219,6 +231,39 @@ mod tests {
             nb += b[i] * b[i];
         }
         dot / libm::sqrtf(na * nb)
+    }
+
+    #[test]
+    fn nyquist_amplitude_not_doubled() {
+        // A pure Nyquist tone: x[n] = A * (-1)^n. Its entire energy sits in
+        // bin k = N/2, so analyze() must report amp[N/2] ≈ A. The old
+        // (buggy) 2/N scale at this bin would report ≈ 2A instead.
+        let a = 0.5f32;
+        let mut base = [0.0f32; N];
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = a * if i % 2 == 0 { 1.0 } else { -1.0 };
+        }
+        let h = analyze(&base);
+        assert!(
+            (h.amp[N / 2] - a).abs() < 1e-3,
+            "Nyquist amplitude should be ~A={a}, got {}",
+            h.amp[N / 2]
+        );
+
+        // Guard against over-correction: an interior-bin tone must still
+        // round-trip at its usual 2/N scale.
+        let k0 = 5usize;
+        let mut interior = [0.0f32; N];
+        for (i, s) in interior.iter_mut().enumerate() {
+            let t = i as f32 / N as f32;
+            *s = a * sinf(CORE_TWO_PI * k0 as f32 * t);
+        }
+        let h_interior = analyze(&interior);
+        assert!(
+            (h_interior.amp[k0] - a).abs() < 1e-3,
+            "interior bin amplitude should still be ~A={a}, got {}",
+            h_interior.amp[k0]
+        );
     }
 
     #[test]
