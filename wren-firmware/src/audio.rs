@@ -13,13 +13,21 @@
 //! immediately without touching the graph.
 
 use core::cell::RefCell;
+use core::mem::MaybeUninit;
 
-use deluge::{Audio, StereoFrame};
-use deluge_wren_core::{Cmd, Engine};
+use deluge::Audio;
+use deluge_audio_graph::Engine;
+use deluge_wren_core::Cmd;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
-// SAFETY: ENGINE is touched only by `audio_task` (single accessor).
-static mut ENGINE: Engine = Engine::new();
+// Sizes satisfy the binding contract: NODES >= WREN_MAX_NODES(64), BUSES >= 8.
+type Eng = Engine<32, 64, 128, 8>; // BLOCK, NODES, OUTS, BUSES
+const _: () = assert!(64 >= deluge_wren_core::WREN_MAX_NODES && 8 >= deluge_wren_core::WREN_MAX_BUSES);
+const SAMPLE_RATE: f32 = 44_100.0;
+
+// SAFETY: ENGINE is initialized once at the top of audio_task and thereafter
+// touched only by that task (single accessor).
+static mut ENGINE: MaybeUninit<Eng> = MaybeUninit::uninit();
 
 // ── Control → audio command queue ────────────────────────────────────────────
 
@@ -68,24 +76,39 @@ pub fn submit(c: Cmd) {
 // ── Render task ──────────────────────────────────────────────────────────────
 
 /// Renders the DSP graph through the SDK [`Audio`] block callback. Each block:
-/// drain the control-rate command queue into the engine, then render one mono
-/// sample per frame (duplicated to L+R). Output is `[-1.0, 1.0]`; the SDK handles
-/// codec scaling and the SSI TX/RX DMA cadence (poll loop, or the per-block RX
-/// interrupt under the `audio-irq` feature).
+/// drain the control-rate command queue into the engine, then render the SDK
+/// block in engine-`BLOCK`-sized (32-frame) chunks, copying into the SDK's
+/// stereo frames. Output is `[-1.0, 1.0]`; the SDK handles codec scaling and the
+/// SSI TX/RX DMA cadence (poll loop, or the per-block RX interrupt under the
+/// `audio-irq` feature).
 #[embassy_executor::task]
 pub async fn audio_task(audio: Audio) {
-    // SAFETY: this task is the sole accessor of ENGINE.
-    let eng = unsafe { &mut *core::ptr::addr_of_mut!(ENGINE) };
+    // SAFETY: audio_task is the sole accessor; init happens once before use.
+    let eng: &mut Eng = unsafe {
+        let p = &mut *core::ptr::addr_of_mut!(ENGINE);
+        p.write(Eng::new(SAMPLE_RATE));
+        p.assume_init_mut()
+    };
     audio
-        .process(|block: &mut [StereoFrame]| {
+        .process(|block: &mut [deluge::StereoFrame]| {
             // Apply all pending control-rate commands.
             while let Some(c) = CMD_RING.lock(|r| r.borrow_mut().pop()) {
                 eng.apply(c);
             }
-            for f in block {
-                let s = eng.render_frame().clamp(-1.0, 1.0);
-                f.l = s;
-                f.r = s;
+            // Render the SDK block in engine-BLOCK-sized chunks. The SDK's
+            // `StereoFrame` is a distinct (host-vs-device) type from the
+            // engine's, so render into a local scratch buffer and copy.
+            // Chunk size must equal the engine's BLOCK (32) so `render` fills
+            // each chunk fully.
+            let mut scratch = [deluge_audio_graph::StereoFrame::default(); 32];
+            for chunk in block.chunks_mut(32) {
+                let out = &mut scratch[..chunk.len()];
+                eng.render(out);
+                // `Engine::render` already clamps its output to [-1, 1]; plain copy.
+                for (dst, src) in chunk.iter_mut().zip(out.iter()) {
+                    dst.l = src.l;
+                    dst.r = src.r;
+                }
             }
         })
         .await

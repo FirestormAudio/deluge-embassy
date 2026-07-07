@@ -10,6 +10,8 @@
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicI32, Ordering};
 
+use deluge_audio_graph::{Engine, StereoFrame};
+
 use crate::{CV_CHANNELS, Cmd, GATE_CHANNELS, Host};
 
 // `wren-sys` links against these `wren_host_*` C hooks unconditionally (they're
@@ -200,5 +202,148 @@ pub fn run_tick_read_cv(src: &str, ms_per_tick: u64, ticks: u32, ch: u8) -> f32 
         wren_sys::wrenFreeVM(vm);
         crate::reset();
         cv
+    }
+}
+
+extern crate std;
+use std::sync::Mutex;
+use std::vec::Vec;
+
+/// Serializes [`run_and_capture_cmds`] (and, below, [`run_and_render`]) calls:
+/// `cargo test` runs the `#[test]` fns in this file's binary on separate
+/// threads by default, and they all share the single [`CAP_HOST`] /
+/// [`ENGINE_HOST`] process-globals (see `bindings.rs`'s concurrency-model
+/// docs — this state is documented single-threaded-only). One lock for both
+/// since they also both touch the shared `crate::set_host`/VM-boot/`reset`
+/// process-globals, not just their own host static.
+static CAP_LOCK: Mutex<()> = Mutex::new(());
+
+/// A host that records every audio command for assertions.
+pub struct CmdCaptureHost {
+    pub cmds: Vec<crate::Cmd>,
+}
+impl CmdCaptureHost {
+    pub const fn new() -> Self {
+        CmdCaptureHost { cmds: Vec::new() }
+    }
+}
+impl Host for CmdCaptureHost {
+    fn now_ms(&mut self) -> u64 {
+        0
+    }
+    fn cv_set(&mut self, _ch: u8, _v: f32) {}
+    fn gate_set(&mut self, _ch: u8, _on: bool) {}
+    fn midi_tx(&mut self, _m: &[u8]) {}
+    fn led(&mut self, _id: u8, _on: bool) {}
+    fn oled_clear(&mut self) {}
+    fn oled_text(&mut self, _x: usize, _y: usize, _t: &[u8]) {}
+    fn oled_pixel(&mut self, _x: usize, _y: usize, _on: bool) {}
+    fn oled_show(&mut self) {}
+    fn audio_cmd(&mut self, cmd: crate::Cmd) {
+        self.cmds.push(cmd);
+    }
+}
+
+static mut CAP_HOST: CmdCaptureHost = CmdCaptureHost::new();
+
+/// Boot a VM, run `src`, and return the audio commands it emitted.
+pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
+    // Serialize: see `CAP_LOCK` docs. Held for the whole call (not just the
+    // `CAP_HOST` touches) since `set_host`/the VM/`crate::reset()` all touch
+    // other shared process-globals too.
+    let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: single-threaded test helper (serialized by `_guard` above); VM
+    // freed before return.
+    unsafe {
+        let h = &mut *core::ptr::addr_of_mut!(CAP_HOST);
+        h.cmds.clear();
+        crate::set_host(&mut *core::ptr::addr_of_mut!(CAP_HOST));
+        let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
+        assert!(!vm.is_null(), "VM boot failed");
+        let r = wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr());
+        assert_eq!(r, wren_sys::WREN_RESULT_SUCCESS, "prelude failed");
+        let mut buf = [0u8; 8192];
+        let n = src.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&src.as_bytes()[..n]);
+        buf[n] = 0;
+        let r = wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char);
+        assert_eq!(
+            r,
+            wren_sys::WREN_RESULT_SUCCESS,
+            "script failed (line {})",
+            LAST_ERR_LINE.load(Ordering::Relaxed)
+        );
+        let out = (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clone();
+        wren_sys::wrenFreeVM(vm);
+        crate::reset();
+        out
+    }
+}
+
+/// Block size / node / output-port / bus capacities for [`run_and_render`]'s
+/// engine — generous enough for the small golden scripts this helper runs.
+type TestEng = Engine<32, 64, 128, 8>;
+
+/// A host that applies every audio command to a real [`deluge_audio_graph::Engine`],
+/// so a script's rendered audio (not just its emitted `Cmd`s) can be asserted on.
+pub struct EngineHost {
+    pub eng: TestEng,
+}
+impl Host for EngineHost {
+    fn now_ms(&mut self) -> u64 {
+        0
+    }
+    fn cv_set(&mut self, _ch: u8, _v: f32) {}
+    fn gate_set(&mut self, _ch: u8, _on: bool) {}
+    fn midi_tx(&mut self, _m: &[u8]) {}
+    fn led(&mut self, _id: u8, _on: bool) {}
+    fn oled_clear(&mut self) {}
+    fn oled_text(&mut self, _x: usize, _y: usize, _t: &[u8]) {}
+    fn oled_pixel(&mut self, _x: usize, _y: usize, _on: bool) {}
+    fn oled_show(&mut self) {}
+    fn audio_cmd(&mut self, cmd: crate::Cmd) {
+        self.eng.apply(cmd);
+    }
+}
+
+static mut ENGINE_HOST: Option<EngineHost> = None;
+
+/// Boot a VM, run `src`, then render one 32-frame block into `out`.
+///
+/// Serialized by [`CAP_LOCK`] (shared with [`run_and_capture_cmds`]): both
+/// touch the same `crate::set_host`/VM-boot/`reset` process-globals, plus
+/// this fn's own [`ENGINE_HOST`] static.
+pub fn run_and_render(src: &str, out: &mut [StereoFrame; 32]) {
+    let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: single-threaded test helper, serialized by `_guard` above; VM
+    // freed before return.
+    unsafe {
+        // Each `addr_of_mut!(ENGINE_HOST)` reborrow below is kept to a single
+        // self-contained expression (not stashed in a `let` that spans the
+        // whole function) so the borrow checker can infer the `'static`
+        // lifetime `crate::set_host` requires without the borrows
+        // overlapping — same shape as `run_and_capture_cmds` above.
+        *core::ptr::addr_of_mut!(ENGINE_HOST) = Some(EngineHost { eng: TestEng::new(44_100.0) });
+        crate::set_host((*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap());
+        let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
+        assert!(!vm.is_null(), "VM boot failed");
+        assert_eq!(
+            wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr()),
+            wren_sys::WREN_RESULT_SUCCESS,
+            "prelude failed"
+        );
+        let mut buf = [0u8; 8192];
+        let n = src.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&src.as_bytes()[..n]);
+        buf[n] = 0;
+        assert_eq!(
+            wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char),
+            wren_sys::WREN_RESULT_SUCCESS,
+            "script failed (line {})",
+            LAST_ERR_LINE.load(Ordering::Relaxed)
+        );
+        (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap().eng.render(out);
+        wren_sys::wrenFreeVM(vm);
+        crate::reset();
     }
 }

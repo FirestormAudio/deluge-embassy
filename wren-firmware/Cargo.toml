@@ -18,6 +18,9 @@ wren-sys = { path = "../wren-sys" }
 # The portable Wren runtime: bindings + DSP engine + the `Host` trait this
 # firmware implements. Shared with the web simulator so the two never drift.
 deluge-wren-core = { path = "../crates/deluge-wren-core" }
+# The DSP graph engine backing the audio task. Sized to satisfy
+# deluge_wren_core's binding contract (NODES >= WREN_MAX_NODES, BUSES >= 8).
+deluge-audio-graph = { path = "../crates/deluge-audio-graph" }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-sync.workspace = true
 embassy-futures.workspace = true

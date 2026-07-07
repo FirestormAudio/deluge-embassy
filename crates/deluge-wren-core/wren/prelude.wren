@@ -114,10 +114,23 @@ foreign class Node {
   foreign static lpf_(input, cutoff)
   foreign static patch_(node)
   foreign static reset_()
+  foreign static split_(input)
   foreign freq=(v)
   foreign cutoff=(v)
   foreign gate(on)
   foreign trigger()
+  foreign out(p)
+  foreign free()
+  *(o) { Node.binop_(0, this, o) }
+  +(o) { Node.binop_(1, this, o) }
+  -(o) { Node.binop_(2, this, o) }
+  lpf(cutoff) { Node.lpf_(this, cutoff) }
+}
+
+// A multi-output port: `node.out(p)` returns a handle to output port `p` of
+// a multi-output node (e.g. `Split`), usable anywhere a Node/number is
+// (including as the left operand of the arithmetic operators below).
+foreign class Port {
   *(o) { Node.binop_(0, this, o) }
   +(o) { Node.binop_(1, this, o) }
   -(o) { Node.binop_(2, this, o) }
@@ -139,9 +152,27 @@ class Noise {
   static new() { Node.noise_() }
 }
 
+// A width-2 test node: routes its input to both output ports 0 and 1.
+//   var s = Split.new(osc); s.out(0); s.out(1)
+class Split {
+  static new(input) { Node.split_(input) }
+}
+
 class Out {
   static patch(node) { Node.patch_(node) }
   static reset() { Node.reset_() }
+}
+
+// A bus is a mix/render target: `.write(src)` accumulates a signal into it,
+// and `Out.patch(bus)` sets it as the render root directly (bypassing the
+// master-bus sugar used for Node/Port).
+//   var m = Bus.new()
+//   m.write(Osc.saw(110))
+//   Out.patch(m)
+foreign class Bus {
+  foreign static new_()      // returns a fresh Bus foreign in slot 0
+  foreign write(src)
+  static new() { new_() }    // the public Bus.new() from the spec
 }
 
 // ── Accessors ────────────────────────────────────────────────────────────────

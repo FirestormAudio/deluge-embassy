@@ -10,7 +10,7 @@ pub struct NodeId(pub u16);
 pub struct BusId(pub u16);
 
 /// A node input: a constant, a source node's output port, or a bus.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Input {
     Const(f32),
     Node { node: NodeId, port: u8 },

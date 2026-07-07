@@ -14,7 +14,7 @@
 
 use core::ptr::addr_of_mut;
 
-use crate::engine::Cmd;
+use deluge_audio_graph::Cmd;
 
 /// Number of CV output jacks (`output[1]`, `output[2]`).
 pub const CV_CHANNELS: usize = 2;
@@ -48,7 +48,7 @@ pub trait Host {
     fn oled_show(&mut self);
 
     /// Submit a control-rate audio-graph command. The host transports it to its
-    /// [`Engine`](crate::Engine) (firmware: a ring drained by the audio task;
+    /// `deluge_audio_graph::Engine` (firmware: a ring drained by the audio task;
     /// web: applied directly on the audio thread).
     fn audio_cmd(&mut self, cmd: Cmd);
 }

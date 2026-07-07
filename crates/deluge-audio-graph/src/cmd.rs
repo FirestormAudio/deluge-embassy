@@ -7,7 +7,7 @@ use crate::node::Kind;
 
 pub const MAX_ARGS: usize = 3;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cmd {
     Nop,
     NewNode { node: NodeId, kind: Kind, args: [Input; MAX_ARGS] },
@@ -155,5 +155,16 @@ mod tests {
                 (a - e).abs()
             );
         }
+    }
+
+    #[test]
+    fn cmds_are_comparable_and_debuggable() {
+        use crate::{Input, NodeId};
+        use crate::node::Kind;
+        let a = Cmd::NewNode { node: NodeId(1), kind: Kind::Saw, args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)] };
+        let b = Cmd::NewNode { node: NodeId(1), kind: Kind::Saw, args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)] };
+        assert_eq!(a, b);
+        assert_ne!(a, Cmd::Reset);
+        // Debug is verified by assert_eq! error messages requiring it
     }
 }
