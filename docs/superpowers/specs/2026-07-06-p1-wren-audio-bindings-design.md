@@ -34,9 +34,9 @@ crates" property already holds — `deluge-audio-graph` has no Wren dependency.
   bus-as-input, bus-as-root), and explicit `node.free()` lifecycle.
 - **Client-side allocators:** the binding owns the `NodeId` free-list and `BusId`
   allocation (no round-trip), per the P0 control→audio contract.
-- **Validated end-to-end on the host** via the `tools/wren-web-debug` harness
-  (script → `Cmd` → concrete `Engine` → rendered audio), plus `SlotApi`-generic
-  binding unit tests. No hardware or wasm required.
+- **Validated on the host** by real-VM tests (extended `test_support`): a
+  capturing host asserts `Cmd` sequences, and an applying host renders audio end
+  to end (script → `Cmd` → concrete `Engine` → rendered block). No hardware/wasm.
 - Keep the workspace compiling: minimally re-wire `wren-firmware`'s audio task
   (the one in-workspace consumer) to the new engine.
 
@@ -201,10 +201,19 @@ bodies stay backend-generic (`impl<S: SlotApi>`) and unit-testable.
 
 ## 5. Testing
 
-### 5.1 Binding unit tests (`SlotApi`-generic, no VM/engine)
+There is **no mock `SlotApi`** in the codebase — the established pattern
+(`test_support`, `tests/golden_sim.rs`) boots the *real* wren-sys C VM with a
+`Host` impl and reads state back. P1 follows that pattern with a **capturing /
+applying `Host`**, not a mock. Tests live in `deluge-wren-core/tests/` (in the
+workspace, run under `cargo test`), driven by an extended `test_support`. The
+`deluge_audio_graph::Cmd`/`Input`/`Kind` types gain `Debug`/`PartialEq` derives so
+sequences can be asserted (Task 1).
 
-Drive each binding body against the existing `test_support` mock `SlotApi`, which
-captures `Host::audio_cmd` calls; assert the exact `Cmd` sequence. Covers:
+### 5.1 Cmd-sequence tests (real VM + capturing host)
+
+Extend `test_support` with a **`CmdCaptureHost`** whose `audio_cmd` records every
+command, and a helper that boots the VM, runs a script, and returns the captured
+`Vec<Cmd>`. Assert the exact sequence for:
 
 - each factory (`Osc.saw` etc.) emits `NewNode` with the right `Kind` + args;
 - `.freq=`/`.cutoff=` emit `SetInput` on the right port;
@@ -215,22 +224,26 @@ captures `Host::audio_cmd` calls; assert the exact `Cmd` sequence. Covers:
 - `Out.reset()` emits `Reset` and clears the allocators;
 - allocation past `WREN_MAX_NODES` no-ops (inert id).
 
-### 5.2 End-to-end host harness (`tools/wren-web-debug`)
+### 5.2 End-to-end golden audio (real VM + applying host)
 
-Extend the harness so its `Host::audio_cmd` applies each command to a concrete
-`deluge_audio_graph::Engine<…>` it owns; expose a render + inspect path. Then:
+Add an **`EngineHost`** to `test_support` that owns a concrete
+`deluge_audio_graph::Engine<…>` and applies each `audio_cmd` to it, plus a helper
+that runs a script then renders a block. Then:
 
 - **golden script test:** run `Out.patch(Osc.saw(110).lpf(800))`, render one
   block, assert a pinned output block — proving script → `Cmd` → engine → audio
   end to end on the host;
-- a small script exercising ports (`Split`) and buses renders finite, bounded
-  audio and matches expected structure.
+- a small script exercising ports (`Split`) and buses renders finite, bounded audio.
+
+*(Wiring `tools/wren-web-debug`'s existing `RecordingHost::audio_cmd` to an
+`Engine` for interactive use is a nice-to-have, not required for P1's automated
+proof — the authoritative tests are the in-workspace `deluge-wren-core` ones above.)*
 
 ### 5.3 Compat check
 
 `wren-firmware/examples/midi_synth.wren` (and any other example scripts) still
-parse and run against the new bindings — verified in the harness or as a parse
-smoke test.
+parse and run against the new bindings — a parse/run smoke test through the same
+VM harness.
 
 ---
 
