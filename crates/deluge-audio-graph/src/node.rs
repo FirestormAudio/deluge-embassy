@@ -5,7 +5,8 @@
 //! hatch is reserved for a future open set (not built in P0).
 
 use crate::Input;
-use deluge_dsp_kernels::{env::Ar, filter::OnePole, math, noise::Noise, osc::Osc, osc::Wave, In};
+use deluge_dsp_kernels::{env::Ar, filter::OnePole, math, noise::Noise, osc::Osc, osc::Wave};
+pub use deluge_dsp_kernels::In;
 
 pub const MAX_INPUTS: usize = 3;
 

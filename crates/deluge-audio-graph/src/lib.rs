@@ -13,5 +13,5 @@ pub mod pool;
 
 pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId};
-pub use node::{Kind, Node};
+pub use node::{In, Kind, Node};
 pub use pool::{Pool, PoolHandle};
