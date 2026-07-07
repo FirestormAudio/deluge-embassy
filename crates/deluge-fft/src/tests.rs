@@ -9,6 +9,15 @@ use crate::test_utils::{dft, max_error};
 use crate::trig::{TWO_PI, sin_f32};
 
 // ---------------------------------------------------------------------------
+// Complex
+// ---------------------------------------------------------------------------
+
+#[test]
+fn complex_conj() {
+    assert_eq!(Complex::new(1.0, 2.0).conj(), Complex::new(1.0, -2.0));
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -277,6 +286,67 @@ fn real_fft_sine_peak_512() {
         .map(|(i, _)| i)
         .unwrap();
     assert_eq!(peak, 13, "peak at {peak}, expected 13");
+}
+
+// ---------------------------------------------------------------------------
+// RealFft::process_inverse — edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn real_fft_inverse_impulse_512() {
+    // bins = [1,1,...,1] (all-ones spectrum) should invert to an impulse.
+    const N: usize = 512;
+    let bins = [Complex::new(1.0, 0.0); N / 2 + 1];
+    let mut out = [0f32; N];
+    RealFft::<N, 4>::process_inverse(&bins, &mut out);
+    assert!((out[0] - 1.0).abs() < 1e-4, "out[0]={}", out[0]);
+    for (i, &v) in out.iter().enumerate().skip(1) {
+        assert!(v.abs() < 1e-4, "out[{i}]={v}");
+    }
+}
+
+#[test]
+fn real_fft_inverse_dc_only_512() {
+    // bins[0] = N, rest zero: DC-only spectrum should invert to a constant 1.0.
+    const N: usize = 512;
+    let mut bins = [Complex::ZERO; N / 2 + 1];
+    bins[0] = Complex::new(N as f32, 0.0);
+    let mut out = [0f32; N];
+    RealFft::<N, 4>::process_inverse(&bins, &mut out);
+    for (i, &v) in out.iter().enumerate() {
+        assert!((v - 1.0).abs() < 1e-4, "out[{i}]={v}");
+    }
+}
+
+#[test]
+fn real_fft_inverse_nyquist_only_512() {
+    // bins[N/2] = 1, rest zero: Nyquist-only spectrum should invert to an
+    // alternating +-1/N sequence (x[n] = (-1)^n / N).
+    const N: usize = 512;
+    let hn = N / 2;
+    let mut bins = [Complex::ZERO; N / 2 + 1];
+    bins[hn] = Complex::new(1.0, 0.0);
+    let mut out = [0f32; N];
+    RealFft::<N, 4>::process_inverse(&bins, &mut out);
+    let expected_mag = 1.0 / N as f32;
+    for (i, &v) in out.iter().enumerate() {
+        let expected = if i % 2 == 0 { expected_mag } else { -expected_mag };
+        assert!((v - expected).abs() < 1e-6, "out[{i}]={v} expected={expected}");
+    }
+}
+
+#[test]
+fn real_fft_roundtrip_impulse_512() {
+    const N: usize = 512;
+    let mut input = [0f32; N];
+    input[0] = 1.0;
+    let mut bins = [Complex::ZERO; N / 2 + 1];
+    RealFft::<N, 4>::process(&input, &mut bins);
+    let mut out = [0f32; N];
+    RealFft::<N, 4>::process_inverse(&bins, &mut out);
+    for i in 0..N {
+        assert!((input[i] - out[i]).abs() < 1e-4, "i={i} in={} out={}", input[i], out[i]);
+    }
 }
 
 // ---------------------------------------------------------------------------

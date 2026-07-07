@@ -8,12 +8,12 @@
 // fixes the numeric `TableId`s consumed by `deluge_dsp_kernels::wavetable`:
 //   0=Saw  1=Square  2=Sine  3=Tri  4=Organ  5=Formant
 
-use mipgen::{build_all, LEVELS, N};
+use mipgen::{build_all_additive, LEVELS, N};
 use std::f32::consts::PI;
 
 fn emit(name: &str, base: &[f32; N]) {
     let mut mips = [[0.0f32; N]; LEVELS];
-    build_all(base, &mut mips);
+    build_all_additive(base, &mut mips);
     println!("#[rustfmt::skip]");
     println!("pub static {name}: [[f32; {N}]; {LEVELS}] = [");
     for lvl in mips.iter() {

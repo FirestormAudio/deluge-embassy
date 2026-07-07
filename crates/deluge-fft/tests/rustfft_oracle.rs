@@ -129,3 +129,79 @@ fn real_fft_matches_rustfft() {
     real_oracle!(512);
     real_oracle!(1024);
 }
+
+// Forward then inverse reconstructs the original real input.
+macro_rules! real_roundtrip {
+    ($name:ident, $n:literal) => {
+        #[test]
+        fn $name() {
+            const N: usize = $n;
+            let mut st: u64 = 0x1234_5678_9abc_def0;
+            let mut next = || {
+                st ^= st << 13;
+                st ^= st >> 7;
+                st ^= st << 17;
+                (st >> 40) as f32 / (1u32 << 24) as f32 - 0.5
+            };
+            let mut x = [0.0f32; N];
+            for v in x.iter_mut() {
+                *v = next();
+            }
+            let mut bins = [deluge_fft::Complex::ZERO; N / 2 + 1];
+            deluge_fft::RealFft::<N, 4>::process(&x, &mut bins);
+            let mut y = [0.0f32; N];
+            deluge_fft::RealFft::<N, 4>::process_inverse(&bins, &mut y);
+            let tol = 1e-4 * (N as f32).sqrt();
+            for i in 0..N {
+                assert!((x[i] - y[i]).abs() < tol, "N={} i={} x={} y={}", N, i, x[i], y[i]);
+            }
+        }
+    };
+}
+real_roundtrip!(real_roundtrip_16, 16);
+real_roundtrip!(real_roundtrip_64, 64);
+real_roundtrip!(real_roundtrip_256, 256);
+real_roundtrip!(real_roundtrip_512, 512);
+real_roundtrip!(real_roundtrip_2048, 2048);
+
+/// Cross-check `RealFft::process_inverse` against `rustfft`'s (unnormalized)
+/// complex inverse FFT: build the full N-point Hermitian-symmetric spectrum
+/// from our one-sided bins, run it through `rustfft`'s inverse, and divide by
+/// N (rustfft, like our forward, does not normalize) to compare against our
+/// directly-normalized `process_inverse` output.
+#[test]
+fn real_fft_inverse_matches_rustfft() {
+    const N: usize = 512;
+    let mut rng = Rng(0x5EED_1234_5678_9ABC);
+    let mut input = [0f32; N];
+    for slot in input.iter_mut() {
+        *slot = rng.next_f32();
+    }
+
+    let mut bins = [Complex::ZERO; N / 2 + 1];
+    RealFft::<N, 4>::process(&input, &mut bins);
+
+    let mut ours = [0f32; N];
+    RealFft::<N, 4>::process_inverse(&bins, &mut ours);
+
+    // Rebuild the full two-sided spectrum via Hermitian symmetry:
+    // X[N-k] = conj(X[k]) for k = 1..N/2-1.
+    let mut full: Vec<C32<f32>> = vec![C32::new(0.0, 0.0); N];
+    for k in 0..=N / 2 {
+        full[k] = C32::new(bins[k].re, bins[k].im);
+    }
+    for k in 1..N / 2 {
+        full[N - k] = C32::new(bins[k].re, -bins[k].im);
+    }
+
+    let mut planner = FftPlanner::new();
+    planner.plan_fft_inverse(N).process(&mut full);
+
+    let tol = 1e-2 * (N as f32).sqrt();
+    let mut max_err = 0f32;
+    for i in 0..N {
+        let want = full[i].re / N as f32;
+        max_err = max_err.max((ours[i] - want).abs());
+    }
+    assert!(max_err < tol, "inverse vs rustfft: max_err={max_err} tol={tol}");
+}

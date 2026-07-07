@@ -2,7 +2,7 @@
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
-use deluge_fft::{Complex, RealFft};
+use deluge_fft::RealFft;
 use libm::sinf;
 
 pub const N: usize = 2048;
@@ -77,12 +77,65 @@ pub fn synth_level(h: &Harmonics, level: usize, out: &mut [f32; N]) {
     }
 }
 
-/// Build all `LEVELS` mip levels from one base cycle.
-pub fn build_all(base: &[f32; N], out: &mut [[f32; N]; LEVELS]) {
+/// Build all `LEVELS` mip levels from one base cycle (additive resynthesis).
+///
+/// Kept as the equivalence oracle for the faster IFFT path (`build_all_ifft`
+/// / default `build_all` below) and used by `gen_tables` so the committed
+/// static tables are not perturbed by the new path.
+pub fn build_all_additive(base: &[f32; N], out: &mut [[f32; N]; LEVELS]) {
     let h = analyze(base);
     for (level, out_level) in out.iter_mut().enumerate() {
         synth_level(&h, level, out_level);
     }
+}
+
+pub use deluge_fft::Complex;
+
+/// Band-limit one level from a full forward spectrum: keep harmonics `1..=kmax`
+/// (drop DC and everything above the cutoff — matching additive's `k=1..=kmax`),
+/// then inverse-FFT.
+pub fn build_level_ifft(spectrum: &[Complex; N / 2 + 1], level: usize, out: &mut [f32; N]) {
+    let kmax = max_harmonic(level);
+    let mut s = *spectrum;
+    s[0] = Complex::ZERO; // drop DC to match additive (which sums k>=1)
+    for (k, bin) in s.iter_mut().enumerate() {
+        if k > kmax {
+            *bin = Complex::ZERO;
+        }
+    }
+    deluge_fft::RealFft::<N, 4>::process_inverse(&s, out);
+}
+
+/// Build all levels from one base via forward FFT + per-level band-limit + inverse.
+pub fn build_all_ifft(base: &[f32; N], out: &mut [[f32; N]; LEVELS]) {
+    let mut spectrum = [Complex::ZERO; N / 2 + 1];
+    deluge_fft::RealFft::<N, 4>::process(base, &mut spectrum);
+    for (level, out_level) in out.iter_mut().enumerate() {
+        build_level_ifft(&spectrum, level, out_level);
+    }
+}
+
+/// Build a full pyramid into a flat `N*LEVELS` region (for the 3b runtime path).
+/// `base` is padded/truncated to `N`.
+pub fn build_pyramid_flat(base: &[f32], region: &mut [f32]) {
+    if region.len() < N * LEVELS {
+        return;
+    }
+    let mut b = [0.0f32; N];
+    let n = N.min(base.len());
+    b[..n].copy_from_slice(&base[..n]);
+    let mut spectrum = [Complex::ZERO; N / 2 + 1];
+    deluge_fft::RealFft::<N, 4>::process(&b, &mut spectrum);
+    let mut lvl = [0.0f32; N];
+    for level in 0..LEVELS {
+        build_level_ifft(&spectrum, level, &mut lvl);
+        region[level * N..(level + 1) * N].copy_from_slice(&lvl);
+    }
+}
+
+/// Default build path is now the fast IFFT one.
+pub fn build_all(base: &[f32; N], out: &mut [[f32; N]; LEVELS]) {
+    build_all_ifft(base, out);
 }
 
 #[cfg(test)]
@@ -271,8 +324,61 @@ mod tests {
         let base = saw_base();
         let mut a = [[0.0f32; N]; LEVELS];
         let mut b = [[0.0f32; N]; LEVELS];
-        build_all(&base, &mut a);
-        build_all(&base, &mut b);
+        build_all_additive(&base, &mut a);
+        build_all_additive(&base, &mut b);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ifft_matches_additive() {
+        // Use an arbitrary-phase base (saw's all-0/π phases would hide sign bugs).
+        let mut base = [0.0f32; N];
+        for (i, s) in base.iter_mut().enumerate() {
+            let t = i as f32 / N as f32;
+            *s = libm::sinf(core::f32::consts::TAU * t + 0.7)
+               + 0.5 * libm::sinf(core::f32::consts::TAU * 3.0 * t + 2.3)
+               + 0.25 * libm::sinf(core::f32::consts::TAU * 5.0 * t - 1.1);
+        }
+        let mut add = [[0.0f32; N]; LEVELS];
+        let mut ift = [[0.0f32; N]; LEVELS];
+        build_all_additive(&base, &mut add);
+        build_all_ifft(&base, &mut ift);
+        for level in 0..LEVELS {
+            for i in 0..N {
+                assert!((add[level][i] - ift[level][i]).abs() < 1e-3,
+                    "level {level} i {i}: additive {} vs ifft {}", add[level][i], ift[level][i]);
+            }
+        }
+    }
+
+    #[test]
+    fn ifft_level_is_band_limited() {
+        let mut base = [0.0f32; N];
+        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        let mut ift = [[0.0f32; N]; LEVELS];
+        build_all_ifft(&base, &mut ift);
+        let sr = 48_000.0f32;
+        let f0 = sr / N as f32;
+        let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+        for (i, s) in buf.iter_mut().enumerate() { *s = ift[3][i % N]; }
+        let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
+        let above = spec.level_at(max_harmonic(3) as f32 * f0 + 2.0 * f0);
+        let fund = spec.level_at(f0);
+        assert!(above < 1e-3 * fund, "ifft band-limited: above={above} fund={fund}");
+    }
+
+    #[test]
+    fn build_pyramid_flat_matches_build_all_ifft() {
+        let mut base = [0.0f32; N];
+        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        let mut nested = [[0.0f32; N]; LEVELS];
+        build_all_ifft(&base, &mut nested);
+        let mut flat = [0.0f32; N * LEVELS];
+        build_pyramid_flat(&base, &mut flat);
+        for level in 0..LEVELS {
+            for i in 0..N {
+                assert_eq!(flat[level * N + i], nested[level][i]);
+            }
+        }
     }
 }
