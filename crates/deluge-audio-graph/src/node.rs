@@ -6,8 +6,15 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{env::Ar, filter::OnePole, math, noise::Noise, osc::Osc, osc::Wave};
-use deluge_dsp_kernels::wavetable::{static_mipset, WtOsc};
+use deluge_dsp_kernels::wavetable::{static_mipset, MipSet, TableId, WtOsc};
 pub use deluge_dsp_kernels::In;
+
+/// Number of mip levels, and per-level sample count, in a pooled wavetable's
+/// flat region. Must equal `mipgen::LEVELS` / `mipgen::N` (the graph crate
+/// does not depend on `mipgen` outside tests, so these are plain literals,
+/// not imports; the kernel's own `wavetable::N` is private).
+const LEVELS_WT: usize = 11;
+const N_WT: usize = 2048;
 
 pub const MAX_INPUTS: usize = 3;
 
@@ -40,23 +47,13 @@ enum State {
 
 /// Graph-local binding of a wavetable node's table source. The kernel only
 /// knows about `MipSet`; this type names *where* a node's mipset comes from
-/// so the graph can resolve it at render time. Plan 3b adds `Pooled(PoolHandle)`.
-#[derive(Clone, Copy, PartialEq)]
+/// so the graph can resolve it at render time. `Pooled` names an Engine-owned
+/// pool region (type-erased flat `[f32]`); the engine resolves it into a
+/// `MipSet` at render time (see `Node::process_resolved`).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TableSrc {
-    Static(deluge_dsp_kernels::wavetable::TableId),
-}
-
-// Hand-written (not derived): `deluge_dsp_kernels::wavetable::TableId` doesn't
-// derive `Debug` (kernel types are intentionally minimal), but `Cmd` derives
-// `Debug` and now carries a `TableSrc`. Implementing it here — rather than
-// adding `Debug` to the kernel's `TableId` — keeps this change scoped to the
-// graph crate per Task 4's file list.
-impl core::fmt::Debug for TableSrc {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            TableSrc::Static(id) => write!(f, "TableSrc::Static(TableId({}))", id.0),
-        }
-    }
+    Static(TableId),
+    Pooled(crate::pool::PoolHandle),
 }
 
 #[derive(Clone, Copy)]
@@ -130,9 +127,24 @@ impl Node {
         self.table = Some(src);
     }
 
+    /// This node's bound table source, if any (used by the engine to resolve
+    /// a `Pooled` source's region before render, and to free it on `Cmd::Free`).
+    pub fn table_src(&self) -> Option<TableSrc> {
+        self.table
+    }
+
     /// Render this node's ports. `ins[p]` is the already-resolved input for port
     /// `p` (the engine resolved every `Input` into an `In` before calling this).
-    pub fn process_resolved(&mut self, ins: &[In; MAX_INPUTS], dt: f32, outs: &mut OutView) {
+    /// `pool_region` is the flat mip-pyramid region for a `TableSrc::Pooled`
+    /// node, resolved by the engine (disjoint borrow of its `pool` field)
+    /// before this call; ignored for `Static` and non-wavetable kinds.
+    pub fn process_resolved(
+        &mut self,
+        ins: &[In; MAX_INPUTS],
+        dt: f32,
+        outs: &mut OutView,
+        pool_region: Option<&[f32]>,
+    ) {
         match self.kind {
             Kind::Sine | Kind::Saw | Kind::Square | Kind::Tri => {
                 let wave = match self.kind {
@@ -173,11 +185,32 @@ impl Node {
                 }
             }
             Kind::Wavetable => {
-                // Unbound table or an invalid id leaves the output untouched
+                // Unbound table, an invalid static id, a missing pool region,
+                // or a too-short pool region leaves the output untouched
                 // (silence for a freshly-zeroed arena slot) — never panic.
-                if let (State::Wt(o), Some(TableSrc::Static(id))) = (&mut self.state, self.table) {
-                    if let Some(mips) = static_mipset(id) {
-                        o.process(mips, ins[0], ins[1], dt, outs.port(0));
+                if let State::Wt(o) = &mut self.state {
+                    match self.table {
+                        Some(TableSrc::Static(id)) => {
+                            if let Some(mips) = static_mipset(id) {
+                                o.process(mips, ins[0], ins[1], dt, outs.port(0));
+                            }
+                        }
+                        Some(TableSrc::Pooled(_)) => {
+                            // Require an exact-size region (LEVELS_WT levels of
+                            // N_WT samples each, matching the kernel's
+                            // `debug_assert_eq!(mips.levels[0].len(), N)`); a
+                            // short/mis-sized region renders silence rather
+                            // than risk an out-of-bounds slice or a bogus
+                            // per-level length.
+                            if let Some(region) = pool_region {
+                                if region.len() == N_WT * LEVELS_WT {
+                                    let levels: [&[f32]; LEVELS_WT] =
+                                        core::array::from_fn(|l| &region[l * N_WT..(l + 1) * N_WT]);
+                                    o.process(MipSet { levels: &levels }, ins[0], ins[1], dt, outs.port(0));
+                                }
+                            }
+                        }
+                        None => {}
                     }
                 }
             }
@@ -254,7 +287,7 @@ mod tests {
         let mut buf = [0.0f32; 4];
         {
             let mut outs = OutView::single(&mut buf);
-            n.process_resolved(&ins, 1.0 / 16.0, &mut outs);
+            n.process_resolved(&ins, 1.0 / 16.0, &mut outs, None);
         }
         // Kernel-agnostic on purpose: this test verifies the node dispatched
         // to Kind::Saw and wrote its single output port, not the
@@ -275,7 +308,7 @@ mod tests {
         let mut p1 = [0.0f32; 4];
         {
             let mut outs = OutView::pair(&mut p0, &mut p1);
-            n.process_resolved(&ins, 1.0, &mut outs);
+            n.process_resolved(&ins, 1.0, &mut outs, None);
         }
         assert_eq!(p0, [0.75; 4]);
         assert_eq!(p1, [0.75; 4]); // both ports carry the same input

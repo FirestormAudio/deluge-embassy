@@ -132,7 +132,17 @@ impl<
             }
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
             Cmd::SetRoot { bus } => self.set_root(bus),
-            Cmd::Free { node } => self.arena.free(node),
+            Cmd::Free { node } => {
+                // Free a pooled table region (if bound) BEFORE reclaiming the
+                // node's arena slot: `table_src()` reads through the node,
+                // which must still be live.
+                if let Some(n) = self.arena.node_mut(node) {
+                    if let Some(crate::node::TableSrc::Pooled(h)) = n.table_src() {
+                        self.pool.free(h);
+                    }
+                }
+                self.arena.free(node);
+            }
             Cmd::Reset => {
                 self.arena.reset();
                 self.writes_len = 0;
@@ -153,9 +163,9 @@ impl<
 
         for k in 0..live {
             let id = NodeId(order[k]);
-            let (base, width, inputs) = {
+            let (base, width, inputs, table_src) = {
                 let n = self.arena.node(id).expect("eval-order node exists");
-                (n.out_base as usize, Node::out_width(n.kind), n.inputs_snapshot())
+                (n.out_base as usize, Node::out_width(n.kind), n.inputs_snapshot(), n.table_src())
             };
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
@@ -199,8 +209,18 @@ impl<
             // disjoint `arena` field) to coexist with `arr`.
             let arr = unsafe { &mut *self.outs.get() };
             let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
+            // Resolve a pooled table's flat region (immutable borrow of the
+            // disjoint `self.pool` field) BEFORE the node's `&mut` borrow
+            // below — `self.pool` and `self.arena` are separate fields of
+            // `Engine`, so the borrow checker tracks them independently as
+            // long as each is accessed as a direct field projection (not
+            // through a whole-`&mut self` helper method).
+            let pool_region: Option<&[f32]> = match table_src {
+                Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice(h)),
+                _ => None,
+            };
             if let Some(n) = self.arena.node_mut(id) {
-                n.process_resolved(&ins, self.dt, &mut view);
+                n.process_resolved(&ins, self.dt, &mut view, pool_region);
             }
         }
     }
@@ -472,5 +492,34 @@ mod tests {
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn pooled_wavetable_renders_and_frees() {
+        let mut e = E::new(48_000.0);
+        // Build a saw pyramid directly into the pool (mimics upload_table).
+        let n = mipgen::N;
+        let h = e.pool_alloc(n * mipgen::LEVELS).expect("pool room");
+        let mut base = [0.0f32; mipgen::N];
+        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / n as f32) - 1.0; }
+        let harm = mipgen::analyze(&base);
+        {
+            let region = e.pool_slice_mut(h);
+            let mut lvl = [0.0f32; mipgen::N];
+            for level in 0..mipgen::LEVELS {
+                mipgen::synth_level(&harm, level, &mut lvl);
+                region[level * n..(level + 1) * n].copy_from_slice(&lvl);
+            }
+        }
+        e.create(NodeId(0), Kind::Wavetable);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
+        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(h) });
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out.iter().any(|&s| s != 0.0));
+        // Free the node → pool region reclaimed.
+        e.apply(Cmd::Free { node: NodeId(0) });
+        assert!(e.pool_alloc(n * mipgen::LEVELS).is_some());
     }
 }

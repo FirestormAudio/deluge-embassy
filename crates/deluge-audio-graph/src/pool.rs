@@ -4,7 +4,7 @@
 //! per-block output arena. Exhaustion returns `None` (caller degrades) — no panic.
 
 /// A claim on a contiguous region of the pool. Returned to the pool on `free`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolHandle {
     off: u32, // start index in f32 units
     len: u32, // requested length in f32 units

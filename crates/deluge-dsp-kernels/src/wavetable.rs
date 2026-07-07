@@ -68,7 +68,7 @@ impl Default for WtOsc {
 /// Identifies one of the named `&'static` mip pyramids baked into
 /// `wavetables_generated::TABLES` (see that module's `TABLES` order for the
 /// id assignment: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TableId(pub u16);
 
 /// Resolve a named static table to a borrowed `MipSet`. `None` if out of range.
