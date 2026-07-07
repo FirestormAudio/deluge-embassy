@@ -250,4 +250,27 @@ mod tests {
         e.render(&mut out);
         assert!((out[0].l - 1.0).abs() < 1e-6); // clamped
     }
+
+    #[test]
+    fn split2_feeds_two_consumers_from_two_ports_single_compute() {
+        // src const 0.6 → split2 (ports 0,1); consumerA reads port0, consumerB port1.
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add); // produce a constant 0.6 source
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.6);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.create(NodeId(1), Kind::Split2);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        // consumerA = mul(port0, 2)
+        e.create(NodeId(2), Kind::Mul);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(2.0);
+        // consumerB = mul(port1, 3)
+        e.create(NodeId(3), Kind::Mul);
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(1), port: 1 };
+        *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(3.0);
+
+        e.render_block();
+        assert!((e.node_output(NodeId(2), 0)[0] - 1.2).abs() < 1e-6); // 0.6*2
+        assert!((e.node_output(NodeId(3), 0)[0] - 1.8).abs() < 1e-6); // 0.6*3
+    }
 }
