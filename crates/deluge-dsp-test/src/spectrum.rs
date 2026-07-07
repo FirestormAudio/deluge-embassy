@@ -84,13 +84,17 @@ impl Spectrum {
         self.bins[self.bin_of_hz(hz)]
     }
 
-    /// dB of the peak within `±tol` bins of `hz`, relative to `ref_lin`.
-    fn peak_near_db(&self, hz: f32, tol_bins: usize, ref_lin: f32) -> f32 {
+    /// Peak LINEAR magnitude within `±tol_bins` of `hz`.
+    fn peak_near_linear(&self, hz: f32, tol_bins: usize) -> f32 {
         let center = self.bin_of_hz(hz) as isize;
         let lo = (center - tol_bins as isize).max(0) as usize;
         let hi = (center + tol_bins as isize).min(self.bins.len() as isize - 1) as usize;
-        let peak = self.bins[lo..=hi].iter().cloned().fold(0.0f32, f32::max);
-        lin_to_db(peak / ref_lin)
+        self.bins[lo..=hi].iter().cloned().fold(0.0f32, f32::max)
+    }
+
+    /// dB of the peak within `±tol` bins of `hz`, relative to `ref_lin`.
+    fn peak_near_db(&self, hz: f32, tol_bins: usize, ref_lin: f32) -> f32 {
+        lin_to_db(self.peak_near_linear(hz, tol_bins) / ref_lin)
     }
 
     /// dB of each harmonic `k·f0` (k = 1..=count) relative to the fundamental.
@@ -102,11 +106,16 @@ impl Spectrum {
     }
 
     /// Total harmonic distortion: `sqrt(Σ_{k≥2} h_k²) / h_1` (linear ratio).
+    ///
+    /// Uses the same `±2`-bin peak search as `harmonics_db` so the two metrics
+    /// agree, since a real oscillator's fundamental (and each harmonic) is
+    /// generally not bin-centered — a single-bin lookup would understate
+    /// off-bin amplitudes due to Hann scalloping loss.
     pub fn thd(&self, f0: f32, count: usize) -> f32 {
-        let fund = self.level_at(f0).max(1e-20);
+        let fund = self.peak_near_linear(f0, 2).max(1e-20);
         let sum_sq: f32 = (2..=count)
             .map(|k| {
-                let h = self.level_at(k as f32 * f0);
+                let h = self.peak_near_linear(k as f32 * f0, 2);
                 h * h
             })
             .sum();
@@ -202,6 +211,17 @@ mod tests {
         let tol = 3.0 * spec.bin_hz;
         let wa = spec.worst_alias_db(f0, tol);
         assert!(wa < -30.0 && wa > -50.0, "worst alias ≈ -40 dB, got {wa}");
+    }
+
+    #[test]
+    fn thd_is_robust_off_bin() {
+        let sr = 48_000.0;
+        // Deliberately NOT bin-centered: half a bin above bin 64.
+        let f0 = 64.5 * (sr / FFT_N as f32);
+        // fundamental 1.0, 2nd harmonic at 0.1 (also off-bin, at 2*f0).
+        let spec = render_sines(sr, &[(f0, 1.0), (2.0 * f0, 0.1)]);
+        let thd = spec.thd(f0, 5);
+        assert!((thd - 0.1).abs() < 0.02, "off-bin THD should stay ~0.1, got {thd}");
     }
 
     #[test]
