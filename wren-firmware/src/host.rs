@@ -63,4 +63,8 @@ impl Host for FwHost {
     fn audio_cmd(&mut self, cmd: Cmd) {
         crate::audio::submit(cmd);
     }
+
+    fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+        crate::audio::upload_table(base)
+    }
 }

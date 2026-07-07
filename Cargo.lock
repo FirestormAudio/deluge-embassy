@@ -1532,6 +1532,7 @@ dependencies = [
  "deluge-audio-graph",
  "deluge-dsp-kernels",
  "deluge-wren-core",
+ "mipgen",
  "wren-sys",
 ]
 
@@ -6858,6 +6859,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "log",
+ "mipgen",
  "wren-sys",
 ]
 

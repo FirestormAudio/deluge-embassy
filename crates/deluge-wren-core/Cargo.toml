@@ -39,6 +39,9 @@ deluge-audio-graph = { path = "../deluge-audio-graph" }
 # and its integration tests can name `deluge_dsp_kernels::wavetable::TableId`
 # when building a `TableSrc::Static` for `Cmd::BindTable` (Task 5).
 deluge-dsp-kernels = { path = "../deluge-dsp-kernels" }
+# Builds the band-limited mip pyramid `Host::upload_table` writes into a
+# host's pool (`host::build_pyramid_into`, Task 4 of Osc 3b).
+mipgen = { path = "../mipgen" }
 
 [dev-dependencies]
 deluge-wren-core = { path = ".", features = ["test-support"] }

@@ -289,6 +289,18 @@ type TestEng = Engine<32, 64, 128, 8, 90112, 2048>;
 pub struct EngineHost {
     pub eng: TestEng,
 }
+impl EngineHost {
+    /// Construct a fresh host with its own engine, sampling at `sample_rate`.
+    pub fn new(sample_rate: f32) -> Self {
+        EngineHost { eng: TestEng::new(sample_rate) }
+    }
+
+    /// Borrow the underlying engine (e.g. to read back pooled memory a test
+    /// asserts on — see `engine_host_upload_table_builds_band_limited`).
+    pub fn engine(&self) -> &TestEng {
+        &self.eng
+    }
+}
 impl Host for EngineHost {
     fn now_ms(&mut self) -> u64 {
         0
@@ -303,6 +315,11 @@ impl Host for EngineHost {
     fn oled_show(&mut self) {}
     fn audio_cmd(&mut self, cmd: crate::Cmd) {
         self.eng.apply(cmd);
+    }
+    fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+        let h = self.eng.pool_alloc(mipgen::N * mipgen::LEVELS)?;
+        crate::host::build_pyramid_into(base, self.eng.pool_slice_mut(h));
+        Some(h)
     }
 }
 

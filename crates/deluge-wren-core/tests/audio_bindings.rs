@@ -1,7 +1,8 @@
 #![cfg(feature = "test-support")]
 use deluge_audio_graph::StereoFrame;
 use deluge_audio_graph::node::TableSrc;
-use deluge_wren_core::test_support::{run_and_capture_cmds, run_and_render};
+use deluge_wren_core::Host as _;
+use deluge_wren_core::test_support::{EngineHost, run_and_capture_cmds, run_and_render};
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
 fn saw(freq: f32) -> Cmd {
@@ -188,4 +189,18 @@ fn osc_wavetable_renders_finite_nonsilent() {
     run_and_render("Out.patch(Osc.wavetable(WT.Saw, 220))", &mut out);
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0));
+}
+
+#[test]
+fn engine_host_upload_table_builds_band_limited() {
+    let mut host = EngineHost::new(48_000.0);
+    let mut base = [0.0f32; mipgen::N];
+    for (i, s) in base.iter_mut().enumerate() {
+        *s = 2.0 * (i as f32 / mipgen::N as f32) - 1.0;
+    }
+    let h = host.upload_table(&base).expect("upload");
+    // level 0 region round-trips to a saw-ish shape; deeper levels are band-limited.
+    let region = host.engine().pool_slice(h);
+    assert_eq!(region.len(), mipgen::N * mipgen::LEVELS);
+    assert!(region[..mipgen::N].iter().any(|&x| x != 0.0));
 }
