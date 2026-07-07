@@ -69,19 +69,13 @@ pub trait Host {
 /// `mipgen::N * mipgen::LEVELS` long — shorter regions are left untouched (no
 /// panic). Shared by every pool-backed [`Host::upload_table`] implementation
 /// so the embedder only has to allocate the region and hand it here.
+///
+/// Uses the IFFT build path (forward FFT + per-level band-limit + inverse
+/// FFT), ~16× cheaper than the previous additive (per-harmonic) build; the
+/// two are equivalent to f32 rounding.
 pub fn build_pyramid_into(base: &[f32], region: &mut [f32]) {
-    if region.len() < mipgen::N * mipgen::LEVELS {
-        return;
-    }
-    let mut b = [0.0f32; mipgen::N];
-    let n = mipgen::N.min(base.len());
-    b[..n].copy_from_slice(&base[..n]); // pad/truncate to N
-    let harm = mipgen::analyze(&b);
-    let mut lvl = [0.0f32; mipgen::N];
-    for level in 0..mipgen::LEVELS {
-        mipgen::synth_level(&harm, level, &mut lvl);
-        region[level * mipgen::N..(level + 1) * mipgen::N].copy_from_slice(&lvl);
-    }
+    // IFFT path (Osc 3c) — ~16× cheaper than the previous additive build.
+    mipgen::build_pyramid_flat(base, region);
 }
 
 static mut HOST: Option<*mut (dyn Host + 'static)> = None;
