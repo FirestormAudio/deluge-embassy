@@ -68,11 +68,15 @@ mod tests {
         });
         e.apply(Cmd::BusWrite { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0) });
         e.apply(Cmd::SetRoot { bus: BusId(0) });
-        // Note: bus_write list still holds the old write; Reset-free semantics for
-        // writes are covered by re-issuing here. Rebuild writes via Reset first:
+        // Note: the bus_write list still holds the write recorded before the
+        // free/recreate (P0 has no persistent routing table to invalidate; see
+        // engine.rs). Both recorded `BusWrite`s name `NodeId(0)`, which now
+        // resolves at render time to the recreated Add node, so bus0 sums the
+        // SAME node's output twice: 0.25 + 0.25 = 0.5 (not two distinct
+        // sources).
         let mut out = [StereoFrame::default(); 16];
         e.render(&mut out);
-        // Old saw write + new add write both target bus0; assert finite + bounded.
+        assert!((out[0].l - 0.5).abs() < 1e-6);
         assert!(out[0].l.is_finite() && out[0].l.abs() <= 1.0);
     }
 

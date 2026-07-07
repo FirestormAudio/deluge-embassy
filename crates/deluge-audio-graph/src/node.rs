@@ -38,9 +38,8 @@ enum State {
 #[derive(Clone, Copy)]
 pub struct Node {
     pub(crate) kind: Kind,
-    // Consumed by the engine (Task 8) to place this node's ports in the output
-    // arena; unread within this crate until then.
-    #[allow(dead_code)]
+    // The node's port base in the engine's output arena; read by
+    // `Engine::render_block` to place/resolve this node's ports.
     pub(crate) out_base: u16,
     inputs: [Input; MAX_INPUTS],
     state: State,

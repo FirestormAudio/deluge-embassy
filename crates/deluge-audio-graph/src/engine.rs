@@ -5,8 +5,12 @@
 //! The output arena is one `UnsafeCell<[[f32; BLOCK]; OUTS]>`. Each `render_block`
 //! iteration first *resolves* the node's inputs — copying every source (a
 //! constant, another slot's block, or a bus) into local `scratch` — and only then
-//! writes the node's own slot-run. Because reads are copied out before the write,
-//! the write borrow never overlaps a read, so the single `unsafe` deref is sound.
+//! writes the node's own slot-run. Memory-safety comes from this copy-out
+//! discipline: every read is copied into `scratch` before the mutable-write
+//! `unsafe` deref is created, so the write borrow never overlaps a read. This
+//! holds regardless of eval order — topological order is what makes the
+//! *values* correct (so a node sees its inputs' current-block outputs), not
+//! what makes the borrow sound.
 
 use core::cell::UnsafeCell;
 
@@ -130,10 +134,12 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
                 for (p, row) in scratch.iter_mut().enumerate() {
                     match inputs[p] {
                         Input::Const(v) => row.fill(v),
-                        Input::Node { node, port } => {
-                            let sbase = self.arena.out_base(node).unwrap_or(0);
-                            *row = arr[sbase + port as usize];
-                        }
+                        Input::Node { node, port } => match self.arena.out_base(node) {
+                            Some(sbase) if sbase + (port as usize) < OUTS => {
+                                *row = arr[sbase + port as usize]
+                            }
+                            _ => *row = [0.0; BLOCK], // dangling ref or out-of-range port → silence (never panic, never slot-0 crosstalk)
+                        },
                         Input::Bus(bus) => {
                             let b = bus.0 as usize;
                             for i in 0..BLOCK {
@@ -150,10 +156,15 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
             ];
 
             // ── Write this node's ports ──
-            // SAFETY: the writer touches only [base, base+width); every read was
-            // copied into `scratch`, so no read aliases the write region. The raw
-            // deref is not tracked against `self`, so the following `node_mut`
-            // (a borrow of the disjoint `arena` field) is also permitted.
+            // SAFETY (deref soundness): every read for this iteration was already
+            // copied into `scratch` above, before this mutable deref exists, so
+            // the write region `[base, base+width)` cannot alias a live read —
+            // regardless of eval order (wrong order would be a correctness bug,
+            // not UB).
+            // SAFETY (disjoint borrow): the raw deref of `self.outs` is not
+            // tracked against `self`, so the borrow checker still allows the
+            // following `self.arena.node_mut(id)` call (a borrow of the
+            // disjoint `arena` field) to coexist with `arr`.
             let arr = unsafe { &mut *self.outs.get() };
             let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
             if let Some(n) = self.arena.node_mut(id) {
@@ -202,10 +213,10 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
                 for i in 0..BLOCK {
                     let v = match src {
                         Input::Const(c) => c,
-                        Input::Node { node, port } => {
-                            let base = self.arena.out_base(node).unwrap_or(0);
-                            arr[base + port as usize][i]
-                        }
+                        Input::Node { node, port } => match self.arena.out_base(node) {
+                            Some(base) if base + (port as usize) < OUTS => arr[base + port as usize][i],
+                            _ => 0.0, // dangling ref or out-of-range port → contributes silence
+                        },
                         Input::Bus(_) => 0.0, // bus→bus not in P0
                     };
                     self.bus_l[b][i] += v;
@@ -317,5 +328,46 @@ mod tests {
         e.render_block();
         assert!((e.node_output(NodeId(2), 0)[0] - 1.2).abs() < 1e-6); // 0.6*2
         assert!((e.node_output(NodeId(3), 0)[0] - 1.8).abs() < 1e-6); // 0.6*3
+    }
+
+    #[test]
+    fn dangling_and_oob_refs_render_silence_not_panic() {
+        // node0 = a real 1-output saw (out_base 0, width 1).
+        // node1 sums two bad references into bus0:
+        //   - Input::Node { node: NodeId(50), port: 0 } — node never created (dangling).
+        //   - Input::Node { node: NodeId(0), port: 7 }  — real node, out-of-range port.
+        // Both must resolve to silence (0.0), never panic, never read an
+        // unrelated slot.
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Saw);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(4.0);
+
+        e.bus_write(Input::Node { node: NodeId(50), port: 0 }, BusId(0));
+        e.bus_write(Input::Node { node: NodeId(0), port: 7 }, BusId(0));
+        e.set_root(BusId(0));
+
+        let mut out = [StereoFrame::default(); 16];
+        e.render(&mut out); // must not panic
+
+        for f in out.iter() {
+            assert!(f.l.is_finite() && f.l.abs() <= 1.0);
+            assert!(f.r.is_finite() && f.r.abs() <= 1.0);
+        }
+        // Both bus-write sources are bad refs, so the bus sum is exactly 0.
+        assert_eq!(out[0].l, 0.0);
+        assert_eq!(out[0].r, 0.0);
+
+        // Also exercise the render_block (Input::Node input-resolve) path
+        // directly: a consumer node reading a dangling node ref must get a
+        // zero row, not a panic or slot-0 crosstalk.
+        let mut e2 = E::new(16.0);
+        e2.create(NodeId(0), Kind::Saw);
+        *e2.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(4.0);
+        e2.create(NodeId(1), Kind::Add);
+        *e2.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(50), port: 0 };
+        *e2.node_input_mut(NodeId(1), 1).unwrap() = Input::Node { node: NodeId(0), port: 7 };
+        e2.render_block(); // must not panic
+        let consumer_out = e2.node_output(NodeId(1), 0);
+        assert!(consumer_out.iter().all(|&v| v == 0.0));
     }
 }
