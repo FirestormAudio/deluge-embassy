@@ -132,7 +132,8 @@ mod tests {
         osc.process(MipSet { levels: &refs }, In::K(f0), In::K(0.0), 1.0 / sr, &mut bl);
         let bl_wa = deluge_dsp_test::spectrum::analyze_buf(sr, &bl).worst_alias_db(f0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
 
-        // Naive: always read level 0 (full band) with linear interp, no mip-select.
+        // Naive: always read level 0 (full band) with nearest-neighbor
+        // (zero-order hold) sampling, no mip-select.
         let mut naive = [0.0f32; deluge_dsp_test::FFT_N];
         let mut ph = 0.0f32;
         let dtp = f0 / sr;
@@ -169,20 +170,28 @@ mod tests {
 
     #[test]
     fn wavetable_mip_boundary_is_continuous() {
-        // Sweep across an octave boundary; assert no sample jump (the linear
-        // inter-mip crossfade). Compare block rendered at freqs straddling a
-        // mip switch — output RMS should vary smoothly, no discontinuity.
+        // Mip-level boundaries sit at freq = (sr/N) * 2^L = 23.4375 * 2^L Hz,
+        // e.g. L5 = 750 Hz. Sweep 700->800 Hz so the fractional mip level
+        // (flevel) passes through the integer 5.0 at 750 Hz mid-sweep, which
+        // is exactly where `lo`/`hi` swap (4->5 and 5->6). This is the case
+        // an off-by-one in the mip-select math would break; a sweep that
+        // stays inside one crossfade band (e.g. the old 1000-1100 Hz range,
+        // flevel ~5.42-5.55) never exercises the level swap at all. Assert
+        // no discontinuity as the block-rendered RMS varies across freq.
         let sr = 48_000.0f32;
         let m = saw_mips();
         let refs = mipset(&m);
         let mut prev_rms: Option<f32> = None;
-        let mut f = 1_000.0f32;
-        while f < 1_100.0 {
+        let mut f = 700.0f32;
+        while f < 800.0 {
             let mut osc = WtOsc::new();
             let mut buf = [0.0f32; 512];
             osc.process(MipSet { levels: &refs }, In::K(f), In::K(0.0), 1.0 / sr, &mut buf);
             let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
             if let Some(p) = prev_rms {
+                // 0.05 abs-RMS-delta threshold, same as before: tight enough
+                // to catch a hard level-swap jump but loose enough to pass
+                // the smooth crossfade across this real boundary at 750 Hz.
                 assert!((rms - p).abs() < 0.05, "rms jump at f={f}: {p}->{rms}");
             }
             prev_rms = Some(rms);
