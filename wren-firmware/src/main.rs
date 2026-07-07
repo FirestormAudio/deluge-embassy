@@ -455,6 +455,11 @@ async fn main(dlg: Deluge) {
     let midi = dlg.midi();
     info!("deluge: capabilities acquired");
 
+    // Initialize the audio engine before spawning any task, so neither audio_task
+    // nor a boot-script `Wavetable.from` (vm_task is spawned first) can observe an
+    // uninitialized ENGINE.
+    audio::init_engine();
+
     // ── Spawn tasks (REPL transport tasks were spawned above, per target) ─────
     spawner.spawn(vm_task().unwrap());
     spawner.spawn(midi_task(midi).unwrap());

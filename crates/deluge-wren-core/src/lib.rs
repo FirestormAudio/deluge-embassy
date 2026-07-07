@@ -28,6 +28,11 @@ mod slotapi_wrensys;
 pub mod test_support;
 
 pub use audio::{WREN_MAX_BUSES, WREN_MAX_NODES};
+
+/// Length (in f32) of one full wavetable mip pyramid: `mipgen::N * mipgen::LEVELS`.
+/// A pooled wavetable region is exactly this long. Firmware sizes its `pool_alloc`
+/// by this so it needs no direct `mipgen` dependency.
+pub const PYRAMID_LEN: usize = mipgen::N * mipgen::LEVELS;
 pub use bindings::{
     enc_turn_impl, input_dispatch_impl, midi_rx_impl, prelude_str, register_foreign, reset,
     tick_impl,
