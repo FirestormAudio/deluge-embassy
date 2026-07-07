@@ -57,6 +57,20 @@ fn reset_emits_reset() {
 }
 
 #[test]
+fn bus_write_and_patch() {
+    let cmds = run_and_capture_cmds(
+        "var m = Bus.new()\n\
+         m.write(Osc.saw(110))\n\
+         Out.patch(m)",
+    );
+    assert_eq!(cmds, vec![
+        saw(110.0),
+        Cmd::BusWrite { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(1) },
+        Cmd::SetRoot { bus: BusId(1) },
+    ]);
+}
+
+#[test]
 fn out_port_resolves_to_that_port() {
     // Split.new(Osc.saw(110)); consumer reads .out(1)
     let cmds = run_and_capture_cmds(

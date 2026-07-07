@@ -9,9 +9,7 @@ use crate::host::host;
 
 /// Binding-side node-id capacity. A host `Engine` must have `NODES >= this`.
 pub const WREN_MAX_NODES: usize = 64;
-/// Binding-side bus capacity. A host `Engine` must have `BUSES >= this`. Unused
-/// until the `Bus` binding lands (Task 5); part of this task's produced API.
-#[allow(dead_code)]
+/// Binding-side bus capacity. A host `Engine` must have `BUSES >= this`.
 pub const WREN_MAX_BUSES: usize = 8;
 /// The implicit master bus (render root for `Out.patch(node)`).
 pub const MASTER_BUS: u16 = 0;
@@ -51,9 +49,6 @@ impl Alloc {
             self.free_len += 1;
         }
     }
-    // Unused until the `Bus` binding lands (Task 5); part of this task's
-    // produced API.
-    #[allow(dead_code)]
     fn alloc_bus(&mut self) -> u16 {
         if (self.next_bus as usize) < WREN_MAX_BUSES {
             let id = self.next_bus;
@@ -82,13 +77,12 @@ fn alloc() -> &'static mut Alloc {
 pub fn alloc_node_id() -> u16 {
     alloc().alloc_node()
 }
-// `free_node_id`/`alloc_bus_id`: produced now (per the P1 audio-bindings
-// interface), consumed by the `free()`/`Bus` bindings landing in Task 5.
+// `free_node_id`: produced now (per the P1 audio-bindings interface),
+// consumed by the `Node.free_()` binding (not yet landed).
 #[allow(dead_code)]
 pub fn free_node_id(id: u16) {
     alloc().free_node(id);
 }
-#[allow(dead_code)]
 pub fn alloc_bus_id() -> u16 {
     alloc().alloc_bus()
 }

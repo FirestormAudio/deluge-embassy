@@ -162,6 +162,18 @@ class Out {
   static reset() { Node.reset_() }
 }
 
+// A bus is a mix/render target: `.write(src)` accumulates a signal into it,
+// and `Out.patch(bus)` sets it as the render root directly (bypassing the
+// master-bus sugar used for Node/Port).
+//   var m = Bus.new()
+//   m.write(Osc.saw(110))
+//   Out.patch(m)
+foreign class Bus {
+  foreign static new_()      // returns a fresh Bus foreign in slot 0
+  foreign write(src)
+  static new() { new_() }    // the public Bus.new() from the spec
+}
+
 // ── Accessors ────────────────────────────────────────────────────────────────
 // Index 0 is left null so jacks read 1-based (output[1] = first CV jack).
 

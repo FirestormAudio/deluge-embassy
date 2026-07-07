@@ -16,7 +16,6 @@ use crate::slotapi::{SlotApi, WrenForeign, WrenType};
 // no VM class query, no `SlotApi` change. `Port`/`Bus` land in later tasks.
 pub(crate) const TAG_NODE: u8 = 0;
 pub(crate) const TAG_PORT: u8 = 1;
-#[allow(dead_code)] // read by Task 5's Bus arg_input arm, not yet added
 pub(crate) const TAG_BUS: u8 = 2;
 
 #[repr(C)]
@@ -47,6 +46,21 @@ impl WrenForeign for PortObj {
     }
     fn class_name() -> &'static str {
         "Port"
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct BusObj {
+    pub tag: u8,
+    pub id: u16,
+}
+impl WrenForeign for BusObj {
+    fn module_name() -> &'static str {
+        "main"
+    }
+    fn class_name() -> &'static str {
+        "Bus"
     }
 }
 
@@ -83,7 +97,10 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
                     let p = unsafe { vm.foreign_mut::<PortObj>(slot) };
                     Input::Node { node: NodeId(p.node), port: p.port }
                 }
-                // Bus arm is inserted here in Task 5.
+                TAG_BUS => {
+                    let b = unsafe { vm.foreign_mut::<BusObj>(slot) };
+                    Input::Bus(deluge_audio_graph::BusId(b.id))
+                }
                 _ => {
                     let id = unsafe { vm.foreign_mut::<NodeObj>(slot) }.id;
                     Input::Node { node: NodeId(id), port: 0 }
@@ -179,13 +196,44 @@ pub(crate) unsafe extern "C" fn node_split(raw: *mut WrenVM) {
     node_split_impl(&vm);
 }
 
-// ── Out (patch / reset) — master-bus sugar ───────────────────────────────────
+// ── Bus (factory + instance write) ───────────────────────────────────────────
+
+pub(crate) fn bus_new_impl<S: SlotApi>(vm: &S) {
+    let id = audio::alloc_bus_id();
+    unsafe { vm.new_foreign_in(0, BusObj { tag: TAG_BUS, id }) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn bus_new(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    bus_new_impl(&vm);
+}
+
+pub(crate) fn bus_write_impl<S: SlotApi>(vm: &S) {
+    let id = unsafe { vm.foreign_mut::<BusObj>(0) }.id;
+    let src = arg_input(vm, 1);
+    audio::bus_write(src, id);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn bus_write(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    bus_write_impl(&vm);
+}
+
+// ── Out (patch / reset) — master-bus sugar, or set a Bus as root directly ───
 
 pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
-    // `Out.patch(node)` → write node into the master bus, set it as root.
-    let id = unsafe { vm.foreign_mut::<NodeObj>(1) }.id;
-    audio::bus_write(Input::Node { node: NodeId(id), port: 0 }, audio::MASTER_BUS);
-    audio::set_root(audio::MASTER_BUS);
+    // `Out.patch(arg)` → if `arg` is a Bus, set it as root directly; otherwise
+    // write the Node/Port into the master bus and set the master as root.
+    // SAFETY: the patch argument is one of our tagged foreign objects.
+    let tag = unsafe { *vm.foreign_mut::<u8>(1) };
+    if tag == TAG_BUS {
+        let bus = unsafe { vm.foreign_mut::<BusObj>(1) }.id;
+        audio::set_root(bus);
+    } else {
+        let src = arg_input(vm, 1);
+        audio::bus_write(src, audio::MASTER_BUS);
+        audio::set_root(audio::MASTER_BUS);
+    }
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_patch(raw: *mut WrenVM) {
@@ -272,4 +320,6 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
     method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
     method("main", "Node", false, "out(_)", node_out_impl::<S>);
+    method("main", "Bus", true, "new_()", bus_new_impl::<S>);
+    method("main", "Bus", false, "write(_)", bus_write_impl::<S>);
 }
