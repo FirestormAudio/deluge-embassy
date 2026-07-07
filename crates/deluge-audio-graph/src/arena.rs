@@ -45,6 +45,9 @@ impl<const NODES: usize, const OUTS: usize> Arena<NODES, OUTS> {
         if idx >= NODES {
             return false;
         }
+        if self.nodes[idx].is_some() {
+            return false; // refuse to double-allocate a live id
+        }
         let width = Node::out_width(kind);
         let base = match self.alloc_out_run(width) {
             Some(b) => b,
@@ -58,7 +61,11 @@ impl<const NODES: usize, const OUTS: usize> Arena<NODES, OUTS> {
 
     pub fn free(&mut self, id: NodeId) {
         let idx = id.0 as usize;
-        if let Some(n) = self.nodes[idx].take() {
+        let taken = match self.nodes.get_mut(idx) {
+            Some(slot) => slot.take(),
+            None => return,
+        };
+        if let Some(n) = taken {
             let width = Node::out_width(n.kind);
             let base = n.out_base as usize;
             for s in base..base + width {
@@ -145,5 +152,23 @@ mod tests {
         assert!(a.create(NodeId(2), Kind::Split2)); // 6
         assert!(a.create(NodeId(3), Kind::Split2)); // 8 (full)
         assert!(!a.create(NodeId(4), Kind::Saw)); // no slot → false
+    }
+
+    #[test]
+    fn free_out_of_range_id_is_noop() {
+        let mut a = A::new();
+        assert!(a.create(NodeId(0), Kind::Saw));
+        a.free(NodeId(99)); // out of range: must not panic, must be a no-op
+        assert_eq!(a.eval_order(), &[0]);
+        assert_eq!(a.out_base(NodeId(0)), Some(0));
+    }
+
+    #[test]
+    fn create_on_live_id_is_refused() {
+        let mut a = A::new();
+        assert!(a.create(NodeId(0), Kind::Saw));
+        assert!(!a.create(NodeId(0), Kind::Split2)); // refused: id already live
+        assert_eq!(a.eval_order(), &[0]);
+        assert_eq!(a.out_base(NodeId(0)), Some(0)); // unchanged: still Saw's slot, width 1
     }
 }
