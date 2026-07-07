@@ -48,6 +48,12 @@ impl SlotApi for Vm {
     fn get_str(&self, slot: i32) -> &str {
         Vm::get_str(self, slot)
     }
+    fn get_list_count(&self, slot: i32) -> i32 {
+        Vm::get_list_count(self, slot)
+    }
+    fn get_list_element(&self, list_slot: i32, index: i32, elem_slot: i32) {
+        Vm::get_list_element(self, list_slot, index, elem_slot)
+    }
     unsafe fn foreign_mut<T>(&self, slot: i32) -> &mut T {
         unsafe { Vm::foreign_mut::<T>(self, slot) }
     }
