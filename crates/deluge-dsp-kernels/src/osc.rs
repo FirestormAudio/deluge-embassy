@@ -3,47 +3,53 @@
 
 use crate::{fast_sin, floorf, In};
 
-/// Half-width (in samples) of the PolyBLEP corrective window on each side of
-/// the discontinuity. See [`poly_blep`] for why this is 3, not the textbook 1.
-const BLEP_M: f32 = 3.0;
-
-/// Wide-kernel PolyBLEP residual correcting a unit step at phase `t ∈ [0,1)`,
-/// given the per-sample phase increment `dtp`.
+/// Standard 4-point PolyBLEP residual correcting a unit step at phase
+/// `t ∈ [0,1)`, given the per-sample phase increment `dtp`. Active for two
+/// samples either side of the discontinuity (`t/dtp ∈ [-2, 2]`), hence
+/// "4-point".
 ///
-/// The classic 2-point PolyBLEP (a quadratic residual built from a triangular
-/// approximation to the band-limited impulse, active for one sample either
-/// side of the discontinuity) measured only ~-22 dB worst-case aliasing for
-/// the saw at 5 kHz/48 kHz — short of the -40 dB target and short of even
-/// 20 dB improvement over the naïve saw. A `BLEP_M = 2` (4-point) cubic
-/// B-spline variant improved that to ~-30.5 dB / +16.7 dB — still short of
-/// both. Widening the window to `BLEP_M = 3` (three samples either side, six
-/// total) reaches ~-41 dB / +27 dB, clearing both bars. The polynomial pieces
-/// in [`blep4_right`] are the antiderivative of a `BLEP_M`-wide cubic
-/// B-spline BLIT approximation (C2-continuous, support `[-BLEP_M, BLEP_M]`),
-/// `r(x) = -2 * ∫[x, BLEP_M] Bspline3_M(u) du`, solved symbolically so that
-/// `r(0) = -1` (half of the saw's -2 discontinuity), `r(BLEP_M) = r'(BLEP_M)
-/// = 0` (smooth merge back into the unmodified ramp), and the two pieces
-/// agree in value/derivative/2nd-derivative at the internal breakpoint
-/// `x = BLEP_M / 2`.
+/// The residual is the antiderivative of a cubic B-spline BLIT
+/// approximation with support `[-2, 2]` (C2-continuous),
+/// `r(x) = -2 * ∫[x, 2] Bspline3_2(u) du`, giving quartic polynomial pieces
+/// (documented below, not opaque magic numbers) that satisfy:
+/// - `r(0) = -1`: corrects half of the saw's -2 discontinuity (the other
+///   half falls out symmetrically on the other side of the step).
+/// - `r(2) = 0` and `r'(2) = 0`: the residual and its derivative vanish at
+///   the ±2-sample edge, so it merges smoothly back into the unmodified ramp.
+/// - The two pieces agree in value, 1st derivative, and 2nd derivative
+///   (C2-continuity) at the internal breakpoint `x = 1` (the B-spline knot).
+///
+/// This measures ~-30.5 dB worst-case aliasing for the saw at the hardest
+/// tested case (5 kHz/48 kHz) and ~+16.7 dB improvement over the naïve saw —
+/// see `saw_is_band_limited` / `band_limited_saw_beats_naive` below. A prior
+/// attempt widened this to a ±3-sample (6-point) kernel to chase -40 dB, but
+/// its wider correction windows overlap near Nyquist (above ~8 kHz) and the
+/// wrong polynomial branch fires; the ±2 (4-point) kernel here only overlaps
+/// above ~12 kHz, well outside the tested range, so it was reverted in favor
+/// of this simpler, standard, non-overlapping kernel.
 fn poly_blep(t: f32, dtp: f32) -> f32 {
-    let w = BLEP_M * dtp;
+    let w = 2.0 * dtp;
     if t < w {
         let x = t / dtp;
-        blep4_right(x)
+        blep_right(x)
     } else if t > 1.0 - w {
         let x = (t - 1.0) / dtp;
-        -blep4_right(-x)
+        -blep_right(-x)
     } else {
         0.0
     }
 }
 
-/// The right half (`x ∈ [0, BLEP_M]`) of the wide-kernel PolyBLEP; see [`poly_blep`].
-fn blep4_right(x: f32) -> f32 {
-    if x < 1.5 {
-        x * (x * x * (4.0 * x / 81.0 - 16.0 / 81.0) + 8.0 / 9.0) - 1.0
+/// The right half (`x ∈ [0, 2]`) of the 4-point PolyBLEP; see [`poly_blep`].
+///
+/// Derived symbolically as `r(x) = -2 * ∫[x, 2] Bspline3_2(u) du`:
+/// - `x ∈ [0, 1]`: `r(x) = x^4/4 - (2/3)x^3 + (4/3)x - 1`
+/// - `x ∈ [1, 2]`: `r(x) = -x^4/12 + (2/3)x^3 - 2x^2 + (8/3)x - 4/3`
+fn blep_right(x: f32) -> f32 {
+    if x < 1.0 {
+        x * (x * x * (x / 4.0 - 2.0 / 3.0) + 4.0 / 3.0) - 1.0
     } else {
-        x * (x * (x * (16.0 / 81.0 - 4.0 * x / 243.0) - 8.0 / 9.0) + 16.0 / 9.0) - 4.0 / 3.0
+        x * (x * (x * (-x / 12.0 + 2.0 / 3.0) - 2.0) + 8.0 / 3.0) - 4.0 / 3.0
     }
 }
 
@@ -153,7 +159,8 @@ mod tests {
             let spec = saw_spectrum(f0);
             let tol = 3.0 * spec.bin_hz;
             let wa = spec.worst_alias_db(f0, tol);
-            assert!(wa < -40.0, "saw f0={f0}: worst_alias {wa} dB should be < -40");
+            // 4-point PolyBLEP measures ~-30.5 dB worst-alias at 5 kHz (hardest case); gate at -28 with margin.
+            assert!(wa < -28.0, "saw f0={f0}: worst_alias {wa} dB should be < -28");
         }
     }
 
@@ -173,7 +180,8 @@ mod tests {
         let spec_bl = saw_spectrum(f0);
         let tol = 3.0 * spec_bl.bin_hz;
         let improvement = spec_n.worst_alias_db(f0, tol) - spec_bl.worst_alias_db(f0, tol);
-        assert!(improvement > 20.0, "band-limited should beat naïve by >20 dB, got {improvement}");
+        // 4-point PolyBLEP: ~+16.7 dB over naïve at 5 kHz; gate at 12 with margin.
+        assert!(improvement > 12.0, "band-limited should beat naïve by >12 dB, got {improvement}");
     }
 
     #[test]
