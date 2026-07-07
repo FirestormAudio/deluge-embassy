@@ -14,7 +14,7 @@ use deluge_dsp_kernels::In;
 
 use crate::arena::Arena;
 use crate::node::{OutView, MAX_BLOCK, MAX_INPUTS};
-use crate::{BusId, Input, Node, NodeId};
+use crate::{BusId, Input, Node, NodeId, StereoFrame};
 
 pub struct Engine<
     const BLOCK: usize,
@@ -27,10 +27,12 @@ pub struct Engine<
     dt: f32,
     pub(crate) bus_l: [[f32; BLOCK]; BUSES],
     pub(crate) bus_r: [[f32; BLOCK]; BUSES],
-    // Consumed by the engine (Task 9) to pick the bus rendered to the audio
-    // output; unread within this crate until then.
-    #[allow(dead_code)]
+    // Bus rendered to the audio output; set via `set_root`, read in `render`.
     pub(crate) root: Option<BusId>,
+    // Pending bus writes, re-applied every `render` (P0: no persistent routing
+    // table yet — see spec §3.5 / bus.rs).
+    writes: [Option<(Input, BusId)>; NODES],
+    writes_len: usize,
 }
 
 impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usize>
@@ -45,6 +47,8 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
             bus_l: [[0.0; BLOCK]; BUSES],
             bus_r: [[0.0; BLOCK]; BUSES],
             root: None,
+            writes: [None; NODES],
+            writes_len: 0,
         }
     }
 
@@ -120,6 +124,64 @@ impl<const BLOCK: usize, const NODES: usize, const OUTS: usize, const BUSES: usi
         let arr = unsafe { &*self.outs.get() };
         &arr[base + port as usize][..]
     }
+
+    /// Record that `src` should be summed into `bus` on every subsequent
+    /// `render` (P0: center pan, L=R; re-applied each block, see bus.rs).
+    pub fn bus_write(&mut self, src: Input, bus: BusId) {
+        if self.writes_len < self.writes.len() {
+            self.writes[self.writes_len] = Some((src, bus));
+            self.writes_len += 1;
+        }
+    }
+
+    /// Select which bus is copied to the audio output by `render`.
+    pub fn set_root(&mut self, bus: BusId) {
+        self.root = Some(bus);
+    }
+
+    /// Render one block: clear buses, evaluate nodes, apply pending bus
+    /// writes, then copy the root bus into `out`, clamped to `[-1, 1]`.
+    pub fn render(&mut self, out: &mut [StereoFrame]) {
+        // Zero buses.
+        for b in 0..BUSES {
+            self.bus_l[b] = [0.0; BLOCK];
+            self.bus_r[b] = [0.0; BLOCK];
+        }
+        // Evaluate nodes.
+        self.render_block();
+        // Apply bus writes (center pan → L=R).
+        let arr = unsafe { &*self.outs.get() };
+        for w in 0..self.writes_len {
+            if let Some((src, bus)) = self.writes[w] {
+                let b = bus.0 as usize;
+                for i in 0..BLOCK {
+                    let v = match src {
+                        Input::Const(c) => c,
+                        Input::Node { node, port } => {
+                            let base = self.arena.out_base(node).unwrap_or(0);
+                            arr[base + port as usize][i]
+                        }
+                        Input::Bus(_) => 0.0, // bus→bus not in P0
+                    };
+                    self.bus_l[b][i] += v;
+                    self.bus_r[b][i] += v;
+                }
+            }
+        }
+        // Copy root bus to output, clamped.
+        let n = out.len().min(BLOCK);
+        if let Some(root) = self.root {
+            let b = root.0 as usize;
+            for i in 0..n {
+                out[i].l = self.bus_l[b][i].clamp(-1.0, 1.0);
+                out[i].r = self.bus_r[b][i].clamp(-1.0, 1.0);
+            }
+        } else {
+            for i in 0..n {
+                out[i] = StereoFrame::default();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -154,5 +216,38 @@ mod tests {
         let saw = e.node_output(NodeId(0), 0)[1]; // -0.5
         let scaled = e.node_output(NodeId(1), 0)[1];
         assert!((scaled - saw * 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn two_nodes_sum_into_master_bus() {
+        // node0 = const 0.3 (via Add of const+const), node1 = const 0.4; both → bus0.
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.3);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.create(NodeId(1), Kind::Add);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Const(0.4);
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+
+        let mut out = [StereoFrame::default(); 16];
+        e.render(&mut out);
+        assert!((out[0].l - 0.7).abs() < 1e-6);
+        assert!((out[0].r - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn render_clamps_to_unit_range() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(5.0);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        e.render(&mut out);
+        assert!((out[0].l - 1.0).abs() < 1e-6); // clamped
     }
 }
