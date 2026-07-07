@@ -8,6 +8,8 @@
 
 pub mod frame;
 pub mod ids;
+pub mod pool;
 
 pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId};
+pub use pool::{Pool, PoolHandle};
