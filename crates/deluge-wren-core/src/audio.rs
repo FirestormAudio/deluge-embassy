@@ -40,9 +40,8 @@ impl Alloc {
             NULL_ID
         }
     }
-    // Unused until `free()` (below) is reachable from a binding — Task 5 wires
-    // it to a `Node.free_()` method; part of this task's produced API.
-    #[allow(dead_code)]
+    // Used by `free_node_id` below, which is called from `free()` (in turn
+    // called by the `Node.free()` binding) to return an id to the free-list.
     fn free_node(&mut self, id: u16) {
         if (id as usize) < WREN_MAX_NODES && self.free_len < WREN_MAX_NODES {
             self.free[self.free_len] = id;
@@ -77,9 +76,7 @@ fn alloc() -> &'static mut Alloc {
 pub fn alloc_node_id() -> u16 {
     alloc().alloc_node()
 }
-// `free_node_id`: produced now (per the P1 audio-bindings interface),
-// consumed by the `Node.free_()` binding (not yet landed).
-#[allow(dead_code)]
+/// Return a node id to the free-list; used by [`free`] (the `Node.free()` binding).
 pub fn free_node_id(id: u16) {
     alloc().free_node(id);
 }

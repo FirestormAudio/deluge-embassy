@@ -22,6 +22,7 @@ use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 // Sizes satisfy the binding contract: NODES >= WREN_MAX_NODES(64), BUSES >= 8.
 type Eng = Engine<32, 64, 128, 8>; // BLOCK, NODES, OUTS, BUSES
+const _: () = assert!(64 >= deluge_wren_core::WREN_MAX_NODES && 8 >= deluge_wren_core::WREN_MAX_BUSES);
 const SAMPLE_RATE: f32 = 44_100.0;
 
 // SAFETY: ENGINE is initialized once at the top of audio_task and thereafter
@@ -97,13 +98,16 @@ pub async fn audio_task(audio: Audio) {
             // Render the SDK block in engine-BLOCK-sized chunks. The SDK's
             // `StereoFrame` is a distinct (host-vs-device) type from the
             // engine's, so render into a local scratch buffer and copy.
+            // Chunk size must equal the engine's BLOCK (32) so `render` fills
+            // each chunk fully.
             let mut scratch = [deluge_audio_graph::StereoFrame::default(); 32];
             for chunk in block.chunks_mut(32) {
                 let out = &mut scratch[..chunk.len()];
                 eng.render(out);
+                // `Engine::render` already clamps its output to [-1, 1]; plain copy.
                 for (dst, src) in chunk.iter_mut().zip(out.iter()) {
-                    dst.l = src.l.clamp(-1.0, 1.0);
-                    dst.r = src.r.clamp(-1.0, 1.0);
+                    dst.l = src.l;
+                    dst.r = src.r;
                 }
             }
         })

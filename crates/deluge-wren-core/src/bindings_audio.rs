@@ -37,8 +37,8 @@ impl WrenForeign for NodeObj {
 #[derive(Clone, Copy)]
 pub(crate) struct PortObj {
     pub tag: u8,
-    pub node: u16,
     pub port: u8,
+    pub node: u16,
 }
 impl WrenForeign for PortObj {
     fn module_name() -> &'static str {
@@ -89,10 +89,17 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
     match vm.slot_type(slot) {
         WrenType::Num => Input::Const(vm.get_f(slot) as f32),
         WrenType::Foreign => {
-            // SAFETY: every foreign arg to an audio method is one of our tagged
-            // objects; the tag is at offset 0 under `repr(C)`.
+            // SAFETY: reads only the 1-byte tag at offset 0, then a 4-byte audio foreign
+            // (NodeObj/PortObj/BusObj are all 4 bytes == the minimum foreign size), so no
+            // over-read. Passing a non-audio foreign is a script error, not UB: it is
+            // misread as an audio object with an out-of-range id, which the engine treats
+            // as inert. `arg_input` trusts only that the arg is *some* >=4-byte foreign.
             let tag = unsafe { *vm.foreign_mut::<u8>(slot) };
             match tag {
+                TAG_NODE => {
+                    let n = unsafe { vm.foreign_mut::<NodeObj>(slot) };
+                    Input::Node { node: NodeId(n.id), port: 0 }
+                }
                 TAG_PORT => {
                     let p = unsafe { vm.foreign_mut::<PortObj>(slot) };
                     Input::Node { node: NodeId(p.node), port: p.port }
@@ -101,10 +108,7 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
                     let b = unsafe { vm.foreign_mut::<BusObj>(slot) };
                     Input::Bus(deluge_audio_graph::BusId(b.id))
                 }
-                _ => {
-                    let id = unsafe { vm.foreign_mut::<NodeObj>(slot) }.id;
-                    Input::Node { node: NodeId(id), port: 0 }
-                }
+                _ => Input::Const(0.0),
             }
         }
         _ => Input::Const(0.0),

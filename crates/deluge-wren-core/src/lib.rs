@@ -27,6 +27,7 @@ mod slotapi_wrensys;
 #[cfg(all(feature = "wren-sys-backend", any(test, feature = "test-support")))]
 pub mod test_support;
 
+pub use audio::{WREN_MAX_BUSES, WREN_MAX_NODES};
 pub use bindings::{
     enc_turn_impl, input_dispatch_impl, midi_rx_impl, prelude_str, register_foreign, reset,
     tick_impl,

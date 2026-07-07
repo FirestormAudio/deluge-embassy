@@ -52,6 +52,17 @@ fn lpf_and_binop_resolve_node_inputs() {
 }
 
 #[test]
+fn nonaudio_foreign_arg_does_not_crash() {
+    // `output[2]` is `Output.new(1)`, a 4-byte non-audio foreign whose leading
+    // byte (ch=1) happens to equal `TAG_PORT`. Passing it where an audio Input
+    // is expected must not over-read / panic; the arg degrades to a defined
+    // (inert) value and the factory still emits its `NewNode`.
+    let cmds = run_and_capture_cmds("Osc.sine(output[2])");
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(cmds[0], Cmd::NewNode { kind: Kind::Sine, .. }));
+}
+
+#[test]
 fn reset_emits_reset() {
     let cmds = run_and_capture_cmds("Out.reset()");
     assert_eq!(cmds, vec![Cmd::Reset]);

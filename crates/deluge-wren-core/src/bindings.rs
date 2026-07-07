@@ -936,6 +936,11 @@ pub fn prelude_ptr() -> *const c_char {
 /// rather than released — the VM that owned them is gone — and CV/gate/metro
 /// state plus the audio-graph node-id allocator are reset. Not used on the device
 /// (its VM lives for the session).
+///
+/// This calls [`crate::audio::reset`], which emits `Cmd::Reset` via the registered
+/// [`Host`](crate::Host) and therefore panics if no host has been registered
+/// yet via [`crate::set_host`] — every current caller registers a host before
+/// calling `reset()`.
 pub fn reset() {
     *state() = State::EMPTY;
 
