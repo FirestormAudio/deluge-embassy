@@ -1392,6 +1392,8 @@ name = "deluge-dsp-kernels"
 version = "0.1.0"
 dependencies = [
  "deluge-dsp-test",
+ "libm",
+ "mipgen",
  "proptest",
 ]
 
@@ -1527,6 +1529,7 @@ name = "deluge-wren-core"
 version = "0.1.0"
 dependencies = [
  "deluge-audio-graph",
+ "deluge-dsp-kernels",
  "deluge-wren-core",
  "wren-sys",
 ]
@@ -3373,6 +3376,15 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "mipgen"
+version = "0.1.0"
+dependencies = [
+ "deluge-dsp-test",
+ "deluge-fft",
+ "libm",
 ]
 
 [[package]]

@@ -11,10 +11,12 @@ categories = ["embedded", "no-std", "multimedia::audio"]
 keywords = ["dsp", "audio", "no-std", "synthesis"]
 
 [dependencies]
+libm = "0.2"
 
 [dev-dependencies]
 proptest = "1"
 deluge-dsp-test = { path = "../deluge-dsp-test" }
+mipgen = { path = "../mipgen" }
 
 [features]
 default = []

@@ -13,6 +13,7 @@ pub enum Cmd {
     NewNode { node: NodeId, kind: Kind, args: [Input; MAX_ARGS] },
     SetInput { node: NodeId, port: u8, src: Input },
     SetParam { node: NodeId, param: u8, value: f32 },
+    BindTable { node: NodeId, src: crate::node::TableSrc },
     Gate { node: NodeId, on: bool },
     Trigger { node: NodeId },
     BusWrite { src: Input, bus: BusId },

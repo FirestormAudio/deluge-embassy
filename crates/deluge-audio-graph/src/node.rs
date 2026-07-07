@@ -6,6 +6,7 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{env::Ar, filter::OnePole, math, noise::Noise, osc::Osc, osc::Wave};
+use deluge_dsp_kernels::wavetable::{static_mipset, WtOsc};
 pub use deluge_dsp_kernels::In;
 
 pub const MAX_INPUTS: usize = 3;
@@ -23,6 +24,7 @@ pub enum Kind {
     Add,
     Sub,
     Split2, // width-2 test node: input → both ports
+    Wavetable,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -32,7 +34,29 @@ enum State {
     Noise(Noise),
     Ar(Ar),
     OnePole(OnePole),
+    Wt(WtOsc),
     Stateless,
+}
+
+/// Graph-local binding of a wavetable node's table source. The kernel only
+/// knows about `MipSet`; this type names *where* a node's mipset comes from
+/// so the graph can resolve it at render time. Plan 3b adds `Pooled(PoolHandle)`.
+#[derive(Clone, Copy, PartialEq)]
+pub enum TableSrc {
+    Static(deluge_dsp_kernels::wavetable::TableId),
+}
+
+// Hand-written (not derived): `deluge_dsp_kernels::wavetable::TableId` doesn't
+// derive `Debug` (kernel types are intentionally minimal), but `Cmd` derives
+// `Debug` and now carries a `TableSrc`. Implementing it here — rather than
+// adding `Debug` to the kernel's `TableId` — keeps this change scoped to the
+// graph crate per Task 4's file list.
+impl core::fmt::Debug for TableSrc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            TableSrc::Static(id) => write!(f, "TableSrc::Static(TableId({}))", id.0),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +67,7 @@ pub struct Node {
     pub(crate) out_base: u16,
     inputs: [Input; MAX_INPUTS],
     state: State,
+    table: Option<TableSrc>,
 }
 
 impl Node {
@@ -53,12 +78,14 @@ impl Node {
             Kind::Env => State::Ar(Ar::new()),
             Kind::Lpf => State::OnePole(OnePole::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
+            Kind::Wavetable => State::Wt(WtOsc::new()),
         };
         Node {
             kind,
             out_base,
             inputs: [Input::Const(0.0); MAX_INPUTS],
             state,
+            table: None,
         }
     }
 
@@ -96,6 +123,11 @@ impl Node {
 
     pub fn inputs_snapshot(&self) -> [Input; MAX_INPUTS] {
         self.inputs
+    }
+
+    /// Bind this wavetable node's table source. No-op for other kinds.
+    pub fn bind_table(&mut self, src: TableSrc) {
+        self.table = Some(src);
     }
 
     /// Render this node's ports. `ins[p]` is the already-resolved input for port
@@ -137,6 +169,15 @@ impl Node {
                     let port = outs.port(p);
                     for i in 0..port.len() {
                         port[i] = ins[0].at(i);
+                    }
+                }
+            }
+            Kind::Wavetable => {
+                // Unbound table or an invalid id leaves the output untouched
+                // (silence for a freshly-zeroed arena slot) — never panic.
+                if let (State::Wt(o), Some(TableSrc::Static(id))) = (&mut self.state, self.table) {
+                    if let Some(mips) = static_mipset(id) {
+                        o.process(mips, ins[0], ins[1], dt, outs.port(0));
                     }
                 }
             }

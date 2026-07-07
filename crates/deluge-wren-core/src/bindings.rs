@@ -876,6 +876,7 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "patch_(_)", bindings_audio::node_patch),
     static_method("Node", "reset_()", bindings_audio::node_reset),
     static_method("Node", "split_(_)", bindings_audio::node_split),
+    static_method("Node", "wavetable_(_,_)", bindings_audio::node_wavetable),
     method("Node", "freq=(_)", bindings_audio::node_set_freq),
     method("Node", "cutoff=(_)", bindings_audio::node_set_cutoff),
     method("Node", "pm=(_)", bindings_audio::node_set_pm),

@@ -90,6 +90,24 @@ pub fn new_node(id: u16, kind: Kind, args: [Input; 3]) {
     }
     host().audio_cmd(Cmd::NewNode { node: NodeId(id), kind, args });
 }
+/// Create a `Kind::Wavetable` node and bind it to a named static table (the
+/// generated `TABLES` registry, Task 3). Used by `Node.wavetable_(table, freq)`.
+pub fn new_wavetable(id: u16, table_id: u16, freq: Input) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind: Kind::Wavetable,
+        args: [freq, Input::Const(0.0), Input::Const(0.0)],
+    });
+    host().audio_cmd(Cmd::BindTable {
+        node: NodeId(id),
+        src: deluge_audio_graph::node::TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(
+            table_id,
+        )),
+    });
+}
 pub fn set_input(id: u16, port: u8, src: Input) {
     if id == NULL_ID {
         return;

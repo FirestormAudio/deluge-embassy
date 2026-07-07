@@ -115,6 +115,7 @@ foreign class Node {
   foreign static patch_(node)
   foreign static reset_()
   foreign static split_(input)
+  foreign static wavetable_(table, freq)
   foreign freq=(v)
   foreign cutoff=(v)
   foreign pm=(v)
@@ -145,6 +146,19 @@ class Osc {
   static saw(f) { Node.src_(1, f) }
   static square(f) { Node.src_(2, f) }
   static tri(f) { Node.src_(3, f) }
+  static wavetable(t, f) { Node.wavetable_(t, f) }
+}
+
+// Named static wavetable ids, in the generated `TABLES` registry order
+// (deluge-dsp-kernels' `wavetables_generated.rs`).
+//   Out.patch(Osc.wavetable(WT.Saw, 220))
+class WT {
+  static Saw { 0 }
+  static Square { 1 }
+  static Sine { 2 }
+  static Tri { 3 }
+  static Organ { 4 }
+  static Formant { 5 }
 }
 
 class Env {

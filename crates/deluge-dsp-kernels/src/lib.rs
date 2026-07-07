@@ -12,6 +12,8 @@ pub mod filter;
 pub mod math;
 pub mod noise;
 pub mod osc;
+pub mod wavetable;
+mod wavetables_generated;
 
 /// A kernel input: a control-rate constant (`K`) or an audio-rate block (`A`).
 /// The graph resolves each `Input` slot into one of these before calling a kernel.
