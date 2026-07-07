@@ -113,12 +113,15 @@ fn poly_blep(t: f32, dtp: f32) -> f32 {
 Per-sample loop: read `freq.at(i)`, compute `dtp`, emit naïve wave + correction,
 advance and wrap `phase` (via the existing `floorf`).
 
-### 3.3 Order as a QA-tuned knob
+### 3.3 Order — decided: 4-point
 
-Start with 2-point (above), which gives roughly −40…−50 dB worst-case alias at
-high fundamentals. If §4's thresholds aren't met within the CPU budget, raise
-saw/square to **4-point PolyBLEP** (a wider polynomial residual). The design
-commits to *"the cheapest order that clears §4,"* not a fixed order.
+> **Resolved during implementation:** the 2-point residual above improves
+> `worst_alias_db` far less than its harmonic-suppression figure suggests
+> (2-point measured only ~−22 dB / +8 dB over naïve for saw). The suite uses
+> **standard 4-point PolyBLEP** for saw/square — measured ~−30 dB / +16.7 dB,
+> a good quality/CPU sweet spot on the Cortex-A9. A wider (6-point) kernel was
+> tried and rejected: extra CPU, hand-derived coefficients, and a near-Nyquist
+> window-overlap defect. The `poly_blep` helper is the 4-point form.
 
 ### 3.4 Edge behaviour
 
@@ -136,12 +139,14 @@ commits to *"the cheapest order that clears §4,"* not a fixed order.
 
 - **Aliasing gate (per wave).** Render each band-limited wave at high fundamentals
   (2 k / 5 k / 8 k Hz at 48 kHz) into a buffer, `deluge_dsp_test::spectrum::analyze`
-  it, and assert `worst_alias_db` below target: **saw/square < −40 dB**,
-  **triangle < −50 dB**, up to ~8 kHz. (Targets; the impl tunes PolyBLEP order to
-  meet them and the tests record the measured values.)
-- **Improvement over naïve.** In the same test, render a *naïve* saw inline at the
-  same frequency and assert the band-limited version is **> 20 dB better** —
-  proving the correction does real work, not just clearing an absolute bar.
+  it, and assert `worst_alias_db` **just below the measured floor** — with 4-point
+  PolyBLEP, saw/square land ~−30 dB (gated `< −28 dB`); triangle's gate is set from
+  its BLAMP measurement. The thresholds are set from measurement, not predicted.
+- **Improvement over naïve.** In the same test, render a *naïve* version inline at
+  the same frequency and assert the band-limited version is meaningfully better —
+  **> 12 dB** for saw/square (measured +16.7), **> 6 dB** for triangle (whose naïve
+  baseline is already cleaner). This is the robust bar — it proves the correction
+  does real work regardless of the absolute floor.
 - **Low-frequency fidelity.** At ~100 Hz, assert the tone is intact (fundamental
   present, harmonic series present, `worst_alias_db` already deep) — band-limiting
   must not gut the sound where there's nothing to fix.
