@@ -276,6 +276,36 @@ pub(crate) unsafe extern "C" fn node_set_cutoff(raw: *mut WrenVM) {
     node_set_cutoff_impl(&vm);
 }
 
+pub(crate) fn node_set_pm_impl<S: SlotApi>(vm: &S) {
+    let v = arg_input(vm, 1);
+    audio::set_input(self_id(vm), 1, v); // port 1 = phase-mod
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_pm(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_pm_impl(&vm);
+}
+
+pub(crate) fn node_set_width_impl<S: SlotApi>(vm: &S) {
+    let v = arg_input(vm, 1);
+    audio::set_input(self_id(vm), 2, v); // port 2 = PWM width
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_width(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_width_impl(&vm);
+}
+
+pub(crate) fn node_set_feedback_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // scalar param, not a Node/Input
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_feedback(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_feedback_impl(&vm);
+}
+
 pub(crate) fn node_gate_impl<S: SlotApi>(vm: &S) {
     let on = vm.get_bool(1);
     audio::gate(self_id(vm), on);
@@ -330,6 +360,9 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "split_(_)", node_split_impl::<S>);
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
+    method("main", "Node", false, "pm=(_)", node_set_pm_impl::<S>);
+    method("main", "Node", false, "width=(_)", node_set_width_impl::<S>);
+    method("main", "Node", false, "feedback=(_)", node_set_feedback_impl::<S>);
     method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
     method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
     method("main", "Node", false, "out(_)", node_out_impl::<S>);

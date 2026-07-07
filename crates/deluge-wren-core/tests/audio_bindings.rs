@@ -146,3 +146,27 @@ fn midi_synth_example_parses_and_runs() {
     // bindings exist); we only assert it boots + executes top-level code.
     let _ = run_and_capture_cmds(src);
 }
+
+#[test]
+fn osc_width_emits_setinput_port2() {
+    let cmds = run_and_capture_cmds("var s = Osc.square(110)\ns.width = 0.3");
+    assert!(cmds.iter().any(|c| *c == Cmd::SetInput {
+        node: NodeId(0), port: 2, src: Input::Const(0.3)
+    }));
+}
+
+#[test]
+fn osc_pm_emits_setinput_port1() {
+    let cmds = run_and_capture_cmds("var s = Osc.sine(440)\ns.pm = 0.5");
+    assert!(cmds.iter().any(|c| *c == Cmd::SetInput {
+        node: NodeId(0), port: 1, src: Input::Const(0.5)
+    }));
+}
+
+#[test]
+fn osc_feedback_emits_setparam() {
+    let cmds = run_and_capture_cmds("var s = Osc.sine(440)\ns.feedback = 0.8");
+    assert!(cmds.iter().any(|c| *c == Cmd::SetParam {
+        node: NodeId(0), param: 0, value: 0.8
+    }));
+}

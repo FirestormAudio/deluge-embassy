@@ -96,6 +96,12 @@ pub fn set_input(id: u16, port: u8, src: Input) {
     }
     host().audio_cmd(Cmd::SetInput { node: NodeId(id), port, src });
 }
+pub fn set_param(id: u16, param: u8, value: f32) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::SetParam { node: NodeId(id), param, value });
+}
 pub fn gate(id: u16, on: bool) {
     if id == NULL_ID {
         return;
