@@ -227,6 +227,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn all_static_tables_band_limited() {
+        let sr = 48_000.0f32;
+        // Measured worst_alias_db at 5 kHz for each static table (id: name):
+        //   0 Saw:     -25.58 dB
+        //   1 Square:  -25.58 dB
+        //   2 Sine:    -41.12 dB (near-alias-free, as expected of a pure tone)
+        //   3 Tri:     -39.56 dB
+        //   4 Organ:   -23.64 dB (worst of the six — additive mix pushes energy
+        //              close to Nyquist at some harmonics)
+        //   5 Formant: -41.12 dB
+        // Gate set ~2.6 dB below the worst measured floor (Organ, -23.64 dB),
+        // matching the margin convention used by `wavetable_saw_is_band_limited_high`.
+        for id in 0u16..6 {
+            let m = static_mipset(TableId(id)).expect("table");
+            let mut osc = WtOsc::new();
+            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+            osc.process(m, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+            let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
+                .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+            assert!(wa < -21.0, "table {id}: worst_alias {wa} dB");
+        }
+    }
+
     proptest::proptest! {
         #[test]
         fn wavetable_output_bounded(freq in 20.0f32..=8_000.0, pm in -2.0f32..=2.0) {

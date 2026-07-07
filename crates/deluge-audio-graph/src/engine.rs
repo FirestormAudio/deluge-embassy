@@ -524,4 +524,46 @@ mod tests {
         // region → same handle. This fails if Cmd::Free didn't actually pool.free(h).
         assert_eq!(e.pool_alloc(n * mipgen::LEVELS), Some(h));
     }
+
+    #[test]
+    fn pool_exhaustion_returns_none_not_panic() {
+        // `E`'s pool is PCAP=45056, PCHUNK=2048 → 22 chunks total. One
+        // wavetable pyramid is N*LEVELS = 2048*11 = 22528 f32 = 11 chunks, so
+        // exactly 2 pyramids fit. A 3rd upload-sized alloc must degrade to
+        // `None`, never panic — the caller (Wren `Wavetable.from`) is
+        // expected to leave the table unbound in that case.
+        let mut e = E::new(48_000.0);
+        let n = mipgen::N;
+        let want = n * mipgen::LEVELS;
+        let h1 = e.pool_alloc(want).expect("1st pyramid fits");
+        let h2 = e.pool_alloc(want).expect("2nd pyramid fits");
+        assert!(e.pool_alloc(want).is_none(), "3rd pyramid must not fit a 2-pyramid pool");
+        // Pool is not corrupted by the failed alloc: existing handles still work.
+        e.pool_slice_mut(h1).fill(0.5);
+        e.pool_slice_mut(h2).fill(0.75);
+        assert!(e.pool_slice(h1).iter().all(|&x| x == 0.5));
+        assert!(e.pool_slice(h2).iter().all(|&x| x == 0.75));
+    }
+
+    #[test]
+    fn pooled_wavetable_wrong_sized_region_renders_silence_not_panic() {
+        // A `TableSrc::Pooled` handle whose region isn't exactly N*LEVELS long
+        // (e.g. the upload path allocated the wrong size, or a stale handle
+        // from a different table) must never be sliced into `LEVELS_WT`
+        // chunks — `process_resolved`'s exact-size guard (`region.len() ==
+        // N_WT * LEVELS_WT`) should just leave the output untouched (silence
+        // in a freshly-zeroed arena slot). This is the reachable degrade path
+        // for a "bad pool region": a legitimately-obtained `PoolHandle` (via
+        // the public `pool_alloc`) whose length happens to be wrong, since
+        // `PoolHandle`'s fields are private to `pool.rs` and can't be
+        // hand-forged from `engine::tests`.
+        let mut e = E::new(48_000.0);
+        let bad = e.pool_alloc(64).expect("small alloc fits"); // 64 != N*LEVELS (22528)
+        e.create(NodeId(0), Kind::Wavetable);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
+        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(bad) });
+        e.render_block(); // must not panic
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|&s| s == 0.0), "wrong-sized pool region must render silence: {out:?}");
+    }
 }

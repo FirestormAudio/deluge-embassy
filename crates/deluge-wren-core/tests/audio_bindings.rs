@@ -221,6 +221,45 @@ fn wavetable_from_emits_bindtable_pooled_and_renders_finite() {
 }
 
 #[test]
+fn wavetable_from_round_trip_renders_finite_nonsilent_bounded_deterministic() {
+    // End-to-end round-trip through the FULL dynamic-table path with a real
+    // `EngineHost` (not the `CmdCaptureHost` used by the Cmd-shape tests
+    // above): a known single-cycle sawtooth, generated here as a Wren list
+    // literal (deterministic, no reliance on Wren-side loop syntax) ->
+    // `Wavetable.from` (list-read, Task 1) -> `Host::upload_table` (Task 4,
+    // real `pool_alloc` + `build_pyramid_into`) -> `TableSrc::Pooled` bind
+    // (Task 5) -> `Osc.wavetable` render through the real pool region (Task
+    // 3). This is stronger than Task 4's level-0-only pool-readback check and
+    // stronger than `wavetable_from_emits_bindtable_pooled_and_renders_finite`
+    // above (which only checks finite+bounded): it also asserts non-silence
+    // and bit-exact determinism across independent VM/engine lifecycles.
+    let n = 32;
+    let pts: Vec<String> = (0..n)
+        .map(|i| format!("{:.6}", 2.0 * (i as f64 / n as f64) - 1.0))
+        .collect();
+    let script = format!(
+        "var w = Wavetable.from([{}])\nOut.patch(Osc.wavetable(w, 220))",
+        pts.join(", ")
+    );
+
+    let mut out1 = [StereoFrame::default(); 32];
+    run_and_render(&script, &mut out1);
+    assert!(out1.iter().all(|f| f.l.is_finite() && f.r.is_finite()), "non-finite sample: {out1:?}");
+    assert!(out1.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0), "unbounded sample: {out1:?}");
+    assert!(out1.iter().any(|f| f.l != 0.0), "round-trip render must be non-silent");
+
+    // Deterministic: a second, independent VM+engine lifecycle on the same
+    // script renders bit-identical output (no uninitialized pool memory,
+    // no ordering nondeterminism in the upload/bind path).
+    let mut out2 = [StereoFrame::default(); 32];
+    run_and_render(&script, &mut out2);
+    for i in 0..32 {
+        assert_eq!(out1[i].l, out2[i].l, "sample {i}: nondeterministic render");
+        assert_eq!(out1[i].r, out2[i].r, "sample {i}: nondeterministic render");
+    }
+}
+
+#[test]
 fn engine_host_upload_table_builds_band_limited() {
     let mut host = EngineHost::new(48_000.0);
     let mut base = [0.0f32; mipgen::N];
