@@ -53,6 +53,20 @@ fn blep_right(x: f32) -> f32 {
     }
 }
 
+/// 2-point polyBLAMP residual correcting a unit slope discontinuity at phase
+/// `t ∈ [0,1)`, given the per-sample phase increment `dtp`. (Integral of the BLEP.)
+fn poly_blamp(t: f32, dtp: f32) -> f32 {
+    if t < dtp {
+        let x = t / dtp - 1.0;
+        -1.0 / 3.0 * x * x * x
+    } else if t > 1.0 - dtp {
+        let x = (t - 1.0) / dtp + 1.0;
+        1.0 / 3.0 * x * x * x
+    } else {
+        0.0
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Wave {
     Sine,
@@ -85,7 +99,14 @@ impl Osc {
                     let p2 = p2 - floorf(p2);
                     naive + poly_blep(p, dtp) - poly_blep(p2, dtp)
                 }
-                Wave::Tri => 1.0 - 4.0 * (p - 0.5).abs(), // (band-limited in Task 3)
+                Wave::Tri => {
+                    let naive = 1.0 - 4.0 * (p - 0.5).abs();
+                    // Slope change +8 at phase 0, -8 at phase 0.5.
+                    let p2 = p + 0.5;
+                    let p2 = p2 - floorf(p2);
+                    let c = 8.0 * dtp * (poly_blamp(p, dtp) - poly_blamp(p2, dtp));
+                    naive + c
+                }
             };
             self.phase += dtp;
             self.phase -= floorf(self.phase);
@@ -229,5 +250,54 @@ mod tests {
         osc.process(Wave::Sine, In::K(100.0), 1.0 / 1000.0, &mut out);
         assert!(out[0].abs() < 1e-3);
         assert!(out.iter().all(|s| s.abs() <= 1.001));
+    }
+
+    #[test]
+    fn triangle_is_band_limited() {
+        let sr = 48_000.0;
+        for &f0 in &[2_000.0f32, 5_000.0, 8_000.0] {
+            let mut osc = Osc::new();
+            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+            osc.process(Wave::Tri, In::K(f0), 1.0 / sr, &mut buf);
+            let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
+            let wa = spec.worst_alias_db(f0, 3.0 * spec.bin_hz);
+            // BLAMP measures: 2kHz -41.1 dB, 5kHz -34.5 dB (hardest case), 8kHz -41.1 dB.
+            // Gate at -32 with margin below the measured floor.
+            assert!(wa < -32.0, "triangle f0={f0}: worst_alias {wa} dB should be < -32");
+        }
+    }
+
+    #[test]
+    fn band_limited_triangle_beats_naive() {
+        let sr = 48_000.0;
+        let f0 = 5_000.0;
+        let mut naive = [0.0f32; deluge_dsp_test::FFT_N];
+        let mut ph = 0.0f32;
+        for s in naive.iter_mut() {
+            *s = 1.0 - 4.0 * (ph - 0.5).abs();
+            ph += f0 / sr;
+            ph -= ph.floor();
+        }
+        let spec_n = deluge_dsp_test::spectrum::analyze_buf(sr, &naive);
+        let mut osc = Osc::new();
+        let mut bl = [0.0f32; deluge_dsp_test::FFT_N];
+        osc.process(Wave::Tri, In::K(f0), 1.0 / sr, &mut bl);
+        let spec_bl = deluge_dsp_test::spectrum::analyze_buf(sr, &bl);
+        let tol = 3.0 * spec_bl.bin_hz;
+        let improvement = spec_n.worst_alias_db(f0, tol) - spec_bl.worst_alias_db(f0, tol);
+        // Measured: naive -27.7 dB, band-limited -34.5 dB at 5 kHz -> +6.8 dB improvement.
+        assert!(improvement > 6.0, "band-limited triangle should beat naïve by >6 dB, got {improvement}");
+    }
+
+    #[test]
+    fn triangle_low_freq_shape_intact() {
+        // At 200 Hz the triangle should still peak near +1 and trough near -1.
+        let mut osc = Osc::new();
+        let mut buf = [0.0f32; 512];
+        osc.process(Wave::Tri, In::K(200.0), 1.0 / 48_000.0, &mut buf);
+        let max = buf.iter().cloned().fold(f32::MIN, f32::max);
+        let min = buf.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(max > 0.9 && min < -0.9, "triangle spans ~[-1,1]: min {min} max {max}");
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 1.1));
     }
 }
