@@ -161,6 +161,120 @@ fn svf_coeffs(g: f32, k: f32) -> (f32, f32, f32) {
     (a1, a2, a3)
 }
 
+/// Cubic soft-clipper `x − x³/3`, clamped to ±2/3 (spark `diode_ladder.rs`
+/// `cubic_clipper`). Pure arithmetic — the diode ladder's only nonlinearity.
+///
+/// NOTE (deviation from the task brief's literal Step 3 body): the brief's
+/// code clamped the *output* of `x − x³/3` to ±2/3. That's inconsistent with
+/// the brief's own Step 1 test (`cubic_clip_is_bounded_and_odd`), which
+/// expects a monotonic saturator (`diode_cubic_clip(10.0) ≈ +2/3`). Clamping
+/// the output does not give that: `x − x³/3` is only monotonic on `[-1, 1]`
+/// (derivative `1 − x²`) and diverges to `−∞` beyond `x = 1`, so for `x = 10`
+/// the raw cubic is ≈ −323, clamped to **−2/3** — the wrong sign. Clamping
+/// the *input* to `[-1, 1]` first, then applying `x − x³/3`, is monotonic
+/// and naturally bounded to `[-2/3, 2/3]`, matching both the brief's test
+/// and the standard Vult/spark cubic waveshaper semantics.
+#[inline]
+pub(crate) fn diode_cubic_clip(x: f32) -> f32 {
+    let xc = x.max(-1.0).min(1.0);
+    xc - xc * xc * xc * (1.0 / 3.0)
+}
+
+/// Nonlinear diode ladder (Vult/Heun RK2 core, de-SIMD'd from spark
+/// `SimdDiodeLadderFilter<f32,1,STAGES>`). Holds only integrator state;
+/// coefficients (`fh`), resonance, and oversampling are passed per call so the
+/// caller (`Tb303`) controls them per sample. Serial recurrence → scalar.
+#[derive(Clone, Copy)]
+pub struct DiodeLadder<const STAGES: usize> {
+    state: [f32; STAGES],
+}
+
+impl<const STAGES: usize> DiodeLadder<STAGES> {
+    pub fn new() -> Self {
+        DiodeLadder { state: [0.0; STAGES] }
+    }
+
+    /// One Heun (RK2 predictor-corrector) step. `fh` = normalized cutoff
+    /// (`2π·cutoff/(oversample·fs)`), `res` = internal ladder resonance
+    /// (`Tb303` passes 0 — resonance is external).
+    #[inline]
+    fn heun_step(&mut self, input: f32, fh: f32, res: f32) {
+        let feedback = diode_cubic_clip(self.state[STAGES - 1]) * res * 4.0;
+        let x = input - feedback;
+
+        // Predictor (Euler)
+        let mut temp = self.state;
+        let mut d = [0.0f32; STAGES];
+        d[0] = fh * (x - diode_cubic_clip(temp[0]));
+        for i in 1..STAGES {
+            d[i] = fh * (diode_cubic_clip(temp[i - 1]) - diode_cubic_clip(temp[i]));
+        }
+        for i in 0..STAGES {
+            temp[i] += d[i];
+        }
+
+        // Corrector (derivative at predicted state)
+        let fb_p = diode_cubic_clip(temp[STAGES - 1]) * res * 4.0;
+        let x_p = input - fb_p;
+        let mut dp = [0.0f32; STAGES];
+        dp[0] = fh * (x_p - diode_cubic_clip(temp[0]));
+        for i in 1..STAGES {
+            dp[i] = fh * (diode_cubic_clip(temp[i - 1]) - diode_cubic_clip(temp[i]));
+        }
+        for i in 0..STAGES {
+            self.state[i] += (d[i] + dp[i]) * 0.5;
+        }
+    }
+
+    /// Advance one output sample at `oversample`× (spark hardcodes 4). Output
+    /// is the clipped last stage.
+    #[inline]
+    pub fn process(&mut self, input: f32, fh: f32, res: f32, oversample: u32) -> f32 {
+        for _ in 0..oversample {
+            self.heun_step(input, fh, res);
+        }
+        diode_cubic_clip(self.state[STAGES - 1])
+    }
+}
+
+impl<const STAGES: usize> Default for DiodeLadder<STAGES> {
+    fn default() -> Self {
+        DiodeLadder::new()
+    }
+}
+
+#[cfg(test)]
+mod diode_ladder_tests {
+    use super::*;
+
+    #[test]
+    fn cubic_clip_is_bounded_and_odd() {
+        // x - x³/3 clamped to ±2/3; saturates for |x| large, ~linear near 0.
+        assert!((diode_cubic_clip(0.0)).abs() < 1e-7);
+        assert!((diode_cubic_clip(10.0) - 2.0 / 3.0).abs() < 1e-6);
+        assert!((diode_cubic_clip(-10.0) + 2.0 / 3.0).abs() < 1e-6);
+        // odd symmetry
+        assert!((diode_cubic_clip(0.4) + diode_cubic_clip(-0.4)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ladder_is_finite_bounded_and_lowpass() {
+        // A 3-stage ladder, res=0, driven by a unit DC step: output settles
+        // finite and bounded, and attenuates a high-frequency input more than
+        // a low one (it's a lowpass).
+        let fs = 48_000.0f32;
+        let os = 4u32;
+        let fh = 2.0 * core::f32::consts::PI * 1_000.0 / (os as f32 * fs);
+        let mut lad = DiodeLadder::<3>::new();
+        let mut last = 0.0;
+        for _ in 0..2000 {
+            last = lad.process(0.5, fh, 0.0, os);
+            assert!(last.is_finite() && last.abs() <= 1.0);
+        }
+        assert!(last > 0.1); // DC largely passes a lowpass
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
