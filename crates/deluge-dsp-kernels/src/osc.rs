@@ -219,7 +219,7 @@ impl SyncOsc {
                 let step = naive_wave(wave, 0.0) - naive_wave(wave, ph_at_reset);
                 // Reset-BLEP: see the doc comment above for the derivation.
                 y += 0.5 * step * poly_blep(mp_before, dtp_m);
-                self.master_phase = mp - 1.0;
+                self.master_phase = mp - floorf(mp);
                 // Slave restarts from 0, advanced by the remaining fraction of the sample.
                 self.slave_phase = (1.0 - t_reset) * dtp_s;
                 self.slave_phase -= floorf(self.slave_phase);
@@ -571,6 +571,38 @@ mod tests {
         // dB), confirming this sign is correct. Gate tightened to >2 dB, just below the
         // measured 2.8 dB margin.
         assert!(wa_blep < wa_naive - 2.0, "blep {wa_blep} dB should beat naive {wa_naive} dB by >2 dB");
+    }
+
+    #[test]
+    fn sync_all_waves_band_limited() {
+        // Alias-gate all four Wave variants through the hard-sync reset-BLEP
+        // (not just Saw, as sync_saw_is_band_limited above already covers).
+        // Master 220 Hz, slave×2.7 — the harder of the two candidate ratios
+        // {1.5, 2.7} for every wave (×1.5 measures a clean ~-40 dB for all
+        // four; ×2.7 is the stress case below).
+        //
+        // Measured floors at slave×2.7 (master 220 Hz):
+        //   Sine   -27.1 dB
+        //   Saw    -31.6 dB  (consistent with sync_saw_is_band_limited's ×2.7 case)
+        //   Square -28.2 dB
+        //   Tri    -24.3 dB  (worst of the four)
+        // All four are within ~7 dB of each other and in the same ballpark as
+        // the existing sync_saw_is_band_limited hardest case (-27.2 dB at
+        // ×4.3) — the generic reset correction band-limits every wave here,
+        // none is a qualitative outlier. Gate at -22 dB, ~2.3 dB below the
+        // worst measured floor (Tri).
+        let sr = 48_000.0f32;
+        let master = 220.0f32;
+        let slave_mul = 2.7f32;
+        for (name, wave) in [("Sine", Wave::Sine), ("Saw", Wave::Saw), ("Square", Wave::Square), ("Tri", Wave::Tri)] {
+            let mut so = SyncOsc::new();
+            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+            so.process(wave, In::K(master), In::K(master * slave_mul), 1.0 / sr, &mut buf);
+            let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
+                .worst_alias_db(master, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+            eprintln!("sync {name} slave×{slave_mul}: worst_alias {wa} dB");
+            assert!(wa < -22.0, "sync {name} slave×{slave_mul}: worst_alias {wa} dB should be < -22");
+        }
     }
 
     proptest! {
