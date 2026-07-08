@@ -231,28 +231,25 @@ mod svf_tests {
 
     #[test]
     fn lp_minus_3db_point_tracks_cutoff() {
-        // Threshold adjustment (brief step 6): the brief's original 0.2
-        // tolerance assumed the -3dB point tracks `fc` closely, but at
-        // `res=0` this kernel's `svf_k_from_res` maps to `k=2` (Q=0.5,
-        // overdamped) — for a correct 2-pole TPT lowpass at Q=0.5, solving
-        // `(1-x^2)^2 + k^2*x^2 = 2` for `x = f_-3dB/fc` analytically gives
-        // `x = 0.6436`, i.e. the -3dB point sits at ~64.4% of `fc`
-        // (~35.6% low), independent of `fc` — not a bug, an exact
-        // consequence of the correct math at this damping. Measured:
-        // fc=300 -> got=193.34 (predicted 193.08); fc=1000 -> got=654.73
-        // (predicted 643.59); fc=4000 -> got=2566.63 (predicted 2574.38).
-        // Tolerance widened to 0.4 (comfortably above the ~0.356 analytic
-        // deviation plus the harness's log-sweep quantization, still
-        // catching a materially wrong cutoff mapping).
+        // Probe at the Butterworth resonance (Q=1/sqrt(2)), where the 2-pole
+        // TPT lowpass's -3dB point sits exactly at `fc` by construction —
+        // unlike `res=0` (k=2, Q=0.5, overdamped), which is not at fc and
+        // forces a weak/asymmetric tolerance to accommodate. `k = 2(1-res)`,
+        // so `k = sqrt(2)` (Butterworth) gives `res = 1 - sqrt(2)/2`.
+        // Measured: fc=300 -> got=299.94; fc=1000 -> got=1015.70;
+        // fc=4000 -> got=3981.68. Tolerance kept tight (0.1) since the
+        // theoretical deviation is zero; the small residual is purely the
+        // harness's log-sweep quantization (~2.4% per step).
+        let res = 1.0 - core::f32::consts::FRAC_1_SQRT_2;
         for &fc in &[300.0f32, 1_000.0, 4_000.0] {
             let got = minus_3db_hz(FS, |probe, buf| {
                 let mut f = Svf::new();
                 let x: std::vec::Vec<f32> = (0..buf.len())
                     .map(|i| (core::f32::consts::TAU * probe / FS * i as f32).sin())
                     .collect();
-                f.process(In::A(&x), In::K(fc), In::K(0.0), SvfResp::Lp, DT, buf);
+                f.process(In::A(&x), In::K(fc), In::K(res), SvfResp::Lp, DT, buf);
             });
-            assert!((got - fc).abs() / fc < 0.4, "fc={fc} got={got}");
+            assert!((got - fc).abs() / fc < 0.1, "fc={fc} got={got}");
         }
     }
 
