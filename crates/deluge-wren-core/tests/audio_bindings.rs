@@ -269,6 +269,6 @@ fn engine_host_upload_table_builds_band_limited() {
     let h = host.upload_table(&base).expect("upload");
     // level 0 region round-trips to a saw-ish shape; deeper levels are band-limited.
     let region = host.engine().pool_slice(h);
-    assert_eq!(region.len(), mipgen::N * mipgen::LEVELS);
+    assert_eq!(region.len(), deluge_wren_core::PYRAMID_LEN);
     assert!(region[..mipgen::N].iter().any(|&x| x != 0.0));
 }

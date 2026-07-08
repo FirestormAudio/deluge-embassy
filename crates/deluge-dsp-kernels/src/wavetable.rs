@@ -146,14 +146,24 @@ impl Default for WtOsc {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TableId(pub u16);
 
-/// Resolve a named static table to a borrowed `MipSet`. `None` if out of range.
-pub fn static_mipset(id: TableId) -> Option<MipSet<'static>> {
+/// Resolve a named static table to its flat, compact (`COMPACT_LEN`-long)
+/// pyramid region. `None` if `id` is out of range.
+///
+/// Returns the flat region rather than a `MipSet` because `MipSet` borrows a
+/// `&'a [&'a [f32]]` level-slice array: an array assembled here (via
+/// `level_offset`/`level_len`) would live on this fn's stack frame and could
+/// not be returned by reference. Callers assemble the `[&[f32]; LEVELS]` from
+/// this flat slice via the same `level_offset`/`level_len` layout the pooled
+/// (dynamically-uploaded) path uses (see `deluge_audio_graph::node`'s
+/// `Kind::Wavetable` arm), unifying static + pooled assembly at the render
+/// call site.
+pub fn static_table_flat(id: TableId) -> Option<&'static [f32]> {
     let idx = id.0 as usize;
     let tables = &crate::wavetables_generated::TABLES;
     if idx >= tables.len() {
         return None;
     }
-    Some(MipSet { levels: tables[idx] })
+    Some(tables[idx])
 }
 
 /// 4-point Catmull-Rom at fractional phase `ph` in [0,1) over a length-N table.
@@ -194,10 +204,11 @@ mod tests {
     #[test]
     fn static_saw_table_is_band_limited() {
         let sr = 48_000.0f32;
-        let m = static_mipset(TableId(0)).expect("saw table");
+        let region = static_table_flat(TableId(0)).expect("saw table");
+        let levels = compact_levels(region);
         let mut osc = WtOsc::new();
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(m, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+        osc.process(MipSet { levels: &levels }, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
         let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
             .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
         assert!(wa < -20.0, "static saw worst_alias {wa} dB");
@@ -316,10 +327,11 @@ mod tests {
         // Gate set ~2.6 dB below the worst measured floor (Organ, -23.64 dB),
         // matching the margin convention used by `wavetable_saw_is_band_limited_high`.
         for id in 0u16..6 {
-            let m = static_mipset(TableId(id)).expect("table");
+            let region = static_table_flat(TableId(id)).expect("table");
+            let levels = compact_levels(region);
             let mut osc = WtOsc::new();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            osc.process(m, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+            osc.process(MipSet { levels: &levels }, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
             let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
                 .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
             assert!(wa < -21.0, "table {id}: worst_alias {wa} dB");

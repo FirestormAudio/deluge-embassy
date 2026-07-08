@@ -29,10 +29,11 @@ pub mod test_support;
 
 pub use audio::{WREN_MAX_BUSES, WREN_MAX_NODES};
 
-/// Length (in f32) of one full wavetable mip pyramid: `mipgen::N * mipgen::LEVELS`.
+/// Length (in f32) of one full wavetable mip pyramid: the flat, compact
+/// (per-level-length) layout's `deluge_dsp_kernels::wavetable::COMPACT_LEN`.
 /// A pooled wavetable region is exactly this long. Firmware sizes its `pool_alloc`
-/// by this so it needs no direct `mipgen` dependency.
-pub const PYRAMID_LEN: usize = mipgen::N * mipgen::LEVELS;
+/// by this so it needs no direct `mipgen`/`deluge-dsp-kernels` dependency.
+pub const PYRAMID_LEN: usize = deluge_dsp_kernels::wavetable::COMPACT_LEN;
 pub use bindings::{
     enc_turn_impl, input_dispatch_impl, midi_rx_impl, prelude_str, register_foreign, reset,
     tick_impl,

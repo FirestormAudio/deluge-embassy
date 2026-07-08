@@ -65,17 +65,20 @@ pub trait Host {
 }
 
 /// Build a band-limited mip pyramid from `base` (one single cycle, padded or
-/// truncated to `mipgen::N`) into `region`. `region` must be at least
-/// `mipgen::N * mipgen::LEVELS` long — shorter regions are left untouched (no
-/// panic). Shared by every pool-backed [`Host::upload_table`] implementation
-/// so the embedder only has to allocate the region and hand it here.
+/// truncated to `mipgen::N`) into `region`, using the flat, compact
+/// (per-level-length) layout. `region` must be at least
+/// `deluge_dsp_kernels::wavetable::COMPACT_LEN` (= [`crate::PYRAMID_LEN`])
+/// long — shorter regions are left untouched (no panic). Shared by every
+/// pool-backed [`Host::upload_table`] implementation so the embedder only has
+/// to allocate the region and hand it here.
 ///
 /// Uses the IFFT build path (forward FFT + per-level band-limit + inverse
-/// FFT), ~16× cheaper than the previous additive (per-harmonic) build; the
-/// two are equivalent to f32 rounding.
+/// FFT, then per-level decimation to its compact length), ~16× cheaper than
+/// the previous additive (per-harmonic) build; the two are equivalent to f32
+/// rounding.
 pub fn build_pyramid_into(base: &[f32], region: &mut [f32]) {
-    // IFFT path (Osc 3c) — ~16× cheaper than the previous additive build.
-    mipgen::build_pyramid_flat(base, region);
+    // IFFT + compact-decimate path (Osc 3c / wavetable-mip-compaction).
+    mipgen::build_pyramid_flat_compact(base, region);
 }
 
 static mut HOST: Option<*mut (dyn Host + 'static)> = None;
