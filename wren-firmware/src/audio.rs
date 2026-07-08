@@ -42,8 +42,9 @@ const SAMPLE_RATE: f32 = 44_100.0;
 // SAFETY: ENGINE is written exactly once by `init_engine` (from `main`, before any
 // task is spawned/polled) and thereafter only *scoped* `assume_init_mut` borrows are
 // taken — inside `audio_task`'s synchronous per-block closure and inside
-// `upload_table`, which run on the one cooperative executor and never interleave, and
-// never hold a borrow across an `.await`. No ISR touches ENGINE. See `## Concurrency`.
+// `upload_table`/`upload_table_2d`, which run on the one cooperative executor and never
+// interleave, and never hold a borrow across an `.await`. No ISR touches ENGINE. See
+// `## Concurrency`.
 static mut ENGINE: MaybeUninit<Eng> = MaybeUninit::uninit();
 
 /// Initialize the audio engine. MUST be called once from `main` before spawning
