@@ -83,7 +83,8 @@ pub const fn level_offset(level: usize) -> usize {
 pub const COMPACT_LEN: usize = level_offset(LEVELS);
 
 /// Borrowed view of a mip pyramid: `levels[0]` = fullest band, each higher level
-/// halves the harmonic count. Every level slice has length `N`.
+/// halves the harmonic count. Level `L` has length `level_len(L)` (per-level
+/// compaction: `N` down to `N_MIN`), with `levels[0].len() == N`.
 pub struct MipSet<'a> {
     pub levels: &'a [&'a [f32]],
 }
