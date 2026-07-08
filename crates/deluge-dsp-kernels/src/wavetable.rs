@@ -102,6 +102,26 @@ impl WtOsc {
     pub fn process(&mut self, mips: MipSet, freq: In, pmod: In, dt: f32, out: &mut [f32]) {
         debug_assert!(!mips.levels.is_empty());
         debug_assert_eq!(mips.levels[0].len(), N);
+        // Const-freq/pmod fast path: mip_select (which calls log2f) is a
+        // pure function of dtp and the level count, so when both freq and
+        // pmod are block-constant it's hoisted out of the per-sample loop
+        // (called once per block instead of once per sample). Phase still
+        // advances iteratively, so this is bit-exact vs the general path
+        // fed the same values as a constant-valued audio-rate buffer (see
+        // `const_freq_hoist_is_bit_exact`).
+        if let (Some(f), Some(pm)) = (freq.as_const(), pmod.as_const()) {
+            let dtp = f * dt;
+            let (lo, hi, frac) = mip_select(dtp, mips.levels.len());
+            let (lo_s, hi_s) = (mips.levels[lo], mips.levels[hi]);
+            for s in out.iter_mut() {
+                let mut ph = self.phase + pm;
+                ph -= floorf(ph);
+                *s = sample_at_level(lo_s, hi_s, frac, ph);
+                self.phase += dtp;
+                self.phase -= floorf(self.phase);
+            }
+            return;
+        }
         for (i, s) in out.iter_mut().enumerate() {
             let dtp = freq.at(i) * dt; // cycles/sample
             let mut ph = self.phase + pmod.at(i);
@@ -134,6 +154,46 @@ impl WtOsc {
         // Region must be `frames * COMPACT_LEN`; each frame is a compact pyramid.
         if frames == 0 || region.len() < frames * COMPACT_LEN { return; }
         let last = frames - 1;
+        // Const-freq/pmod/position fast path: when all three are
+        // block-constant, the frame bracket (fm1/f0c/f1/f2/ffrac) and the
+        // mip-select (lo/hi/frac — same for every frame, since nlev==LEVELS
+        // is shared) are pure functions of those constants, so both are
+        // hoisted out of the per-sample loop (computed once per block).
+        // Phase still advances iteratively, so this is bit-exact vs the
+        // general path fed the same values as constant-valued audio-rate
+        // buffers (see `const_freq_hoist_process_morph_is_bit_exact`).
+        if let (Some(f), Some(pm), Some(pos)) = (freq.as_const(), pmod.as_const(), position.as_const()) {
+            let dtp = f * dt;
+            let fpos = pos.clamp(0.0, 1.0) * last as f32;
+            let f0 = fpos as usize;
+            let f0 = if f0 > last { last } else { f0 };
+            let ffrac = (fpos - f0 as f32).clamp(0.0, 1.0);
+            let fm1 = if f0 == 0 { 0 } else { f0 - 1 };
+            let f0c = if f0 > last { last } else { f0 };
+            let f1 = if f0c + 1 > last { last } else { f0c + 1 };
+            let f2 = if f0c + 2 > last { last } else { f0c + 2 };
+            let mm1 = compact_levels(&region[fm1 * COMPACT_LEN..(fm1 + 1) * COMPACT_LEN]);
+            let m0 = compact_levels(&region[f0c * COMPACT_LEN..(f0c + 1) * COMPACT_LEN]);
+            let m1 = compact_levels(&region[f1 * COMPACT_LEN..(f1 + 1) * COMPACT_LEN]);
+            let m2 = compact_levels(&region[f2 * COMPACT_LEN..(f2 + 1) * COMPACT_LEN]);
+            let (lo, hi, frac) = mip_select(dtp, LEVELS);
+            let (mm1_lo, mm1_hi) = (mm1[lo], mm1[hi]);
+            let (m0_lo, m0_hi) = (m0[lo], m0[hi]);
+            let (m1_lo, m1_hi) = (m1[lo], m1[hi]);
+            let (m2_lo, m2_hi) = (m2[lo], m2[hi]);
+            for s in out.iter_mut() {
+                let mut ph = self.phase + pm;
+                ph -= floorf(ph);
+                let ym1 = sample_at_level(mm1_lo, mm1_hi, frac, ph);
+                let y0 = sample_at_level(m0_lo, m0_hi, frac, ph);
+                let y1 = sample_at_level(m1_lo, m1_hi, frac, ph);
+                let y2 = sample_at_level(m2_lo, m2_hi, frac, ph);
+                *s = catmull_rom(ym1, y0, y1, y2, ffrac);
+                self.phase += dtp;
+                self.phase -= floorf(self.phase);
+            }
+            return;
+        }
         for (i, s) in out.iter_mut().enumerate() {
             let dtp = freq.at(i) * dt;
             let mut ph = self.phase + pmod.at(i);
@@ -204,11 +264,18 @@ pub fn static_table_flat(id: TableId) -> Option<&'static [f32]> {
 /// the exact per-sample inner read `process` uses; `process_morph` calls it
 /// once per morph frame and crossfades the results by `position`.
 fn sample_one(mips: &MipSet, ph: f32, dtp: f32) -> f32 {
-    let nlev = mips.levels.len();
-    // Mip select: as dtp doubles (one octave up), drop one level of
-    // harmonics. level0 is safe while its top harmonic (N/2) stays below
-    // Nyquist: dtp*(N/2) < 0.5 → dtp < 1/N. Each octave above adds 1.
-    // fractional level → crossfade weight.
+    let (lo, hi, frac) = mip_select(dtp, mips.levels.len());
+    sample_at_level(mips.levels[lo], mips.levels[hi], frac, ph)
+}
+
+/// Mip-level selection: as `dtp` (cycles/sample) doubles (one octave up),
+/// drop one level of harmonics. Level 0 is safe while its top harmonic
+/// (N/2) stays below Nyquist: `dtp*(N/2) < 0.5` → `dtp < 1/N`. Each octave
+/// above adds 1. Returns `(lo, hi, frac)`: the two levels to crossfade
+/// between and the fractional crossfade weight. Pure function of `dtp` and
+/// the pyramid's level count — safe to hoist out of a per-sample loop when
+/// `dtp` is constant across a block.
+fn mip_select(dtp: f32, nlev: usize) -> (usize, usize, f32) {
     let flevel = if dtp <= 0.0 {
         0.0
     } else {
@@ -221,9 +288,17 @@ fn sample_one(mips: &MipSet, ph: f32, dtp: f32) -> f32 {
     let lo = if lo >= nlev { nlev - 1 } else { lo };
     let hi = if lo + 1 >= nlev { nlev - 1 } else { lo + 1 };
     let frac = flevel - lo as f32;
+    (lo, hi, frac)
+}
 
-    let a = interp_cubic(mips.levels[lo], ph);
-    let b = interp_cubic(mips.levels[hi], ph);
+/// Cubic-Hermite sample within the selected mip level (`lo`), crossfaded
+/// toward the adjacent level (`hi`) by `frac` (the fractional mip level from
+/// `mip_select`). Shared by `sample_one` and the hoisted const-freq paths in
+/// `process`/`process_morph`, which call `mip_select` once per block instead
+/// of once per sample.
+fn sample_at_level(lo: &[f32], hi: &[f32], frac: f32, ph: f32) -> f32 {
+    let a = interp_cubic(lo, ph);
+    let b = interp_cubic(hi, ph);
     a + (b - a) * frac.clamp(0.0, 1.0)
 }
 
@@ -797,5 +872,60 @@ mod tests {
             if let Some(pr) = prev { assert!((rms-pr).abs() < 0.05, "morph rms jump @ pos {p}"); }
             prev = Some(rms); p += 0.01;
         }
+    }
+
+    #[test]
+    fn const_freq_hoist_is_bit_exact() {
+        // The hoisted const-freq scalar path in `process` must equal the
+        // general per-sample path bit-for-bit: feed the same freq/pmod
+        // values once as `In::K` (takes the new hoisted branch) and once as
+        // a constant-valued `In::A` buffer (forces the unchanged general
+        // per-sample loop, since `as_const()` is `None` for `In::A`).
+        let m = saw_mips();
+        let refs = mipset(&m);
+        let mut a = WtOsc::new();
+        let mut oa = [0.0f32; 512];
+        a.process(MipSet { levels: &refs }, In::K(220.0), In::K(0.0), 1.0 / 48_000.0, &mut oa);
+
+        let fbuf = [220.0f32; 512];
+        let pbuf = [0.0f32; 512];
+        let mut b = WtOsc::new();
+        let mut ob = [0.0f32; 512];
+        b.process(MipSet { levels: &refs }, In::A(&fbuf), In::A(&pbuf), 1.0 / 48_000.0, &mut ob);
+
+        assert_eq!(oa, ob); // bit-for-bit
+    }
+
+    #[test]
+    fn const_freq_hoist_process_morph_is_bit_exact() {
+        // Same bit-exact parity check as `const_freq_hoist_is_bit_exact`,
+        // but for `process_morph`'s const-freq/pmod/position fast path
+        // (which also hoists the frame bracket and shared mip_select).
+        let mut saw = [0.0f32; N];
+        let mut sq = [0.0f32; N];
+        let mut tri = [0.0f32; N];
+        let mut sine = [0.0f32; N];
+        for i in 0..N {
+            let t = i as f32 / N as f32;
+            saw[i] = 2.0 * t - 1.0;
+            sq[i] = if i < N / 2 { 1.0 } else { -1.0 };
+            tri[i] = 4.0 * (t - 0.5).abs() - 1.0;
+            sine[i] = libm::sinf(core::f32::consts::TAU * t);
+        }
+        let region = frame_region(&[saw, sq, tri, sine]);
+        let sr = 48_000.0f32;
+
+        let mut a = WtOsc::new();
+        let mut oa = [0.0f32; 512];
+        a.process_morph(&region, 4, In::K(220.0), In::K(0.0), In::K(0.5), 1.0 / sr, &mut oa);
+
+        let fbuf = [220.0f32; 512];
+        let pbuf = [0.0f32; 512];
+        let posbuf = [0.5f32; 512];
+        let mut b = WtOsc::new();
+        let mut ob = [0.0f32; 512];
+        b.process_morph(&region, 4, In::A(&fbuf), In::A(&pbuf), In::A(&posbuf), 1.0 / sr, &mut ob);
+
+        assert_eq!(oa, ob); // bit-for-bit
     }
 }
