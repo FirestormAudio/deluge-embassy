@@ -161,19 +161,17 @@ fn svf_coeffs(g: f32, k: f32) -> (f32, f32, f32) {
     (a1, a2, a3)
 }
 
-/// spark's cubic waveshaper: `x − x³/3`, then clamp the *output* to
-/// `[-2/3, 2/3]` (`SimdDiodeLadderFilter::cubic_clipper` in
-/// `diode_ladder.rs`). This is an output-clamp, not an input-clamp: for
-/// `|x| > 1` the raw cubic has passed its monotonic region and dives
-/// (e.g. `x = 10` → cubic ≈ −323, clamped to **−2/3**, sign-flipped vs.
-/// the input). That is spark's actual, faithful behavior — input-clamp
-/// and output-clamp only agree for `|x| ≤ 1`, and hard resonant drive can
-/// push the ladder state past that, so this must stay an output-clamp to
-/// match spark bit-for-bit.
+/// Padé [3/2] `tanh` approximation (skylib `SoftLimit`), clamped to ±1. The
+/// diode/transistor ladder's true nonlinearity is `tanh`-like; this replaces
+/// spark's cheaper cubic Taylor stand-in. Monotonic everywhere (derivative
+/// `9(x²−9)²/denom² ≥ 0`), accurate to `tanh` out to |x|≈3, and it reaches ±1
+/// tangentially at x=±3 (zero slope), so the ±1 clamp is C¹-smooth. Small-signal
+/// it has unit slope at 0 (identical to the cubic there). Reused by Fi-3 Moog.
 #[inline]
-pub(crate) fn diode_cubic_clip(x: f32) -> f32 {
-    let cubic = x - x * x * x * (1.0 / 3.0);
-    cubic.max(-2.0 / 3.0).min(2.0 / 3.0)
+pub(crate) fn pade_tanh(x: f32) -> f32 {
+    let x2 = x * x;
+    let s = x * (27.0 + x2) / (27.0 + 9.0 * x2);
+    s.max(-1.0).min(1.0)
 }
 
 /// Nonlinear diode ladder (Vult/Heun RK2 core, de-SIMD'd from spark
@@ -195,27 +193,27 @@ impl<const STAGES: usize> DiodeLadder<STAGES> {
     /// (`Tb303` passes 0 — resonance is external).
     #[inline]
     fn heun_step(&mut self, input: f32, fh: f32, res: f32) {
-        let feedback = diode_cubic_clip(self.state[STAGES - 1]) * res * 4.0;
+        let feedback = pade_tanh(self.state[STAGES - 1]) * res * 4.0;
         let x = input - feedback;
 
         // Predictor (Euler)
         let mut temp = self.state;
         let mut d = [0.0f32; STAGES];
-        d[0] = fh * (x - diode_cubic_clip(temp[0]));
+        d[0] = fh * (x - pade_tanh(temp[0]));
         for i in 1..STAGES {
-            d[i] = fh * (diode_cubic_clip(temp[i - 1]) - diode_cubic_clip(temp[i]));
+            d[i] = fh * (pade_tanh(temp[i - 1]) - pade_tanh(temp[i]));
         }
         for i in 0..STAGES {
             temp[i] += d[i];
         }
 
         // Corrector (derivative at predicted state)
-        let fb_p = diode_cubic_clip(temp[STAGES - 1]) * res * 4.0;
+        let fb_p = pade_tanh(temp[STAGES - 1]) * res * 4.0;
         let x_p = input - fb_p;
         let mut dp = [0.0f32; STAGES];
-        dp[0] = fh * (x_p - diode_cubic_clip(temp[0]));
+        dp[0] = fh * (x_p - pade_tanh(temp[0]));
         for i in 1..STAGES {
-            dp[i] = fh * (diode_cubic_clip(temp[i - 1]) - diode_cubic_clip(temp[i]));
+            dp[i] = fh * (pade_tanh(temp[i - 1]) - pade_tanh(temp[i]));
         }
         for i in 0..STAGES {
             self.state[i] += (d[i] + dp[i]) * 0.5;
@@ -229,7 +227,7 @@ impl<const STAGES: usize> DiodeLadder<STAGES> {
         for _ in 0..oversample {
             self.heun_step(input, fh, res);
         }
-        diode_cubic_clip(self.state[STAGES - 1])
+        pade_tanh(self.state[STAGES - 1])
     }
 }
 
@@ -244,21 +242,33 @@ mod diode_ladder_tests {
     use super::*;
 
     #[test]
-    fn cubic_clip_is_bounded_and_odd() {
-        // spark's output-clamped `x − x³/3`: near-linear at 0, always within ±2/3,
-        // and odd for all x (symmetric clamp of an odd polynomial).
-        assert!(diode_cubic_clip(0.0).abs() < 1e-7);
-        // monotonic region |x|≤1: peak at x=1 is exactly 2/3.
-        assert!((diode_cubic_clip(1.0) - 2.0 / 3.0).abs() < 1e-6);
-        // beyond the peak the cubic dives; the ±2/3 clamp bounds it (sign flips):
-        assert!((diode_cubic_clip(10.0) + 2.0 / 3.0).abs() < 1e-6);   // → −2/3
-        assert!((diode_cubic_clip(-10.0) - 2.0 / 3.0).abs() < 1e-6);  // → +2/3
-        // always bounded to ±2/3 across a sweep, and odd everywhere:
+    fn pade_tanh_is_bounded_monotonic_odd_and_tanh_like() {
+        // unit slope at 0 (≈ tanh near 0), tracks tanh better than the cubic
+        assert!(pade_tanh(0.0).abs() < 1e-7);
+        assert!((pade_tanh(0.001) - 0.001).abs() < 1e-6); // slope ~1
+        // reaches +1 at x=3 (tangential), clamps beyond
+        assert!((pade_tanh(3.0) - 1.0).abs() < 1e-6);
+        assert!((pade_tanh(100.0) - 1.0).abs() < 1e-6);
+        assert!((pade_tanh(-100.0) + 1.0).abs() < 1e-6);
+        // bounded to ±1, monotonic non-decreasing, and odd, across a sweep
+        let mut prev = pade_tanh(-12.0);
         let mut x = -12.0f32;
         while x <= 12.0 {
-            assert!(diode_cubic_clip(x).abs() <= 2.0 / 3.0 + 1e-6, "unbounded at {x}");
-            assert!((diode_cubic_clip(x) + diode_cubic_clip(-x)).abs() < 1e-5, "not odd at {x}");
-            x += 0.25;
+            let y = pade_tanh(x);
+            assert!(y.abs() <= 1.0 + 1e-6, "unbounded at {x}: {y}");
+            assert!(y >= prev - 1e-6, "not monotonic at {x}");
+            assert!((y + pade_tanh(-x)).abs() < 1e-5, "not odd at {x}");
+            prev = y;
+            x += 0.1;
+        }
+        // sanity vs true tanh in the working range (should be close). Measured
+        // |approx-exact|: 0.5->0.0037, 1.0->0.0162, 2.0->0.0201 — the x=2.0
+        // case is a genuine property of the [3/2] Padé rational (not a bug),
+        // so the tolerance is set just above it.
+        for &t in &[0.5f32, 1.0, 2.0] {
+            let approx = pade_tanh(t);
+            let exact = libm::tanhf(t);
+            assert!((approx - exact).abs() < 0.021, "tanh({t}): approx {approx} vs {exact}");
         }
     }
 
