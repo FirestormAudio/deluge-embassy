@@ -125,13 +125,23 @@ impl Default for Svf {
 /// `libm::tanf`. `fc` is clamped so `theta ∈ (0, 0.49π)` — away from the tan
 /// pole at π/2. A [3/2] Padé-style rational: matches `tan` to well within the
 /// SVF's audio tolerance across the cutoff range while staying pure arithmetic
-/// (no transcendental) for the Cortex-A9 hot path. Measured worst-case
-/// `|approx(theta) − tanf(theta)|` over `theta ∈ (0, 0.49π)` is ~27.7 (near
-/// the clamp edge, where `tan` itself is ~31.8 — a ~1% relative error), but
-/// what matters is end-to-end SVF output: across the swept audio-rate
-/// equivalence test (fc 110 Hz–9 kHz, res 0–0.95) the measured max output
-/// delta vs. the exact-tanf const path is ~1.2e-3, comfortably under the
-/// 2e-3 gate.
+/// (no transcendental) for the Cortex-A9 hot path.
+///
+/// Accuracy is strongly `theta`-dependent — this is a good fit only over the
+/// musical cutoff range, NOT up to the clamp edge:
+/// - Across the tested audio range (fc ≤ 9 kHz → `theta ≤ 0.59`): raw
+///   `|approx − tanf|` relative error is ~1%.
+/// - **At the clamp edge (`theta → 0.49π`): the raw approximation is very
+///   poor** — `approx ≈ 4.1` vs `tanf ≈ 31.8`, i.e. ~87% relative error
+///   (it returns only ~13% of the true `tan`). This region is reached ONLY by
+///   an *audio-rate-swept* cutoff pushed near Nyquist; the const fast path uses
+///   exact `libm::tanf`, so static/most cutoffs are unaffected. Do NOT rely on
+///   this prewarp for accurate cutoff near Nyquist — extend the approximation
+///   (or oversample) before widening audio-rate sweeps into that region.
+///
+/// What the QA gate pins is end-to-end SVF output: across the swept audio-rate
+/// equivalence test (fc 110 Hz–9 kHz, res 0–0.95) the measured max output delta
+/// vs. the exact-tanf const path is ~1.2e-3, comfortably under the 2e-3 gate.
 #[inline]
 fn svf_tan_prewarp(theta: f32) -> f32 {
     // theta in (0, ~1.54). Rational approx of tan: t·(a + b·t²)/(1 - c·t²).
