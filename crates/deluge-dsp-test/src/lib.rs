@@ -11,3 +11,4 @@ pub const FFT_N: usize = 8192;
 pub mod guards;
 pub mod spectrum;
 pub mod cpu;
+pub mod filter_meas;
