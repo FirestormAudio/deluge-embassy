@@ -6,7 +6,7 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{
-    env::Ar, filter::OnePole, filter::{Svf, SvfResp}, math, noise::Noise, noise::NoiseColor,
+    env::Ar, filter::OnePole, filter::{Svf, SvfResp, Tb303}, math, noise::Noise, noise::NoiseColor,
     osc::Osc, osc::SyncOsc, osc::Wave,
 };
 use deluge_dsp_kernels::wavetable::{
@@ -43,6 +43,7 @@ pub enum Kind {
     SvfHp,
     SvfBp,
     SvfNotch,
+    Tb303,
     Mul,
     Add,
     Sub,
@@ -59,6 +60,7 @@ enum State {
     Ar(Ar),
     OnePole(OnePole),
     Svf(Svf),
+    Tb303(Tb303),
     Wt(WtOsc),
     Stateless,
 }
@@ -98,6 +100,7 @@ impl Node {
             Kind::Env => State::Ar(Ar::new()),
             Kind::Lpf => State::OnePole(OnePole::new()),
             Kind::SvfLp | Kind::SvfHp | Kind::SvfBp | Kind::SvfNotch => State::Svf(Svf::new()),
+            Kind::Tb303 => State::Tb303(Tb303::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
         };
@@ -216,6 +219,11 @@ impl Node {
                 };
                 if let State::Svf(f) = &mut self.state {
                     f.process(ins[0], ins[1], ins[2], resp, dt, outs.port(0));
+                }
+            }
+            Kind::Tb303 => {
+                if let State::Tb303(f) = &mut self.state {
+                    f.process(ins[0], ins[1], ins[2], dt, outs.port(0));
                 }
             }
             Kind::Mul => math::mul(ins[0], ins[1], outs.port(0)),
@@ -366,6 +374,23 @@ mod tests {
         }
         assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 4.0));
         assert!(buf.iter().any(|&s| s != 0.0)); // LP of a DC step responds (non-silent)
+    }
+
+    #[test]
+    fn tb303_node_renders_bounded_nonsilent() {
+        let mut n = Node::new(Kind::Tb303, 0);
+        assert_eq!(Node::out_width(Kind::Tb303), 1);
+        let input = [0.6f32; 16];
+        let cutoff = [800.0f32; 16];
+        let res = [0.7f32; 16];
+        let ins = [In::A(&input), In::A(&cutoff), In::A(&res)];
+        let mut buf = [0.0f32; 16];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 8.0)); // TB-303 bound is ±8 (resonance loop), not ±1
+        assert!(buf.iter().any(|&s| s != 0.0));
     }
 
     #[test]
