@@ -506,6 +506,27 @@ mod diode_ladder_tests {
         }
         assert!(last > 0.1); // DC largely passes a lowpass
     }
+
+    #[test]
+    fn ladder_oversample_is_honoured() {
+        // Same effective cutoff (fh scaled by 1/os) but more RK2 sub-steps at
+        // higher os → more accurate integration of the nonlinear ODE → a
+        // measurably different output. Guards against the `oversample` param
+        // being silently ignored (which a single-OS spectral test can't catch).
+        let dt = 1.0f32 / 48_000.0;
+        let base = 2.0 * core::f32::consts::PI * 2_000.0 * dt; // high fh: sub-stepping matters most
+        let mut a = DiodeLadder::<3>::new();
+        let mut b = DiodeLadder::<3>::new();
+        let mut max_diff = 0.0f32;
+        for i in 0..1024 {
+            // loud, resonant drive (internal res=0.9) so integration accuracy shows up
+            let x = 0.8 * (2.0 * core::f32::consts::PI * 220.0 * dt * i as f32).sin();
+            let ya = a.process(x, base / 1.0, 0.9, 1);
+            let yb = b.process(x, base / 2.0, 0.9, 2);
+            max_diff = max_diff.max((ya - yb).abs());
+        }
+        assert!(max_diff > 1e-4, "oversample param not honoured: max|Δ|={max_diff}");
+    }
 }
 
 #[cfg(test)]
