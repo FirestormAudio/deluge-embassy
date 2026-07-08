@@ -138,6 +138,32 @@ pub fn build_all(base: &[f32; N], out: &mut [[f32; N]; LEVELS]) {
     build_all_ifft(base, out);
 }
 
+use deluge_dsp_kernels::wavetable::{level_len, level_offset, COMPACT_LEN};
+
+/// Build a full compact pyramid into a flat `COMPACT_LEN` region. Each level is the
+/// 3c band-limited IFFT level (built at N) decimated to `level_len(L)` — alias-free
+/// because the level has ≤ `level_len(L)/2` harmonics.
+pub fn build_pyramid_flat_compact(base: &[f32], region: &mut [f32]) {
+    if region.len() < COMPACT_LEN {
+        return;
+    }
+    let mut b = [0.0f32; N];
+    let n = N.min(base.len());
+    b[..n].copy_from_slice(&base[..n]);
+    let mut spectrum = [Complex::ZERO; N / 2 + 1];
+    deluge_fft::RealFft::<N, 4>::process(&b, &mut spectrum);
+    let mut full = [0.0f32; N];
+    for level in 0..LEVELS {
+        build_level_ifft(&spectrum, level, &mut full); // existing 3c: DC-zero + zero>kmax + inverse@N
+        let m = level_len(level);
+        let step = N / m;
+        let base_off = level_offset(level);
+        for i in 0..m {
+            region[base_off + i] = full[i * step];
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,30 +3,28 @@
 //   (the --target is required: the workspace defaults to the ARM no_std target,
 //    which can't build this std-using generator binary.)
 //
-// Six named single-cycle bases, each expanded into an 11-level band-limited
-// mip pyramid via `mipgen::build_all`, plus a `TABLES` registry whose order
+// Six named single-cycle bases, each expanded into a flat, compact
+// (per-level-length) band-limited mip pyramid via
+// `mipgen::build_pyramid_flat_compact`, plus a `TABLES` registry whose order
 // fixes the numeric `TableId`s consumed by `deluge_dsp_kernels::wavetable`:
 //   0=Saw  1=Square  2=Sine  3=Tri  4=Organ  5=Formant
 
-use mipgen::{build_all_additive, LEVELS, N};
+use deluge_dsp_kernels::wavetable::COMPACT_LEN;
+use mipgen::N;
 use std::f32::consts::PI;
 
 fn emit(name: &str, base: &[f32; N]) {
-    let mut mips = [[0.0f32; N]; LEVELS];
-    build_all_additive(base, &mut mips);
+    let mut region = [0.0f32; COMPACT_LEN];
+    mipgen::build_pyramid_flat_compact(base, &mut region);
     println!("#[rustfmt::skip]");
-    println!("pub static {name}: [[f32; {N}]; {LEVELS}] = [");
-    for lvl in mips.iter() {
-        print!("  [");
-        for (j, v) in lvl.iter().enumerate() {
-            if j % 8 == 0 {
-                print!("\n    ");
-            }
-            print!("{:.9}, ", v);
+    println!("pub static {name}: [f32; {COMPACT_LEN}] = [");
+    for (j, v) in region.iter().enumerate() {
+        if j % 8 == 0 {
+            print!("\n  ");
         }
-        println!("\n  ],");
+        print!("{:.9}, ", v);
     }
-    println!("];\n");
+    println!("\n];\n");
 }
 
 fn main() {
@@ -40,7 +38,7 @@ fn main() {
         let t = i as f32 / N as f32;
         *s = 2.0 * t - 1.0;
     }
-    emit("SAW_MIPS", &saw);
+    emit("SAW", &saw);
 
     // square: +1 for t<0.5, -1 otherwise
     let mut square = [0.0f32; N];
@@ -48,7 +46,7 @@ fn main() {
         let t = i as f32 / N as f32;
         *s = if t < 0.5 { 1.0 } else { -1.0 };
     }
-    emit("SQUARE_MIPS", &square);
+    emit("SQUARE", &square);
 
     // sine: sin(2*pi*t)
     let mut sine = [0.0f32; N];
@@ -56,7 +54,7 @@ fn main() {
         let t = i as f32 / N as f32;
         *s = (2.0 * PI * t).sin();
     }
-    emit("SINE_MIPS", &sine);
+    emit("SINE", &sine);
 
     // triangle: 1 - 4*|t-0.5|
     let mut tri = [0.0f32; N];
@@ -64,7 +62,7 @@ fn main() {
         let t = i as f32 / N as f32;
         *s = 1.0 - 4.0 * (t - 0.5).abs();
     }
-    emit("TRI_MIPS", &tri);
+    emit("TRI", &tri);
 
     // organ: sin(2pi t) + 0.5*sin(6pi t) + 0.25*sin(10pi t)
     // (fundamental + 3rd + 5th harmonic, drawbar-organ-ish odd-harmonic mix)
@@ -73,7 +71,7 @@ fn main() {
         let t = i as f32 / N as f32;
         *s = (2.0 * PI * t).sin() + 0.5 * (6.0 * PI * t).sin() + 0.25 * (10.0 * PI * t).sin();
     }
-    emit("ORGAN_MIPS", &organ);
+    emit("ORGAN", &organ);
 
     // formant: sin(2pi t) * (1 + cos(2pi t)) — a single-cycle AM of the
     // fundamental by its own second harmonic, producing an asymmetric,
@@ -86,18 +84,9 @@ fn main() {
         let ph = 2.0 * PI * t;
         *s = ph.sin() * (1.0 + ph.cos());
     }
-    emit("FORMANT_MIPS", &formant);
+    emit("FORMANT", &formant);
 
-    // Registry: per-table array of level-slice refs, then the id-indexed
-    // TABLES array. TABLES order fixes TableId: 0=Saw 1=Square 2=Sine 3=Tri
-    // 4=Organ 5=Formant.
-    for name in ["SAW", "SQUARE", "SINE", "TRI", "ORGAN", "FORMANT"] {
-        print!("pub static {name}: [&[f32]; {LEVELS}] = [");
-        let refs: Vec<String> = (0..LEVELS).map(|i| format!("&{name}_MIPS[{i}]")).collect();
-        println!("{}];", refs.join(", "));
-    }
-    println!();
-    println!(
-        "pub static TABLES: [&[&[f32]]; 6] = [&SAW, &SQUARE, &SINE, &TRI, &ORGAN, &FORMANT];"
-    );
+    // Registry: id-indexed TABLES array of flat-table refs. TABLES order
+    // fixes TableId: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant.
+    println!("pub static TABLES: [&[f32]; 6] = [&SAW, &SQUARE, &SINE, &TRI, &ORGAN, &FORMANT];");
 }

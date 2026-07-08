@@ -497,20 +497,14 @@ mod tests {
     #[test]
     fn pooled_wavetable_renders_and_frees() {
         let mut e = E::new(48_000.0);
-        // Build a saw pyramid directly into the pool (mimics upload_table).
+        // Build a saw pyramid directly into the pool (mimics upload_table),
+        // via the same flat-compact builder the runtime upload path uses.
         let n = mipgen::N;
-        let h = e.pool_alloc(n * mipgen::LEVELS).expect("pool room");
+        let compact_len = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+        let h = e.pool_alloc(compact_len).expect("pool room");
         let mut base = [0.0f32; mipgen::N];
         for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / n as f32) - 1.0; }
-        let harm = mipgen::analyze(&base);
-        {
-            let region = e.pool_slice_mut(h);
-            let mut lvl = [0.0f32; mipgen::N];
-            for level in 0..mipgen::LEVELS {
-                mipgen::synth_level(&harm, level, &mut lvl);
-                region[level * n..(level + 1) * n].copy_from_slice(&lvl);
-            }
-        }
+        mipgen::build_pyramid_flat_compact(&base, e.pool_slice_mut(h));
         e.create(NodeId(0), Kind::Wavetable);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
         e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(h) });
@@ -522,23 +516,27 @@ mod tests {
         e.apply(Cmd::Free { node: NodeId(0) });
         // First-fit: a genuine free lets the next same-size alloc reclaim the exact
         // region → same handle. This fails if Cmd::Free didn't actually pool.free(h).
-        assert_eq!(e.pool_alloc(n * mipgen::LEVELS), Some(h));
+        assert_eq!(e.pool_alloc(compact_len), Some(h));
     }
 
     #[test]
     fn pool_exhaustion_returns_none_not_panic() {
         // `E`'s pool is PCAP=45056, PCHUNK=2048 → 22 chunks total. One
-        // wavetable pyramid is N*LEVELS = 2048*11 = 22528 f32 = 11 chunks, so
-        // exactly 2 pyramids fit. A 3rd upload-sized alloc must degrade to
-        // `None`, never panic — the caller (Wren `Wavetable.from`) is
-        // expected to leave the table unbound in that case.
+        // wavetable pyramid is the flat-compact `COMPACT_LEN`=6208 f32,
+        // which rounds up to 4 chunks (2048*3=6144 < 6208 <= 2048*4=8192), so
+        // exactly 5 pyramids fit (20 chunks) and a 6th (needing 4 more, only
+        // 2 free) must degrade to `None`, never panic — the caller (Wren
+        // `Wavetable.from`) is expected to leave the table unbound in that case.
         let mut e = E::new(48_000.0);
-        let n = mipgen::N;
-        let want = n * mipgen::LEVELS;
-        let h1 = e.pool_alloc(want).expect("1st pyramid fits");
-        let h2 = e.pool_alloc(want).expect("2nd pyramid fits");
-        assert!(e.pool_alloc(want).is_none(), "3rd pyramid must not fit a 2-pyramid pool");
+        let want = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+        let mut handles = [None; 5];
+        for (i, slot) in handles.iter_mut().enumerate() {
+            *slot = Some(e.pool_alloc(want).unwrap_or_else(|| panic!("pyramid {i} should fit")));
+        }
+        assert!(e.pool_alloc(want).is_none(), "6th pyramid must not fit a 5-pyramid pool");
         // Pool is not corrupted by the failed alloc: existing handles still work.
+        let h1 = handles[0].unwrap();
+        let h2 = handles[1].unwrap();
         e.pool_slice_mut(h1).fill(0.5);
         e.pool_slice_mut(h2).fill(0.75);
         assert!(e.pool_slice(h1).iter().all(|&x| x == 0.5));
@@ -547,18 +545,18 @@ mod tests {
 
     #[test]
     fn pooled_wavetable_wrong_sized_region_renders_silence_not_panic() {
-        // A `TableSrc::Pooled` handle whose region isn't exactly N*LEVELS long
-        // (e.g. the upload path allocated the wrong size, or a stale handle
-        // from a different table) must never be sliced into `LEVELS_WT`
-        // chunks — `process_resolved`'s exact-size guard (`region.len() ==
-        // N_WT * LEVELS_WT`) should just leave the output untouched (silence
-        // in a freshly-zeroed arena slot). This is the reachable degrade path
-        // for a "bad pool region": a legitimately-obtained `PoolHandle` (via
-        // the public `pool_alloc`) whose length happens to be wrong, since
-        // `PoolHandle`'s fields are private to `pool.rs` and can't be
-        // hand-forged from `engine::tests`.
+        // A `TableSrc::Pooled` handle whose region isn't exactly `COMPACT_LEN`
+        // long (e.g. the upload path allocated the wrong size, or a stale
+        // handle from a different table) must never be sliced by the
+        // compact-layout helpers — `process_resolved`'s exact-size guard
+        // (`region.len() == COMPACT_LEN`) should just leave the output
+        // untouched (silence in a freshly-zeroed arena slot). This is the
+        // reachable degrade path for a "bad pool region": a
+        // legitimately-obtained `PoolHandle` (via the public `pool_alloc`)
+        // whose length happens to be wrong, since `PoolHandle`'s fields are
+        // private to `pool.rs` and can't be hand-forged from `engine::tests`.
         let mut e = E::new(48_000.0);
-        let bad = e.pool_alloc(64).expect("small alloc fits"); // 64 != N*LEVELS (22528)
+        let bad = e.pool_alloc(64).expect("small alloc fits"); // 64 != COMPACT_LEN (6208)
         e.create(NodeId(0), Kind::Wavetable);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
         e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(bad) });

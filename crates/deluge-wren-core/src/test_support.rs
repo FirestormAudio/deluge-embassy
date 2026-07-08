@@ -317,7 +317,7 @@ impl Host for EngineHost {
         self.eng.apply(cmd);
     }
     fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
-        let h = self.eng.pool_alloc(mipgen::N * mipgen::LEVELS)?;
+        let h = self.eng.pool_alloc(crate::PYRAMID_LEN)?;
         crate::host::build_pyramid_into(base, self.eng.pool_slice_mut(h));
         Some(h)
     }

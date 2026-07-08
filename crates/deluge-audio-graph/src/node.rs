@@ -6,15 +6,18 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{env::Ar, filter::OnePole, math, noise::Noise, osc::Osc, osc::Wave};
-use deluge_dsp_kernels::wavetable::{static_mipset, MipSet, TableId, WtOsc};
+use deluge_dsp_kernels::wavetable::{
+    level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
+};
 pub use deluge_dsp_kernels::In;
 
-/// Number of mip levels, and per-level sample count, in a pooled wavetable's
-/// flat region. Must equal `mipgen::LEVELS` / `mipgen::N` (the graph crate
-/// does not depend on `mipgen` outside tests, so these are plain literals,
-/// not imports; the kernel's own `wavetable::N` is private).
-const LEVELS_WT: usize = 11;
-const N_WT: usize = 2048;
+/// Assemble a `MipSet`'s level-slice array from a flat, compact
+/// (`COMPACT_LEN`-long) pyramid region via the kernel's `level_offset`/
+/// `level_len` layout. Shared by the static and pooled `Kind::Wavetable`
+/// arms below so both read the same per-level slicing.
+fn compact_levels(region: &[f32]) -> [&[f32]; LEVELS] {
+    core::array::from_fn(|l| &region[level_offset(l)..level_offset(l) + level_len(l)])
+}
 
 pub const MAX_INPUTS: usize = 3;
 
@@ -191,21 +194,21 @@ impl Node {
                 if let State::Wt(o) = &mut self.state {
                     match self.table {
                         Some(TableSrc::Static(id)) => {
-                            if let Some(mips) = static_mipset(id) {
-                                o.process(mips, ins[0], ins[1], dt, outs.port(0));
+                            if let Some(region) = static_table_flat(id) {
+                                let levels = compact_levels(region);
+                                o.process(MipSet { levels: &levels }, ins[0], ins[1], dt, outs.port(0));
                             }
                         }
                         Some(TableSrc::Pooled(_)) => {
-                            // Require an exact-size region (LEVELS_WT levels of
-                            // N_WT samples each, matching the kernel's
-                            // `debug_assert_eq!(mips.levels[0].len(), N)`); a
-                            // short/mis-sized region renders silence rather
-                            // than risk an out-of-bounds slice or a bogus
-                            // per-level length.
+                            // Require an exact-size region (`COMPACT_LEN`
+                            // f32, matching the kernel's flat compact
+                            // pyramid layout); a short/mis-sized region
+                            // renders silence rather than risk an
+                            // out-of-bounds slice or a bogus per-level
+                            // length.
                             if let Some(region) = pool_region {
-                                if region.len() == N_WT * LEVELS_WT {
-                                    let levels: [&[f32]; LEVELS_WT] =
-                                        core::array::from_fn(|l| &region[l * N_WT..(l + 1) * N_WT]);
+                                if region.len() == COMPACT_LEN {
+                                    let levels = compact_levels(region);
                                     o.process(MipSet { levels: &levels }, ins[0], ins[1], dt, outs.port(0));
                                 }
                             }
