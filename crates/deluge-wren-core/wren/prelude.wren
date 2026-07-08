@@ -110,6 +110,8 @@ foreign class Node {
   foreign static src_(kind, freq)
   foreign static env_(attack, release)
   foreign static noise_()
+  foreign static pink_()
+  foreign static brown_()
   foreign static binop_(op, a, b)
   foreign static lpf_(input, cutoff)
   foreign static patch_(node)
@@ -180,6 +182,8 @@ class Osc {
     if (t is Wavetable) return Node.wavetable_pooled_(t, f)
     return Node.wavetable_(t, f) // WT.x numeric id (static table)
   }
+  static pink() { Node.pink_() }
+  static brown() { Node.brown_() }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

@@ -184,6 +184,28 @@ pub(crate) unsafe extern "C" fn node_noise(raw: *mut WrenVM) {
     node_noise_impl(&vm);
 }
 
+pub(crate) fn node_pink_impl<S: SlotApi>(vm: &S) {
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PinkNoise, [Input::Const(0.0); 3]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_pink(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_pink_impl(&vm);
+}
+
+pub(crate) fn node_brown_impl<S: SlotApi>(vm: &S) {
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::BrownNoise, [Input::Const(0.0); 3]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_brown(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_brown_impl(&vm);
+}
+
 pub(crate) fn node_binop_impl<S: SlotApi>(vm: &S) {
     let kind = binop_kind(vm.get_f(1) as u8);
     let a = arg_input(vm, 2);
@@ -499,6 +521,8 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "src_(_,_)", node_src_impl::<S>);
     method("main", "Node", true, "env_(_,_)", node_env_impl::<S>);
     method("main", "Node", true, "noise_()", node_noise_impl::<S>);
+    method("main", "Node", true, "pink_()", node_pink_impl::<S>);
+    method("main", "Node", true, "brown_()", node_brown_impl::<S>);
     method("main", "Node", true, "binop_(_,_,_)", node_binop_impl::<S>);
     method("main", "Node", true, "lpf_(_,_)", node_lpf_impl::<S>);
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
