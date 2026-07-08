@@ -385,7 +385,8 @@ mod tb303_tests {
         fn tb303_is_finite_and_bounded(
             cutoff in 20.0f32..=2_000.0,
             res in 0.0f32..=1.0,
-            amp in 0.0f32..=1.0,
+            amp in 0.0f32..=8.0, // incl. heavy overdrive (well past unity) — the input
+                                 // saturator must keep the loop bounded regardless
         ) {
             let x: std::vec::Vec<f32> = (0..512).map(|i| amp * (0.05 * i as f32).sin()).collect();
             let mut out = [0.0f32; 512];
