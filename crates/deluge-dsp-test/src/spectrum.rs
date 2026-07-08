@@ -181,6 +181,12 @@ pub fn slope_db_per_octave(spec: &Spectrum, f_lo: f32, f_hi: f32) -> f32 {
         f *= 2.0;
     }
 
+    // Fewer than 2 usable octave bands (empty/degenerate range, or all-zero
+    // magnitudes) → no defined slope; return 0.0 rather than NaN/∞.
+    if xs.len() < 2 {
+        return 0.0;
+    }
+
     // Least-squares slope of y vs x: slope = Σ(x-x̄)(y-ȳ) / Σ(x-x̄)².
     let n = xs.len() as f32;
     let x_mean: f32 = xs.iter().sum::<f32>() / n;
