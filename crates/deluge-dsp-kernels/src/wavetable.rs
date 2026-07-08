@@ -1177,10 +1177,10 @@ mod tests {
     }
 
     /// Max `|simd - scalar|` tolerance for a single realistic render (see
-    /// `NS` below): measured worst case ~3.2e-4 (`process`) / ~2.9e-4
+    /// `NS` below): measured worst case ~3.2e-4 (`process`) / ~1.3e-4
     /// (`process_morph`) across a sweep of ~20 log-spaced frequencies
     /// (20 Hz-8 kHz, covering every mip level) x 7 pmod values; set with a
-    /// ~1.5x margin above that. This is f32 FMA/reassociation +
+    /// ~1.5x margin above the larger (`process`) figure. This is f32 FMA/reassociation +
     /// closed-form-vs-iterative-phase noise (see `simd8`'s doc-comment) —
     /// NOT a formula/index bug: verified by (a) the divergence tracking
     /// exactly with proximity to a mip-table wrap boundary (the steepest
