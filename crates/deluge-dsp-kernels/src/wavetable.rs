@@ -1196,10 +1196,15 @@ mod tests {
     /// renders: `self.phase` is an iteratively-accumulated f32, and two
     /// differently-grouped summations of the same `dtp` (per-sample, scalar;
     /// per-chunk-then-once-per-call, SIMD) drift apart roughly with sample
-    /// count. Measured (informational, see `simd_long_render_drift_is_bounded_informational`):
-    /// ~3e-4 at 128 samples (one real audio block; `MAX_BLOCK` in
-    /// `deluge-audio-graph`), ~1e-2 at 800, ~0.16 at 3000+ (worst case,
-    /// landing right on a low-frequency table wrap). This is inherent to
+    /// count. Two distinct measurements, don't conflate them: (1) the
+    /// per-block worst that `SIMD_TOL` bounds is ~3e-4, taken across the whole
+    /// frequency sweep at the real block length (`NS`=133; one `MAX_BLOCK` of
+    /// 128 plus tail). (2) Growth *at a single low frequency* over
+    /// artificially long renders (informational, see
+    /// `simd_long_render_drift_is_bounded_informational`, freq=20 Hz landing
+    /// on a table wrap): ~1e-7 at 128 samples, ~1.7e-2 at 2048 — climbing with
+    /// sample count, but only at render lengths no real audio block reaches.
+    /// This is inherent to
     /// comparing two independent f32 accumulators, not unique to SIMD (any
     /// two differently-ordered summations of the same series diverge like
     /// this) — and immaterial in practice, since a shipped build only ever
