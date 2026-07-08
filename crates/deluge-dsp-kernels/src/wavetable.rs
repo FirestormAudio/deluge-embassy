@@ -161,7 +161,12 @@ impl Default for WtOsc {
 
 /// Identifies one of the named `&'static` mip pyramids baked into
 /// `wavetables_generated::TABLES` (see that module's `TABLES` order for the
-/// id assignment: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant).
+/// id assignment: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant; 6=HarmonicSweep
+/// and 7=FormantMorph are *2D* (multi-frame) morph banks — same lookup, but
+/// `static_table_flat`'s returned region is `FRAMES*COMPACT_LEN` long instead
+/// of `COMPACT_LEN`, so callers deriving `frames = region.len()/COMPACT_LEN`
+/// (see `deluge_audio_graph::node`'s `Kind::Wavetable` arm) route them through
+/// `process_morph` instead of `process`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TableId(pub u16);
 
@@ -597,6 +602,70 @@ mod tests {
             w.process_morph(&region, 2, In::K(220.0), In::K(0.0), In::K(pos), 1.0/sr, &mut o); o };
         let f0 = render(0.0); let f1 = render(1.0); let mid = render(0.5);
         for i in 0..256 { assert!((mid[i] - 0.5*(f0[i]+f1[i])).abs() < 1e-4, "midpoint avg @ {i}"); }
+    }
+
+    #[test]
+    fn named_2d_bank_morphs_and_is_well_formed() {
+        // Task 4: HarmonicSweep (id 6) and FormantMorph (id 7) are named
+        // *static* 2D morph banks baked into `wavetables_generated::TABLES`
+        // at `gen_tables` time (no runtime build). `static_table_flat`
+        // returns their flat region exactly like the single-cycle tables;
+        // `frames = region.len()/COMPACT_LEN` must come out >1 (multi-frame)
+        // and the render path (`process_morph`, same as a pooled 2D bank)
+        // must produce finite, non-silent, continuous, and — crucially —
+        // *position-dependent* output (position actually selects different
+        // frames, not just replaying the same one).
+        let sr = 48_000.0f32;
+        let f0 = 220.0f32;
+        for &(id, name) in &[(6u16, "HarmonicSweep"), (7u16, "FormantMorph")] {
+            let region = static_table_flat(TableId(id)).expect("named 2d bank");
+            assert_eq!(region.len() % COMPACT_LEN, 0, "{name}: not a whole number of frames");
+            let frames = region.len() / COMPACT_LEN;
+            assert!(frames > 1, "{name}: expected a multi-frame (2D) bank, got frames={frames}");
+
+            let render = |pos: f32| {
+                let mut o = [0.0f32; deluge_dsp_test::FFT_N];
+                let mut w = WtOsc::new();
+                w.process_morph(region, frames, In::K(f0), In::K(0.0), In::K(pos), 1.0 / sr, &mut o);
+                o
+            };
+
+            // Endpoints: finite, non-silent.
+            let buf0 = render(0.0);
+            let buf1 = render(1.0);
+            for (buf, tag) in [(&buf0, "pos=0"), (&buf1, "pos=1")] {
+                for &s in buf.iter() {
+                    assert!(s.is_finite(), "{name} {tag}: non-finite sample");
+                }
+                let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+                assert!(rms > 0.01, "{name} {tag}: silent (rms={rms})");
+            }
+
+            // position=0 vs position=1 must select measurably different
+            // frames: compare the harmonic-magnitude spectra (broadband
+            // distance across the first 24 harmonics of f0), not just RMS
+            // (which per-frame normalization keeps roughly constant).
+            let spec0 = deluge_dsp_test::spectrum::analyze_buf(sr, &buf0);
+            let spec1 = deluge_dsp_test::spectrum::analyze_buf(sr, &buf1);
+            let h0 = spec0.harmonics_db(f0, 24);
+            let h1 = spec1.harmonics_db(f0, 24);
+            let dist: f32 = h0.iter().zip(h1.iter()).map(|(a, b)| (a - b).powi(2)).sum();
+            assert!(dist > 4.0, "{name}: pos=0 vs pos=1 harmonic spectra too similar (dist^2={dist})");
+
+            // Continuity across a position sweep: no hard jump (a broken
+            // frame-bracket/crossfade would show up as a large RMS step).
+            let mut prev_rms: Option<f32> = None;
+            let mut p = 0.0f32;
+            while p <= 1.0 {
+                let buf = render(p);
+                let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+                if let Some(pr) = prev_rms {
+                    assert!((rms - pr).abs() < 0.15, "{name}: rms jump at pos {p}: {pr}->{rms}");
+                }
+                prev_rms = Some(rms);
+                p += 0.05;
+            }
+        }
     }
 
     #[test]
