@@ -152,6 +152,54 @@ impl Spectrum {
     }
 }
 
+/// Least-squares slope (dB/octave) of the magnitude spectrum over `[f_lo, f_hi]`,
+/// averaging bins into octave bands to reduce stochastic variance. Positive = rising.
+///
+/// **Convention: MAGNITUDE, not power.** For each octave-band center `f` (`f_lo`,
+/// `2·f_lo`, `4·f_lo`, ... up to `f_hi`), take the mean *linear magnitude* of bins in
+/// `[f/√2, f·√2]`, then `y = 20·log10(mean_mag)`, `x = log2(f)`; return the
+/// least-squares slope `dy/dx` of the `(x, y)` points. Under this convention a
+/// magnitude ∝ `1/f` slope (e.g. brown noise, ~1/f² power) is **−6 dB/oct**, and a
+/// magnitude ∝ `1/√f` slope (e.g. pink noise, ~1/f power) is **−3 dB/oct** — see the
+/// unit tests below, which validate the metric against hand-built synthetic spectra of
+/// exactly these slopes.
+pub fn slope_db_per_octave(spec: &Spectrum, f_lo: f32, f_hi: f32) -> f32 {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    let mut f = f_lo;
+    while f <= f_hi {
+        let lo_hz = f / std::f32::consts::SQRT_2;
+        let hi_hz = f * std::f32::consts::SQRT_2;
+        let lo_bin = spec.bin_of_hz(lo_hz);
+        let hi_bin = spec.bin_of_hz(hi_hz).max(lo_bin);
+        let band = &spec.bins[lo_bin..=hi_bin];
+        let mean_mag: f32 = band.iter().sum::<f32>() / band.len() as f32;
+        if mean_mag > 0.0 {
+            xs.push(f.log2());
+            ys.push(20.0 * mean_mag.log10());
+        }
+        f *= 2.0;
+    }
+
+    // Fewer than 2 usable octave bands (empty/degenerate range, or all-zero
+    // magnitudes) → no defined slope; return 0.0 rather than NaN/∞.
+    if xs.len() < 2 {
+        return 0.0;
+    }
+
+    // Least-squares slope of y vs x: slope = Σ(x-x̄)(y-ȳ) / Σ(x-x̄)².
+    let n = xs.len() as f32;
+    let x_mean: f32 = xs.iter().sum::<f32>() / n;
+    let y_mean: f32 = ys.iter().sum::<f32>() / n;
+    let mut num = 0.0f32;
+    let mut den = 0.0f32;
+    for (x, y) in xs.iter().zip(ys.iter()) {
+        num += (x - x_mean) * (y - y_mean);
+        den += (x - x_mean) * (x - x_mean);
+    }
+    num / den
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +279,41 @@ mod tests {
         let spec = render_sines(sr, &[(f0, 1.0)]);
         assert!(spec.thd(f0, 5) < 1e-2, "pure sine THD ~ 0");
         assert!(spec.worst_alias_db(f0, 3.0 * spec.bin_hz) < -60.0);
+    }
+
+    /// Build a synthetic `Spectrum` with `bins[k] = mag_fn(freq_of_bin_k)` — no FFT
+    /// involved, just hand-built magnitudes of a known analytic slope.
+    fn synthetic_spectrum(sr: f32, mag_fn: impl Fn(f32) -> f32) -> Spectrum {
+        let bin_hz = sr / FFT_N as f32;
+        let bins: Vec<f32> = (0..=FFT_N / 2)
+            .map(|k| {
+                let f = (k as f32 * bin_hz).max(bin_hz); // avoid f=0 (DC)
+                mag_fn(f)
+            })
+            .collect();
+        Spectrum { bins, bin_hz, sample_rate: sr }
+    }
+
+    #[test]
+    fn slope_metric_reads_flat_spectrum_as_zero() {
+        let spec = synthetic_spectrum(48_000.0, |_f| 1.0);
+        let slope = slope_db_per_octave(&spec, 200.0, 12_000.0);
+        assert!(slope.abs() < 0.01, "flat magnitude should give ~0 dB/oct, got {slope}");
+    }
+
+    #[test]
+    fn slope_metric_reads_one_over_f_as_minus_six_db_per_oct() {
+        // magnitude ∝ 1/f (brown-noise-like) → 20*log10(1/(2f)) - 20*log10(1/f) = -6.02 dB/oct
+        let spec = synthetic_spectrum(48_000.0, |f| 1.0 / f);
+        let slope = slope_db_per_octave(&spec, 200.0, 12_000.0);
+        assert!((slope - (-6.0)).abs() < 0.1, "1/f magnitude should give ~-6 dB/oct, got {slope}");
+    }
+
+    #[test]
+    fn slope_metric_reads_one_over_sqrt_f_as_minus_three_db_per_oct() {
+        // magnitude ∝ 1/√f (pink-noise-like) → -3.01 dB/oct
+        let spec = synthetic_spectrum(48_000.0, |f| 1.0 / f.sqrt());
+        let slope = slope_db_per_octave(&spec, 200.0, 12_000.0);
+        assert!((slope - (-3.0)).abs() < 0.1, "1/sqrt(f) magnitude should give ~-3 dB/oct, got {slope}");
     }
 }

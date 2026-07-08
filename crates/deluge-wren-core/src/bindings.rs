@@ -871,6 +871,8 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "src_(_,_)", bindings_audio::node_src),
     static_method("Node", "env_(_,_)", bindings_audio::node_env),
     static_method("Node", "noise_()", bindings_audio::node_noise),
+    static_method("Node", "pink_()", bindings_audio::node_pink),
+    static_method("Node", "brown_()", bindings_audio::node_brown),
     static_method("Node", "binop_(_,_,_)", bindings_audio::node_binop),
     static_method("Node", "lpf_(_,_)", bindings_audio::node_lpf),
     static_method("Node", "patch_(_)", bindings_audio::node_patch),

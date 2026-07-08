@@ -5,7 +5,9 @@
 //! hatch is reserved for a future open set (not built in P0).
 
 use crate::Input;
-use deluge_dsp_kernels::{env::Ar, filter::OnePole, math, noise::Noise, osc::Osc, osc::Wave};
+use deluge_dsp_kernels::{
+    env::Ar, filter::OnePole, math, noise::Noise, noise::NoiseColor, osc::Osc, osc::Wave,
+};
 use deluge_dsp_kernels::wavetable::{
     level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
 };
@@ -28,6 +30,8 @@ pub enum Kind {
     Square,
     Tri,
     Noise,
+    PinkNoise,
+    BrownNoise,
     Env,
     Lpf,
     Mul,
@@ -75,6 +79,8 @@ impl Node {
         let state = match kind {
             Kind::Sine | Kind::Saw | Kind::Square | Kind::Tri => State::Osc(Osc::new()),
             Kind::Noise => State::Noise(Noise::seeded(0x2545_F491)),
+            Kind::PinkNoise => State::Noise(Noise::seeded_color(0x2545_F491, NoiseColor::Pink)),
+            Kind::BrownNoise => State::Noise(Noise::seeded_color(0x2545_F491, NoiseColor::Brown)),
             Kind::Env => State::Ar(Ar::new()),
             Kind::Lpf => State::OnePole(OnePole::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
@@ -160,7 +166,7 @@ impl Node {
                     o.process(wave, ins[0], ins[1], ins[2], dt, outs.port(0));
                 }
             }
-            Kind::Noise => {
+            Kind::Noise | Kind::PinkNoise | Kind::BrownNoise => {
                 if let State::Noise(nz) = &mut self.state {
                     nz.process(outs.port(0));
                 }
