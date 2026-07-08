@@ -102,35 +102,53 @@ impl WtOsc {
     pub fn process(&mut self, mips: MipSet, freq: In, pmod: In, dt: f32, out: &mut [f32]) {
         debug_assert!(!mips.levels.is_empty());
         debug_assert_eq!(mips.levels[0].len(), N);
-        let nlev = mips.levels.len();
         for (i, s) in out.iter_mut().enumerate() {
             let dtp = freq.at(i) * dt; // cycles/sample
-            // Mip select: as dtp doubles (one octave up), drop one level of
-            // harmonics. level0 is safe while its top harmonic (N/2) stays below
-            // Nyquist: dtp*(N/2) < 0.5 → dtp < 1/N. Each octave above adds 1.
-            // fractional level → crossfade weight.
-            let flevel = if dtp <= 0.0 {
-                0.0
-            } else {
-                // log2(dtp * N) clamped ≥ 0
-                let x = dtp * N as f32;
-                let l = libm::log2f(x);
-                if l < 0.0 { 0.0 } else { l }
-            };
-            let lo = flevel as usize;
-            let lo = if lo >= nlev { nlev - 1 } else { lo };
-            let hi = if lo + 1 >= nlev { nlev - 1 } else { lo + 1 };
-            let frac = flevel - lo as f32;
-
             let mut ph = self.phase + pmod.at(i);
             ph -= floorf(ph);
 
-            let a = interp_cubic(mips.levels[lo], ph);
-            let b = interp_cubic(mips.levels[hi], ph);
-            *s = a + (b - a) * frac.clamp(0.0, 1.0);
+            *s = sample_one(&mips, ph, dtp);
 
             self.phase += dtp;
             self.phase -= floorf(self.phase);
+        }
+    }
+
+    /// Multi-frame morphing read: linearly crossfades between two adjacent
+    /// frames of a flat, contiguous stack of compact pyramids (`region`,
+    /// `frames * COMPACT_LEN` long, each frame laid out like
+    /// `compact_levels` expects) selected by `position` (normalized `[0,1]`
+    /// across `frames`), while each frame's own sample is produced by the
+    /// same band-limited single-cycle read (`sample_one`) `process` uses.
+    /// `region.len() < frames * COMPACT_LEN` (or `frames == 0`) silently
+    /// produces silence (out left as-is by caller/zeroed) rather than
+    /// panicking, since callers may pass a not-yet-fully-uploaded region.
+    pub fn process_morph(
+        &mut self, region: &[f32], frames: usize,
+        freq: In, pmod: In, position: In, dt: f32, out: &mut [f32],
+    ) {
+        // Region must be `frames * COMPACT_LEN`; each frame is a compact pyramid.
+        if frames == 0 || region.len() < frames * COMPACT_LEN { return; }
+        let last = frames - 1;
+        for (i, s) in out.iter_mut().enumerate() {
+            let dtp = freq.at(i) * dt;
+            let mut ph = self.phase + pmod.at(i);
+            ph -= floorf(ph);
+            // Frame bracket from position in [0,1].
+            let fpos = position.at(i).clamp(0.0, 1.0) * last as f32;
+            let f0 = fpos as usize;
+            let f0 = if f0 > last { last } else { f0 };
+            let f1 = if f0 + 1 > last { last } else { f0 + 1 };
+            let ffrac = fpos - f0 as f32;
+            let m0 = compact_levels(&region[f0 * COMPACT_LEN..(f0 + 1) * COMPACT_LEN]);
+            let y0 = sample_one(&MipSet { levels: &m0 }, ph, dtp);
+            let y = if f1 == f0 { y0 } else {
+                let m1 = compact_levels(&region[f1 * COMPACT_LEN..(f1 + 1) * COMPACT_LEN]);
+                let y1 = sample_one(&MipSet { levels: &m1 }, ph, dtp);
+                y0 + (y1 - y0) * ffrac.clamp(0.0, 1.0)
+            };
+            *s = y;
+            self.phase += dtp; self.phase -= floorf(self.phase);
         }
     }
 }
@@ -143,7 +161,12 @@ impl Default for WtOsc {
 
 /// Identifies one of the named `&'static` mip pyramids baked into
 /// `wavetables_generated::TABLES` (see that module's `TABLES` order for the
-/// id assignment: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant).
+/// id assignment: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant; 6=HarmonicSweep
+/// and 7=FormantMorph are *2D* (multi-frame) morph banks — same lookup, but
+/// `static_table_flat`'s returned region is `FRAMES*COMPACT_LEN` long instead
+/// of `COMPACT_LEN`, so callers deriving `frames = region.len()/COMPACT_LEN`
+/// (see `deluge_audio_graph::node`'s `Kind::Wavetable` arm) route them through
+/// `process_morph` instead of `process`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TableId(pub u16);
 
@@ -167,6 +190,43 @@ pub fn static_table_flat(id: TableId) -> Option<&'static [f32]> {
     Some(tables[idx])
 }
 
+/// Single-cycle band-limited read: mip-select by pitch (`dtp` = cycles/sample)
+/// at phase `ph`, cubic-Hermite interpolate within the selected level, and
+/// linearly crossfade to the adjacent level across octave boundaries. This is
+/// the exact per-sample inner read `process` uses; `process_morph` calls it
+/// once per morph frame and crossfades the results by `position`.
+fn sample_one(mips: &MipSet, ph: f32, dtp: f32) -> f32 {
+    let nlev = mips.levels.len();
+    // Mip select: as dtp doubles (one octave up), drop one level of
+    // harmonics. level0 is safe while its top harmonic (N/2) stays below
+    // Nyquist: dtp*(N/2) < 0.5 → dtp < 1/N. Each octave above adds 1.
+    // fractional level → crossfade weight.
+    let flevel = if dtp <= 0.0 {
+        0.0
+    } else {
+        // log2(dtp * N) clamped ≥ 0
+        let x = dtp * N as f32;
+        let l = libm::log2f(x);
+        if l < 0.0 { 0.0 } else { l }
+    };
+    let lo = flevel as usize;
+    let lo = if lo >= nlev { nlev - 1 } else { lo };
+    let hi = if lo + 1 >= nlev { nlev - 1 } else { lo + 1 };
+    let frac = flevel - lo as f32;
+
+    let a = interp_cubic(mips.levels[lo], ph);
+    let b = interp_cubic(mips.levels[hi], ph);
+    a + (b - a) * frac.clamp(0.0, 1.0)
+}
+
+/// Assembles a per-frame level view `[&[f32]; LEVELS]` from a flat compact
+/// pyramid region (`COMPACT_LEN` long), via the `level_offset`/`level_len`
+/// layout. Shared by the static-table, pooled, and morph (`process_morph`)
+/// read paths.
+pub(crate) fn compact_levels(region: &[f32]) -> [&[f32]; LEVELS] {
+    core::array::from_fn(|l| &region[level_offset(l)..level_offset(l) + level_len(l)])
+}
+
 /// 4-point Catmull-Rom at fractional phase `ph` in [0,1) over a length-N table.
 fn interp_cubic(table: &[f32], ph: f32) -> f32 {
     let n = table.len();
@@ -185,6 +245,8 @@ fn interp_cubic(table: &[f32], ph: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use crate::In;
 
@@ -350,10 +412,6 @@ mod tests {
         assert_eq!(COMPACT_LEN, level_offset(LEVELS));
     }
 
-    fn compact_levels(region: &[f32]) -> [&[f32]; LEVELS] {
-        core::array::from_fn(|l| &region[level_offset(l)..level_offset(l) + level_len(l)])
-    }
-
     fn full_levels(region: &[f32]) -> [&[f32]; LEVELS] {
         core::array::from_fn(|l| &region[l * N..(l + 1) * N])
     }
@@ -503,6 +561,139 @@ mod tests {
             let mut out = [0.0f32; 256];
             osc.process(MipSet { levels: &refs }, In::K(freq), In::K(pm), 1.0 / 48_000.0, &mut out);
             for s in out { proptest::prop_assert!(s.is_finite() && s.abs() <= 1.2); }
+        }
+    }
+
+    use std::vec::Vec;
+    use std::vec;
+
+    fn frame_region(bases: &[[f32; N]]) -> Vec<f32> { // host test; std Vec ok in tests
+        let mut r = vec![0.0f32; bases.len() * COMPACT_LEN];
+        for (f, b) in bases.iter().enumerate() {
+            mipgen::build_pyramid_flat_compact(b, &mut r[f * COMPACT_LEN..(f + 1) * COMPACT_LEN]);
+        }
+        r
+    }
+
+    #[test]
+    fn morph_frames1_matches_single_cycle() {
+        // FRAMES==1 morph must equal the single-cycle process bit-for-bit.
+        let mut saw = [0.0f32; N];
+        for (i, s) in saw.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        let region = frame_region(&[saw]);
+        let levels = compact_levels(&region);
+        let (mut a, mut b) = (WtOsc::new(), WtOsc::new());
+        let mut oa = [0.0f32; 256];
+        let mut ob = [0.0f32; 256];
+        a.process(MipSet { levels: &levels }, In::K(220.0), In::K(0.0), 1.0 / 48_000.0, &mut oa);
+        b.process_morph(&region, 1, In::K(220.0), In::K(0.0), In::K(0.5), 1.0 / 48_000.0, &mut ob);
+        assert_eq!(oa, ob); // bit-exact
+    }
+
+    #[test]
+    fn morph_position_endpoints_and_midpoint() {
+        // position=0 → frame 0; position=1 → frame 1; position=0.5 → average.
+        let mut saw = [0.0f32; N];
+        let mut sq = [0.0f32; N];
+        for i in 0..N { saw[i] = 2.0 * (i as f32 / N as f32) - 1.0; sq[i] = if i < N/2 {1.0} else {-1.0}; }
+        let region = frame_region(&[saw, sq]);
+        let sr = 48_000.0f32;
+        let render = |pos: f32| { let mut o=[0.0f32;256]; let mut w=WtOsc::new();
+            w.process_morph(&region, 2, In::K(220.0), In::K(0.0), In::K(pos), 1.0/sr, &mut o); o };
+        let f0 = render(0.0); let f1 = render(1.0); let mid = render(0.5);
+        for i in 0..256 { assert!((mid[i] - 0.5*(f0[i]+f1[i])).abs() < 1e-4, "midpoint avg @ {i}"); }
+    }
+
+    #[test]
+    fn named_2d_bank_morphs_and_is_well_formed() {
+        // Task 4: HarmonicSweep (id 6) and FormantMorph (id 7) are named
+        // *static* 2D morph banks baked into `wavetables_generated::TABLES`
+        // at `gen_tables` time (no runtime build). `static_table_flat`
+        // returns their flat region exactly like the single-cycle tables;
+        // `frames = region.len()/COMPACT_LEN` must come out >1 (multi-frame)
+        // and the render path (`process_morph`, same as a pooled 2D bank)
+        // must produce finite, non-silent, continuous, and — crucially —
+        // *position-dependent* output (position actually selects different
+        // frames, not just replaying the same one).
+        let sr = 48_000.0f32;
+        let f0 = 220.0f32;
+        for &(id, name) in &[(6u16, "HarmonicSweep"), (7u16, "FormantMorph")] {
+            let region = static_table_flat(TableId(id)).expect("named 2d bank");
+            assert_eq!(region.len() % COMPACT_LEN, 0, "{name}: not a whole number of frames");
+            let frames = region.len() / COMPACT_LEN;
+            assert!(frames > 1, "{name}: expected a multi-frame (2D) bank, got frames={frames}");
+
+            let render = |pos: f32| {
+                let mut o = [0.0f32; deluge_dsp_test::FFT_N];
+                let mut w = WtOsc::new();
+                w.process_morph(region, frames, In::K(f0), In::K(0.0), In::K(pos), 1.0 / sr, &mut o);
+                o
+            };
+
+            // Endpoints: finite, non-silent.
+            let buf0 = render(0.0);
+            let buf1 = render(1.0);
+            for (buf, tag) in [(&buf0, "pos=0"), (&buf1, "pos=1")] {
+                for &s in buf.iter() {
+                    assert!(s.is_finite(), "{name} {tag}: non-finite sample");
+                }
+                let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+                assert!(rms > 0.01, "{name} {tag}: silent (rms={rms})");
+            }
+
+            // position=0 vs position=1 must select measurably different
+            // frames: compare the harmonic-magnitude spectra (broadband
+            // distance across the first 24 harmonics of f0), not just RMS
+            // (which per-frame normalization keeps roughly constant).
+            let spec0 = deluge_dsp_test::spectrum::analyze_buf(sr, &buf0);
+            let spec1 = deluge_dsp_test::spectrum::analyze_buf(sr, &buf1);
+            let h0 = spec0.harmonics_db(f0, 24);
+            let h1 = spec1.harmonics_db(f0, 24);
+            let dist: f32 = h0.iter().zip(h1.iter()).map(|(a, b)| (a - b).powi(2)).sum();
+            assert!(dist > 4.0, "{name}: pos=0 vs pos=1 harmonic spectra too similar (dist^2={dist})");
+
+            // Continuity across a position sweep: no hard jump (a broken
+            // frame-bracket/crossfade would show up as a large RMS step).
+            let mut prev_rms: Option<f32> = None;
+            let mut p = 0.0f32;
+            while p <= 1.0 {
+                let buf = render(p);
+                let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+                if let Some(pr) = prev_rms {
+                    assert!((rms - pr).abs() < 0.15, "{name}: rms jump at pos {p}: {pr}->{rms}");
+                }
+                prev_rms = Some(rms);
+                p += 0.05;
+            }
+        }
+    }
+
+    #[test]
+    fn morph_sweep_is_continuous() {
+        // Note on step size: saw and square are antiphase over much of the
+        // cycle, so a raw per-sample amplitude crossfade between them has a
+        // legitimately steep (but smooth, no jump) RMS trend from
+        // destructive interference — verified analytically (naive, un-band-
+        // limited model) to have a worst-case slope of ~1.5 RMS-units per
+        // unit position, peaking near the frame endpoints. The brief's
+        // original 0.05 position step (matched to the *unrelated*
+        // mip-crossfade-boundary test's convention) is too coarse for that
+        // slope against the 0.05 RMS-delta gate: it fires on the legitimate
+        // trend, not a real discontinuity. A 0.01 step keeps worst-case
+        // per-step delta (~0.015, well under the 0.05 gate) while still
+        // catching a real jump (e.g. a hard frame swap without
+        // interpolation), which would show up as a delta far larger than
+        // this smooth trend's.
+        let mut saw = [0.0f32; N]; let mut sq = [0.0f32; N];
+        for i in 0..N { saw[i] = 2.0*(i as f32/N as f32)-1.0; sq[i] = if i<N/2 {1.0} else {-1.0}; }
+        let region = frame_region(&[saw, sq]);
+        let sr = 48_000.0f32; let mut prev: Option<f32> = None; let mut p = 0.0f32;
+        while p <= 1.0 {
+            let mut o = [0.0f32; 256]; let mut w = WtOsc::new();
+            w.process_morph(&region, 2, In::K(220.0), In::K(0.0), In::K(p), 1.0/sr, &mut o);
+            let rms = (o.iter().map(|s| s*s).sum::<f32>()/o.len() as f32).sqrt();
+            if let Some(pr) = prev { assert!((rms-pr).abs() < 0.05, "morph rms jump @ pos {p}"); }
+            prev = Some(rms); p += 0.01;
         }
     }
 }

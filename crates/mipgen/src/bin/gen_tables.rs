@@ -5,9 +5,19 @@
 //
 // Six named single-cycle bases, each expanded into a flat, compact
 // (per-level-length) band-limited mip pyramid via
-// `mipgen::build_pyramid_flat_compact`, plus a `TABLES` registry whose order
-// fixes the numeric `TableId`s consumed by `deluge_dsp_kernels::wavetable`:
+// `mipgen::build_pyramid_flat_compact`, plus two named *2D* (multi-frame)
+// morph banks (each `FRAMES` single-cycle pyramids concatenated flat), via a
+// `TABLES` registry whose order fixes the numeric `TableId`s consumed by
+// `deluge_dsp_kernels::wavetable`:
 //   0=Saw  1=Square  2=Sine  3=Tri  4=Organ  5=Formant
+//   6=HarmonicSweep (2D)  7=FormantMorph (2D)
+//
+// `TABLES`'s element type is `&[f32]` (not a fixed-length array), so a longer
+// 2D bank's flat slice (`FRAMES*COMPACT_LEN` long) joins the same registry as
+// the single-cycle tables (`COMPACT_LEN` long) with no registry change: the
+// render path derives `frames = region.len()/COMPACT_LEN` uniformly (see
+// `deluge_audio_graph::node`'s `Kind::Wavetable` arm), so a static 2D bank is
+// just a longer `&'static [f32]` here.
 
 use deluge_dsp_kernels::wavetable::COMPACT_LEN;
 use mipgen::N;
@@ -25,6 +35,55 @@ fn emit(name: &str, base: &[f32; N]) {
         print!("{:.9}, ", v);
     }
     println!("\n];\n");
+}
+
+/// Frame count for the two 2D morph banks below (ids 6=HarmonicSweep,
+/// 7=FormantMorph). 8 is a modest choice: it keeps morph steps audibly
+/// smooth (`position` steps of 1/7 ≈ 14% between frames, well under the
+/// ear's timbral-change threshold for a slow sweep) while keeping the
+/// generated file's growth reasonable — each bank adds
+/// `FRAMES*COMPACT_LEN` = 8*6208 = 49,664 `f32` (~8x a single-cycle table's
+/// `COMPACT_LEN`=6208), vs. the six existing single-cycle tables combined
+/// (6*6208 = 37,248). Static tables are `&'static` (baked into `.rodata`,
+/// not the runtime wavetable pool), so this only affects flash footprint,
+/// not `PCAP`/pool sizing.
+const FRAMES: usize = 8;
+
+/// Emits a 2D (multi-frame) morph bank: `bases` (one single-cycle base per
+/// frame) each become a `COMPACT_LEN`-long compact mip pyramid via
+/// `mipgen::build_pyramid_flat_compact`, concatenated flat into
+/// `FRAMES*COMPACT_LEN` — the same flat-region layout `WtOsc::process_morph`
+/// (and the graph's `Kind::Wavetable` render arm) expect, just with `FRAMES`
+/// derived from `region.len()/COMPACT_LEN` instead of being 1.
+fn emit_2d(name: &str, bases: &[[f32; N]; FRAMES]) {
+    let len = FRAMES * COMPACT_LEN;
+    let mut region = std::vec![0.0f32; len];
+    for (f, base) in bases.iter().enumerate() {
+        mipgen::build_pyramid_flat_compact(base, &mut region[f * COMPACT_LEN..(f + 1) * COMPACT_LEN]);
+    }
+    println!("#[rustfmt::skip]");
+    println!("pub static {name}: [f32; {len}] = [");
+    for (j, v) in region.iter().enumerate() {
+        if j % 8 == 0 {
+            print!("\n  ");
+        }
+        print!("{:.9}, ", v);
+    }
+    println!("\n];\n");
+}
+
+/// Scales `base` in place so its peak absolute sample is 1.0 (no-op, left at
+/// all-zero, if the frame is silent). Keeps every frame of a 2D bank at the
+/// same loudness so morphing across `position` changes timbre, not volume —
+/// unnormalized partial-harmonic-sum frames (see `HARMONIC_SWEEP` below)
+/// would otherwise get louder as more harmonics are summed in.
+fn normalize_peak(base: &mut [f32; N]) {
+    let peak = base.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+    if peak > 1e-9 {
+        for s in base.iter_mut() {
+            *s /= peak;
+        }
+    }
 }
 
 fn main() {
@@ -86,7 +145,68 @@ fn main() {
     }
     emit("FORMANT", &formant);
 
+    // harmonic_sweep (2D, id 6): frame f is a truncated-harmonic-series saw,
+    // sum_{k=1..K(f)} sin(2*pi*k*t)/k, with K(f) sweeping 1 (frame 0, a bare
+    // fundamental — near-sine) up to KMAX_HS=64 (frame FRAMES-1, a bright,
+    // near-full-harmonic saw). K(f) = 1 + f*(KMAX_HS-1)/(FRAMES-1), which for
+    // FRAMES=8/KMAX_HS=64 lands on exact integers 1,10,19,28,37,46,55,64 (step
+    // 9). Each frame is peak-normalized (see `normalize_peak`) so morphing by
+    // `position` changes brightness, not loudness. `Osc.wavetable(WT.HarmonicSweep,
+    // f).position = lfo` sweeps a near-sine -> bright-saw timbre.
+    const KMAX_HS: usize = 64;
+    let mut hs_bases = [[0.0f32; N]; FRAMES];
+    for (f, base) in hs_bases.iter_mut().enumerate() {
+        let k_max = 1 + f * (KMAX_HS - 1) / (FRAMES - 1);
+        for (i, s) in base.iter_mut().enumerate() {
+            let t = i as f32 / N as f32;
+            let mut acc = 0.0f32;
+            for k in 1..=k_max {
+                acc += (2.0 * PI * k as f32 * t).sin() / k as f32;
+            }
+            *s = acc;
+        }
+        normalize_peak(base);
+    }
+    emit_2d("HARMONIC_SWEEP", &hs_bases);
+
+    // formant_morph (2D, id 7): frame f is a harmonic series (1/k envelope,
+    // the same saw-family falloff as HARMONIC_SWEEP's brightest frame,
+    // K_FM=24 harmonics) with a Gaussian emphasis window boosting harmonics
+    // near a "formant" center that sweeps across frames — a cheap,
+    // deterministic stand-in for a moving vocal-formant peak (consistent
+    // with the existing single-cycle FORMANT table's doc-comment, which
+    // makes the same disclaimer). center(f) sweeps linearly from
+    // CENTER_MIN=3 to CENTER_MAX=22 harmonics; weight_k = 1 + BOOST *
+    // exp(-(k-center)^2 / (2*SIGMA^2)), BOOST=3, SIGMA=2.0. Each frame is
+    // peak-normalized. `Osc.wavetable(WT.FormantMorph, f).position = lfo`
+    // sweeps the emphasized-harmonic peak low -> high across the spectrum.
+    const KMAX_FM: usize = 24;
+    const CENTER_MIN: f32 = 3.0;
+    const CENTER_MAX: f32 = 22.0;
+    const BOOST: f32 = 3.0;
+    const SIGMA: f32 = 2.0;
+    let mut fm_bases = [[0.0f32; N]; FRAMES];
+    for (f, base) in fm_bases.iter_mut().enumerate() {
+        let center = CENTER_MIN + f as f32 * (CENTER_MAX - CENTER_MIN) / (FRAMES - 1) as f32;
+        for (i, s) in base.iter_mut().enumerate() {
+            let t = i as f32 / N as f32;
+            let mut acc = 0.0f32;
+            for k in 1..=KMAX_FM {
+                let d = k as f32 - center;
+                let weight = 1.0 + BOOST * (-(d * d) / (2.0 * SIGMA * SIGMA)).exp();
+                acc += weight * (2.0 * PI * k as f32 * t).sin() / k as f32;
+            }
+            *s = acc;
+        }
+        normalize_peak(base);
+    }
+    emit_2d("FORMANT_MORPH", &fm_bases);
+
     // Registry: id-indexed TABLES array of flat-table refs. TABLES order
-    // fixes TableId: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant.
-    println!("pub static TABLES: [&[f32]; 6] = [&SAW, &SQUARE, &SINE, &TRI, &ORGAN, &FORMANT];");
+    // fixes TableId: 0=Saw 1=Square 2=Sine 3=Tri 4=Organ 5=Formant
+    // 6=HarmonicSweep (2D, FRAMES frames) 7=FormantMorph (2D, FRAMES frames).
+    // Element type `&[f32]` (not a fixed-length array) is what lets the
+    // longer 2D banks share this registry with the COMPACT_LEN-long
+    // single-cycle tables.
+    println!("pub static TABLES: [&[f32]; 8] = [&SAW, &SQUARE, &SINE, &TRI, &ORGAN, &FORMANT, &HARMONIC_SWEEP, &FORMANT_MORPH];");
 }

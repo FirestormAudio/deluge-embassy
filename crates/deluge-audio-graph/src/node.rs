@@ -192,28 +192,34 @@ impl Node {
                 // or a too-short pool region leaves the output untouched
                 // (silence for a freshly-zeroed arena slot) — never panic.
                 if let State::Wt(o) = &mut self.state {
-                    match self.table {
-                        Some(TableSrc::Static(id)) => {
-                            if let Some(region) = static_table_flat(id) {
-                                let levels = compact_levels(region);
-                                o.process(MipSet { levels: &levels }, ins[0], ins[1], dt, outs.port(0));
-                            }
-                        }
+                    // Resolve the flat compact-pyramid region (static or
+                    // pooled), then route by frame count: `FRAMES == 1`
+                    // (single-cycle) must stay on the bit-exact `process`
+                    // path; `FRAMES > 1` morphs across frames by `position`
+                    // (port 2) via `process_morph`.
+                    let region: Option<&[f32]> = match self.table {
+                        Some(TableSrc::Static(id)) => static_table_flat(id),
                         Some(TableSrc::Pooled(_)) => {
-                            // Require an exact-size region (`COMPACT_LEN`
-                            // f32, matching the kernel's flat compact
-                            // pyramid layout); a short/mis-sized region
-                            // renders silence rather than risk an
-                            // out-of-bounds slice or a bogus per-level
-                            // length.
-                            if let Some(region) = pool_region {
-                                if region.len() == COMPACT_LEN {
-                                    let levels = compact_levels(region);
-                                    o.process(MipSet { levels: &levels }, ins[0], ins[1], dt, outs.port(0));
-                                }
-                            }
+                            // Require a region that's a whole, non-empty
+                            // number of `COMPACT_LEN`-long frames (matching
+                            // the kernel's flat compact pyramid layout); a
+                            // short/mis-sized/partial region renders silence
+                            // rather than risk an out-of-bounds slice or a
+                            // bogus per-level length.
+                            pool_region.filter(|r| {
+                                r.len() >= COMPACT_LEN && r.len() % COMPACT_LEN == 0
+                            })
                         }
-                        None => {}
+                        None => None,
+                    };
+                    if let Some(region) = region {
+                        let frames = region.len() / COMPACT_LEN;
+                        if frames <= 1 {
+                            let levels = compact_levels(region);
+                            o.process(MipSet { levels: &levels }, ins[0], ins[1], dt, outs.port(0));
+                        } else {
+                            o.process_morph(region, frames, ins[0], ins[1], ins[2], dt, outs.port(0));
+                        }
                     }
                 }
             }

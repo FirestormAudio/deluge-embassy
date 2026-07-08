@@ -259,6 +259,50 @@ pub(crate) unsafe extern "C" fn wavetable_from(raw: *mut WrenVM) {
     wavetable_from_impl(&vm);
 }
 
+/// `Wavetable.from2d([[frame0...], [frame1...], ...])` — read a nested Wren
+/// list (outer = frames, inner = one frame's samples), and upload it as a
+/// multi-frame table: one compact pyramid per frame, built into a single
+/// `nframes * PYRAMID_LEN` pool region. Bound to a `Kind::Wavetable` node
+/// (via `Osc.wavetable`), it morphs across frames by `.position` (port 2,
+/// see `node_set_position_impl`) instead of rendering a single bit-exact
+/// cycle. Same graceful-degrade contract as `wavetable_from_impl`: `None` on
+/// a host with no pool leaves the returned handle unbound rather than
+/// panicking, and the same node-scoped-lifetime caveat applies (see that
+/// function's doc comment).
+///
+/// Nested-list read: the VM only exposes one "current" list per slot pair
+/// (`get_list_element(list_slot, i, elem_slot)`), so reading frame `f`'s
+/// samples needs its own slot (2) distinct from the outer list's slot (1)
+/// and the per-sample scratch slot (3) — `ensure_slots(4)` guarantees all
+/// three (plus slot 0, `self`/return) are valid. The inner read happens
+/// inside the closure handed to `audio::upload_table_2d`: the host (pool
+/// access) and the binding (VM slot access) never touch each other's state,
+/// which is what keeps this sound through the `Host` trait object.
+pub(crate) fn wavetable_from2d_impl<S: SlotApi>(vm: &S) {
+    let nframes = (vm.get_list_count(1).max(0)) as usize;
+    vm.ensure_slots(4); // 1=outer(frames) list, 2=inner(frame) list, 3=sample scratch
+    let handle = audio::upload_table_2d(nframes, &mut |f, base| {
+        // Zero first: `get_list_count(2)` may be shorter than `base.len()`
+        // (mipgen::N) for this frame, and `base` is a fresh stack buffer per
+        // frame with no other defined initial content to fall back on.
+        for s in base.iter_mut() {
+            *s = 0.0;
+        }
+        vm.get_list_element(1, f as i32, 2); // frame f -> slot 2
+        let n = (vm.get_list_count(2).max(0) as usize).min(base.len());
+        for i in 0..n {
+            vm.get_list_element(2, i as i32, 3); // sample -> slot 3
+            base[i] = vm.get_f(3) as f32;
+        }
+    });
+    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle }) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn wavetable_from2d(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    wavetable_from2d_impl(&vm);
+}
+
 /// `Node.wavetable_pooled_(wt, freq)` — the pooled-table counterpart of
 /// `node_wavetable_impl` (which binds a static/named table). Reads the
 /// `Wavetable` handle from slot 1: a bound handle emits `NewNode` + a
@@ -388,6 +432,16 @@ pub(crate) unsafe extern "C" fn node_set_width(raw: *mut WrenVM) {
     node_set_width_impl(&vm);
 }
 
+pub(crate) fn node_set_position_impl<S: SlotApi>(vm: &S) {
+    let v = arg_input(vm, 1);
+    audio::set_input(self_id(vm), 2, v); // port 2 = morph position (Kind::Wavetable, FRAMES>1)
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_position(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_position_impl(&vm);
+}
+
 pub(crate) fn node_set_feedback_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // scalar param, not a Node/Input
     audio::set_param(self_id(vm), 0, v);
@@ -456,6 +510,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
     method("main", "Node", false, "pm=(_)", node_set_pm_impl::<S>);
     method("main", "Node", false, "width=(_)", node_set_width_impl::<S>);
+    method("main", "Node", false, "position=(_)", node_set_position_impl::<S>);
     method("main", "Node", false, "feedback=(_)", node_set_feedback_impl::<S>);
     method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
     method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
@@ -464,4 +519,5 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Bus", true, "new_()", bus_new_impl::<S>);
     method("main", "Bus", false, "write(_)", bus_write_impl::<S>);
     method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
+    method("main", "Wavetable", true, "from2d(_)", wavetable_from2d_impl::<S>);
 }

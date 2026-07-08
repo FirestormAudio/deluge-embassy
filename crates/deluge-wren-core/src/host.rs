@@ -62,6 +62,29 @@ pub trait Host {
         let _ = base;
         None
     }
+
+    /// Build `nframes` band-limited mip pyramids into one contiguous pool
+    /// region (`nframes * PYRAMID_LEN` long) and return its handle — the
+    /// multi-frame counterpart of [`Host::upload_table`], used by
+    /// `Wavetable.from2d`.
+    ///
+    /// `fill_frame(f, base)` is called once per frame, in ascending `f` order,
+    /// synchronously and in-line (never stashed for later): it must fill
+    /// `base` (`BASE_LEN` samples) with frame `f`'s single-cycle waveform
+    /// before returning. The caller (the binding) owns reading the Wren list
+    /// into `base`; this seam keeps VM slot access in the binding and pool
+    /// access in the host, so implementers never touch the VM.
+    ///
+    /// Default: unsupported (no pool) → `None`, so hosts with no audio engine
+    /// (e.g. [`crate::test_support::CmdCaptureHost`]) need not override this.
+    fn upload_table_2d(
+        &mut self,
+        nframes: usize,
+        fill_frame: &mut dyn FnMut(usize, &mut [f32]),
+    ) -> Option<deluge_audio_graph::PoolHandle> {
+        let _ = (nframes, fill_frame);
+        None
+    }
 }
 
 /// Build a band-limited mip pyramid from `base` (one single cycle, padded or

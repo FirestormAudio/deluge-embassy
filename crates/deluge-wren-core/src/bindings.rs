@@ -882,6 +882,7 @@ pub static METHODS: &[MethodEntry] = &[
     method("Node", "cutoff=(_)", bindings_audio::node_set_cutoff),
     method("Node", "pm=(_)", bindings_audio::node_set_pm),
     method("Node", "width=(_)", bindings_audio::node_set_width),
+    method("Node", "position=(_)", bindings_audio::node_set_position),
     method("Node", "feedback=(_)", bindings_audio::node_set_feedback),
     method("Node", "gate(_)", bindings_audio::node_gate),
     method("Node", "trigger()", bindings_audio::node_trigger),
@@ -890,6 +891,7 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Bus", "new_()", bindings_audio::bus_new),
     method("Bus", "write(_)", bindings_audio::bus_write),
     static_method("Wavetable", "from(_)", bindings_audio::wavetable_from),
+    static_method("Wavetable", "from2d(_)", bindings_audio::wavetable_from2d),
 ];
 
 /// Terse instance-`MethodEntry` constructor for the `main` module.

@@ -321,6 +321,24 @@ impl Host for EngineHost {
         crate::host::build_pyramid_into(base, self.eng.pool_slice_mut(h));
         Some(h)
     }
+    fn upload_table_2d(
+        &mut self,
+        nframes: usize,
+        fill_frame: &mut dyn FnMut(usize, &mut [f32]),
+    ) -> Option<deluge_audio_graph::PoolHandle> {
+        if nframes == 0 {
+            return None;
+        }
+        let h = self.eng.pool_alloc(nframes.checked_mul(crate::PYRAMID_LEN)?)?;
+        for f in 0..nframes {
+            let mut base = [0.0f32; crate::BASE_LEN];
+            fill_frame(f, &mut base);
+            let start = f * crate::PYRAMID_LEN;
+            let region = &mut self.eng.pool_slice_mut(h)[start..start + crate::PYRAMID_LEN];
+            crate::host::build_pyramid_into(&base, region);
+        }
+        Some(h)
+    }
 }
 
 static mut ENGINE_HOST: Option<EngineHost> = None;

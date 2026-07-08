@@ -564,4 +564,25 @@ mod tests {
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|&s| s == 0.0), "wrong-sized pool region must render silence: {out:?}");
     }
+
+    #[test]
+    fn pooled_morph_wavetable_renders() {
+        let mut e = E::new(48_000.0);
+        let cl = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+        let h = e.pool_alloc(2 * cl).expect("pool");
+        // build 2 frames (saw, square) into the region
+        let mut saw = [0.0f32; mipgen::N]; let mut sq = [0.0f32; mipgen::N];
+        for i in 0..mipgen::N { saw[i]=2.0*(i as f32/mipgen::N as f32)-1.0; sq[i]=if i<mipgen::N/2 {1.0} else {-1.0}; }
+        { let r = e.pool_slice_mut(h);
+          mipgen::build_pyramid_flat_compact(&saw, &mut r[..cl]);
+          mipgen::build_pyramid_flat_compact(&sq, &mut r[cl..]); }
+        e.create(NodeId(0), Kind::Wavetable);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0); // freq
+        *e.node_input_mut(NodeId(0), 2).unwrap() = Input::Const(0.5);   // position (port 2)
+        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(h) });
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out.iter().any(|&s| s != 0.0));
+    }
 }
