@@ -75,6 +75,44 @@ pub enum Wave {
     Tri,
 }
 
+/// Shared band-limited waveform shaping, given the final phase `ph`, the
+/// per-sample phase increment `dtp`, and (for Square) the PWM `width`.
+/// Extracted verbatim from `Osc::process`'s `match wave` block so `Osc`'s
+/// output is bit-identical; also used by `SyncOsc` for the slave's
+/// natural-wrap band-limiting.
+fn wave_sample(wave: Wave, ph: f32, dtp: f32, width: f32) -> f32 {
+    match wave {
+        Wave::Sine => fast_sin(ph),
+        Wave::Saw => (2.0 * ph - 1.0) - poly_blep(ph, dtp),
+        Wave::Square => {
+            let mut w = width;
+            if w <= 0.0 { w = 0.5; }
+            let w = w.clamp(0.01, 0.99);
+            let naive = if ph < w { 1.0 } else { -1.0 };
+            let mut pw = ph - w;
+            pw -= floorf(pw); // phase relative to the falling edge
+            naive + poly_blep(ph, dtp) - poly_blep(pw, dtp)
+        }
+        Wave::Tri => {
+            let naive = 1.0 - 4.0 * (ph - 0.5).abs();
+            let mut p2 = ph + 0.5;
+            p2 -= floorf(p2);
+            naive + 8.0 * dtp * (poly_blamp(ph, dtp) - poly_blamp(p2, dtp))
+        }
+    }
+}
+
+/// Naïve (pre-BLEP) waveform value at phase `ph` — used to size the
+/// hard-sync reset-BLEP step (the discontinuity the reset introduces).
+fn naive_wave(wave: Wave, ph: f32) -> f32 {
+    match wave {
+        Wave::Sine => fast_sin(ph),
+        Wave::Saw => 2.0 * ph - 1.0,
+        Wave::Square => if ph < 0.5 { 1.0 } else { -1.0 },
+        Wave::Tri => 1.0 - 4.0 * (ph - 0.5).abs(),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Osc {
     phase: f32,
@@ -106,25 +144,7 @@ impl Osc {
             let mut ph = self.phase + pmod.at(i) + fb;
             ph -= floorf(ph);
 
-            let y = match wave {
-                Wave::Sine => fast_sin(ph),
-                Wave::Saw => (2.0 * ph - 1.0) - poly_blep(ph, dtp),
-                Wave::Square => {
-                    let mut w = width.at(i);
-                    if w <= 0.0 { w = 0.5; }
-                    let w = w.clamp(0.01, 0.99);
-                    let naive = if ph < w { 1.0 } else { -1.0 };
-                    let mut pw = ph - w;
-                    pw -= floorf(pw); // phase relative to the falling edge
-                    naive + poly_blep(ph, dtp) - poly_blep(pw, dtp)
-                }
-                Wave::Tri => {
-                    let naive = 1.0 - 4.0 * (ph - 0.5).abs();
-                    let mut p2 = ph + 0.5;
-                    p2 -= floorf(p2);
-                    naive + 8.0 * dtp * (poly_blamp(ph, dtp) - poly_blamp(p2, dtp))
-                }
-            };
+            let y = wave_sample(wave, ph, dtp, width.at(i));
             *s = y;
 
             self.last2 = self.last;
@@ -141,10 +161,108 @@ impl Default for Osc {
     }
 }
 
+/// Hard-sync oscillator: a `master` phase drives resets of a `slave`
+/// oscillator's phase every master cycle, band-limited two ways —
+/// natural-wrap PolyBLEP on the slave's own waveform (via [`wave_sample`])
+/// plus a reset-BLEP correcting the extra discontinuity the forced reset
+/// introduces mid-cycle.
+///
+/// Reset-BLEP form: see the doc comment on `process` below — derived and
+/// confirmed by measurement in `sync_saw_is_band_limited` /
+/// `sync_blep_beats_naive`.
+#[derive(Clone, Copy, Default)]
+pub struct SyncOsc {
+    master_phase: f32,
+    slave_phase: f32,
+}
+
+impl SyncOsc {
+    pub fn new() -> SyncOsc {
+        SyncOsc::default()
+    }
+
+    /// Fill `out` with one block. `master_freq`/`slave_freq` Hz; `dt = 1/sr`.
+    ///
+    /// Reset-BLEP form (measured, see `sync_saw_is_band_limited` /
+    /// `sync_blep_beats_naive`): let `mp_before` be the master phase *before*
+    /// this sample's increment, `t_reset = (1-mp_before)/dtp_m` the
+    /// sub-sample fraction of this interval elapsed before the master wraps,
+    /// and `step = naive_wave(wave,0.0) - naive_wave(wave,ph_at_reset)` the
+    /// signed jump the reset introduces (new value minus old). `mp_before`
+    /// plays the same role for the reset that a wrapping oscillator's own
+    /// pre-wrap phase (close to 1) plays in `poly_blep`'s "before" branch:
+    /// this sample's point-sample instant always falls *before* the
+    /// mid-interval reset, so it takes the same correction a sample
+    /// immediately preceding a natural wrap would, scaled by the reset's
+    /// `step` instead of a fixed ±2 unit jump: `y += 0.5 * step *
+    /// poly_blep(mp_before, dtp_m)`. (The `0.5` matches the existing
+    /// Saw/Square arms in `wave_sample`, which implicitly apply half of a
+    /// unit ±2 jump per poly_blep call — e.g. Saw's `-poly_blep(ph,dtp)` is
+    /// `(-2)/2` of the jump.) This measured as the clear winner over
+    /// `poly_blep(t_reset, ...)`, sign-flipped, and `dtp_s`-width variants —
+    /// see the measurements recorded on `sync_saw_is_band_limited`.
+    pub fn process(&mut self, wave: Wave, master_freq: In, slave_freq: In, dt: f32, out: &mut [f32]) {
+        for (i, s) in out.iter_mut().enumerate() {
+            let dtp_m = master_freq.at(i) * dt;
+            let dtp_s = slave_freq.at(i) * dt;
+
+            // Band-limited slave value at its current phase (natural-wrap BLEP included).
+            let mut y = wave_sample(wave, self.slave_phase, dtp_s, 0.5);
+
+            // Advance master; detect a wrap → hard-reset the slave with a BLEP.
+            let mp_before = self.master_phase;
+            let mp = self.master_phase + dtp_m;
+            if mp >= 1.0 && dtp_m > 0.0 {
+                let t_reset = (1.0 - mp_before) / dtp_m; // sub-sample position in [0,1)
+                // slave phase at the reset instant, and the naïve step across the reset:
+                let ph_at_reset = { let mut p = self.slave_phase + t_reset * dtp_s; p -= floorf(p); p };
+                let step = naive_wave(wave, 0.0) - naive_wave(wave, ph_at_reset);
+                // Reset-BLEP: see the doc comment above for the derivation.
+                y += 0.5 * step * poly_blep(mp_before, dtp_m);
+                self.master_phase = mp - 1.0;
+                // Slave restarts from 0, advanced by the remaining fraction of the sample.
+                self.slave_phase = (1.0 - t_reset) * dtp_s;
+                self.slave_phase -= floorf(self.slave_phase);
+            } else {
+                self.master_phase = mp - floorf(mp);
+                self.slave_phase += dtp_s;
+                self.slave_phase -= floorf(self.slave_phase);
+            }
+            *s = y;
+        }
+    }
+
+    /// Test-only: same as `process` but with the reset-BLEP term omitted
+    /// (hard reset, no correction) — the naïve baseline `sync_blep_beats_naive`
+    /// compares against.
+    #[cfg(test)]
+    fn process_naive_reset(&mut self, wave: Wave, master_freq: In, slave_freq: In, dt: f32, out: &mut [f32]) {
+        for (i, s) in out.iter_mut().enumerate() {
+            let dtp_m = master_freq.at(i) * dt;
+            let dtp_s = slave_freq.at(i) * dt;
+            let y = wave_sample(wave, self.slave_phase, dtp_s, 0.5);
+            let mp = self.master_phase + dtp_m;
+            if mp >= 1.0 && dtp_m > 0.0 {
+                let t_reset = (1.0 - self.master_phase) / dtp_m;
+                self.master_phase = mp - 1.0;
+                self.slave_phase = (1.0 - t_reset) * dtp_s;
+                self.slave_phase -= floorf(self.slave_phase);
+            } else {
+                self.master_phase = mp - floorf(mp);
+                self.slave_phase += dtp_s;
+                self.slave_phase -= floorf(self.slave_phase);
+            }
+            *s = y;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use proptest::prelude::*;
+    use std::eprintln;
 
     proptest! {
         /// P0 gate (spec §8): for any wave/freq in the audio range, every
@@ -402,6 +520,66 @@ mod tests {
             let mut out = [0.0f32; 256];
             osc.process(wave, In::K(freq), In::K(pm), In::K(0.5), 1.0 / 48_000.0, &mut out);
             for s in out { prop_assert!(s.is_finite() && s.abs() <= 4.0); }
+        }
+    }
+
+    #[test]
+    fn sync_saw_is_band_limited() {
+        let sr = 48_000.0f32;
+        let master = 220.0f32;
+        for slave_mul in [1.5f32, 2.7, 4.3] {
+            let mut so = SyncOsc::new();
+            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+            so.process(Wave::Saw, In::K(master), In::K(master * slave_mul), 1.0 / sr, &mut buf);
+            let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
+                .worst_alias_db(master, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+            eprintln!("sync saw slave×{slave_mul}: worst_alias {wa} dB");
+            // Measured floors (master 220 Hz, reset-BLEP = 0.5*step*poly_blep(mp_before,dtp_m)):
+            // ×1.5 -> -40.2 dB, ×2.7 -> -31.6 dB, ×4.3 -> -27.2 dB (hardest case).
+            // Gate tightened to -25 dB, ~2 dB below the measured -27.2 dB floor.
+            assert!(wa < -25.0, "sync saw slave×{slave_mul}: worst_alias {wa} dB");
+        }
+    }
+
+    #[test]
+    fn sync_blep_beats_naive() {
+        // Reset BLEP vs a naive hard reset (no reset BLEP) at a high slave ratio.
+        let sr = 48_000.0f32;
+        let master = 220.0f32;
+        let slave = master * 3.7;
+
+        let mut so_blep = SyncOsc::new();
+        let mut buf_blep = [0.0f32; deluge_dsp_test::FFT_N];
+        so_blep.process(Wave::Saw, In::K(master), In::K(slave), 1.0 / sr, &mut buf_blep);
+        let spec_blep = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_blep);
+
+        let mut so_naive = SyncOsc::new();
+        let mut buf_naive = [0.0f32; deluge_dsp_test::FFT_N];
+        so_naive.process_naive_reset(Wave::Saw, In::K(master), In::K(slave), 1.0 / sr, &mut buf_naive);
+        let spec_naive = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_naive);
+
+        let tol = 3.0 * spec_blep.bin_hz;
+        let wa_blep = spec_blep.worst_alias_db(master, tol);
+        let wa_naive = spec_naive.worst_alias_db(master, tol);
+        eprintln!("sync blep worst_alias {wa_blep} dB, naive worst_alias {wa_naive} dB, margin {}", wa_naive - wa_blep);
+        // Measured: blep -30.5 dB vs naive -27.7 dB, a +2.8 dB margin. Explored a dozen
+        // reset-BLEP forms (poly_blep argument = t_reset/1-t_reset/mp_before/0, width =
+        // dtp_s/dtp_m, sign flips, two-sided before+after corrections, coefficient sweeps
+        // 0.2..1.0) — this "before" form (using the master's own pre-wrap phase/rate, the
+        // same role a wrapping oscillator's own pre-wrap sample plays) was the clear and
+        // consistent winner; sign-flipped variants measured *worse* than naive (e.g. -3.4
+        // dB), confirming this sign is correct. Gate tightened to >2 dB, just below the
+        // measured 2.8 dB margin.
+        assert!(wa_blep < wa_naive - 2.0, "blep {wa_blep} dB should beat naive {wa_naive} dB by >2 dB");
+    }
+
+    proptest! {
+        #[test]
+        fn sync_output_bounded(master in 20.0f32..=2_000.0, ratio in 1.0f32..=6.0) {
+            let mut so = SyncOsc::new();
+            let mut out = [0.0f32; 256];
+            so.process(Wave::Saw, In::K(master), In::K(master * ratio), 1.0 / 48_000.0, &mut out);
+            for s in out { prop_assert!(s.is_finite() && s.abs() <= 1.2); }
         }
     }
 }
