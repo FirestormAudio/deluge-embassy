@@ -74,6 +74,20 @@ fn svf_lp_renders_finite_nonsilent() {
 }
 
 #[test]
+fn tb303_lp_emits_newnode() {
+    let cmds = run_and_capture_cmds("var x = Tb303.lp(Osc.saw(110), 800, 0.7)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Tb303, .. })));
+}
+
+#[test]
+fn tb303_lp_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Tb303.lp(Osc.saw(110), 800, 0.7))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0));
+    assert!(out.iter().any(|f| f.l != 0.0));
+}
+
+#[test]
 fn patch_writes_master_bus_and_sets_root() {
     let cmds = run_and_capture_cmds("Out.patch(Osc.saw(110))");
     assert_eq!(

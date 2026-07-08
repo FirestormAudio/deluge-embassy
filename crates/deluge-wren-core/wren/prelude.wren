@@ -116,6 +116,7 @@ foreign class Node {
   foreign static binop_(op, a, b)
   foreign static lpf_(input, cutoff)
   foreign static svf_(input, cutoff, res, resp)
+  foreign static tb303_(input, cutoff, res)
   foreign static patch_(node)
   foreign static reset_()
   foreign static split_(input)
@@ -206,6 +207,14 @@ class Svf {
   static hp(input, cutoff, res) { Node.svf_(input, cutoff, res, 1) }
   static bp(input, cutoff, res) { Node.svf_(input, cutoff, res, 2) }
   static notch(input, cutoff, res) { Node.svf_(input, cutoff, res, 3) }
+}
+
+// TB-303 diode-ladder filter — the acid-bass lowpass. Resonant and
+// audio-rate-modulatable; sweep cutoff with an envelope for the classic squelch:
+//   var f = Tb303.lp(Osc.saw(55), 400, 0.9)
+//   f.cutoff = Env.ar(0.0, 0.3) * 1500 + 200
+class Tb303 {
+  static lp(input, cutoff, res) { Node.tb303_(input, cutoff, res) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order
