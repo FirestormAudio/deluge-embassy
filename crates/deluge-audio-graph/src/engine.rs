@@ -320,6 +320,18 @@ mod tests {
     }
 
     #[test]
+    fn pink_brown_nodes_render_bounded() {
+        for k in [Kind::PinkNoise, Kind::BrownNoise] {
+            let mut e = E::new(48_000.0);
+            e.create(NodeId(0), k);
+            e.render_block();
+            let out = e.node_output(NodeId(0), 0);
+            assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+            assert!(out.iter().any(|&s| s != 0.0));
+        }
+    }
+
+    #[test]
     fn chain_saw_times_const_scales() {
         // node0 = saw(4Hz); node1 = mul(node0, 0.5)
         let mut e = E::new(16.0);
