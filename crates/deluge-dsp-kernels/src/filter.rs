@@ -262,7 +262,17 @@ impl OnePoleHp {
     }
 }
 
-pub(crate) const TB303_OVERSAMPLE: u32 = 4;
+/// Single static config point for the diode-ladder integration
+/// sub-stepping (RK2/Heun sub-steps per output sample, applied to both
+/// ladder stages). Fixed at compile time rather than a runtime knob: a
+/// data characterization swept OS against a fully-resolved OS=16
+/// reference and found OS=2 indistinguishable (<1% error) from OS=16
+/// across the normal control range, while self-oscillation, boundedness,
+/// and aliasing behavior are all OS=1-identical (this filter's
+/// oversampling is RK2 sub-stepping, not decimation, so it doesn't trade
+/// off against aliasing the way a naive oversampler would). OS=4 was
+/// unjustified cost — 2× the CPU of OS=2 for no measurable accuracy gain.
+pub(crate) const TB303_OVERSAMPLE: u32 = 2;
 
 /// Fixed coupling-cap high-pass corner frequencies (Hz), Stinchcombe Table 1.
 const TB303_HP_FREQS: [f64; 6] = [97.5, 38.5, 4.45, 578.1, 20.0, 7.41];
@@ -297,23 +307,17 @@ pub struct Tb303 {
     hp: [OnePoleHp; 6],
     res_hp: OnePoleHp,
     res_tap: f32,
-    oversample: u32,
     cached_dt: f32, // fixed HP coeffs recomputed only when dt changes
 }
 
 impl Tb303 {
     pub fn new() -> Tb303 {
-        Tb303::with_oversample(TB303_OVERSAMPLE)
-    }
-
-    pub fn with_oversample(oversample: u32) -> Tb303 {
         Tb303 {
             lp1: DiodeLadder::new(),
             lp234: DiodeLadder::new(),
             hp: [OnePoleHp::default(); 6],
             res_hp: OnePoleHp::default(),
             res_tap: 0.0,
-            oversample,
             cached_dt: 0.0,
         }
     }
@@ -330,7 +334,7 @@ impl Tb303 {
             self.cached_dt = dt;
         }
 
-        let two_pi_dt_os = 2.0 * core::f32::consts::PI * dt / self.oversample as f32;
+        let two_pi_dt_os = 2.0 * core::f32::consts::PI * dt / TB303_OVERSAMPLE as f32;
         for (i, s) in out.iter_mut().enumerate() {
             let cutoff = cutoff.at(i).clamp(20.0, 2000.0);
             let res = res.at(i).clamp(0.0, 1.0);
@@ -346,8 +350,8 @@ impl Tb303 {
                 0.0
             };
             let mut sig = input.at(i) - feedback;
-            sig = self.lp1.process(sig, fh1, 0.0, self.oversample);
-            sig = self.lp234.process(sig, fh234, 0.0, self.oversample);
+            sig = self.lp1.process(sig, fh1, 0.0, TB303_OVERSAMPLE);
+            sig = self.lp234.process(sig, fh234, 0.0, TB303_OVERSAMPLE);
             self.res_tap = sig;
             for hp in self.hp.iter_mut() {
                 sig = hp.process(sig);
@@ -408,48 +412,30 @@ mod tb303_tests {
     // Drive a pure sine through the filter; the diode nonlinearity generates
     // harmonics of f0. worst_alias_db flags energy NOT at harmonics of f0 —
     // i.e. aliased (inharmonic) content.
-    fn alias_db(oversample: u32, cutoff: f32, res: f32, f0: f32) -> f32 {
+    fn alias_db(cutoff: f32, res: f32, f0: f32) -> f32 {
         let spec = spectrum::analyze(FS, |buf| {
             let x: std::vec::Vec<f32> = (0..buf.len())
                 .map(|i| (core::f32::consts::TAU * f0 / FS * i as f32).sin())
                 .collect();
-            Tb303::with_oversample(oversample).process(
-                In::A(&x), In::K(cutoff), In::K(res), DT, buf);
+            Tb303::new().process(In::A(&x), In::K(cutoff), In::K(res), DT, buf);
         });
         spec.worst_alias_db(f0, 30.0)
     }
 
     #[test]
-    fn tb303_aliasing_below_floor_and_beats_naive() {
+    fn tb303_aliasing_below_floor() {
         // Bright, resonant (but below the res≈0.83-0.87 self-osc bifurcation
         // band measured for this cutoff/res_gain — see TB303_RES_GAIN's
         // doc comment and the report for the chaos-sweep evidence), cutoff
         // high enough that generated harmonics reach toward Nyquist.
+        //
+        // OS is now a fixed static const (see TB303_OVERSAMPLE), so there's
+        // no runtime OS to A/B here — this just checks that the port, at its
+        // real (OS=2) operating point, introduces no audible aliasing at a
+        // genuine resonant operating point. Measured ≈ -52.8 dB.
         let (cutoff, res, f0) = (1500.0f32, 0.8, 220.0);
-        let os4 = alias_db(4, cutoff, res, f0);
-        let os1 = alias_db(1, cutoff, res, f0);
-        // Measured: os4≈os1≈-52.8 dB — this faithful, retuned kernel's
-        // Heun/RK2 integration is already well-conditioned at both oversample
-        // settings for any *stable* (non-self-oscillating) operating point;
-        // there is no classical "1× aliases audibly, 4× cleans it up" regime
-        // to find here (see report). Both must still clear the floor:
-        assert!(os4 < -30.0, "4× worst_alias_db = {os4} (floor?)");
-        assert!(os1 < -30.0, "1× worst_alias_db = {os1} (floor?)");
-        // A regression check that `with_oversample` is actually wired up
-        // (not a no-op): finer internal stepping must measurably change the
-        // computed samples. Measured max|Δ| ≈ 1.0e-3 at this operating
-        // point; floored two orders of magnitude below that.
-        let render = |os: u32| {
-            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            let x: std::vec::Vec<f32> = (0..buf.len())
-                .map(|i| (core::f32::consts::TAU * f0 / FS * i as f32).sin())
-                .collect();
-            Tb303::with_oversample(os).process(In::A(&x), In::K(cutoff), In::K(res), DT, &mut buf);
-            buf
-        };
-        let (out4, out1) = (render(4), render(1));
-        let max_diff = out4.iter().zip(out1.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        assert!(max_diff > 1e-5, "with_oversample(4) vs (1) produced near-identical output (max|Δ|={max_diff}) — oversample not wired up?");
+        let db = alias_db(cutoff, res, f0);
+        assert!(db < -30.0, "worst_alias_db = {db} (floor?)");
     }
 
     #[test]
