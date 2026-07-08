@@ -332,6 +332,18 @@ mod tests {
     }
 
     #[test]
+    fn sync_saw_node_renders_bounded() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::SyncSaw);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0); // master
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(660.0); // slave
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
     fn chain_saw_times_const_scales() {
         // node0 = saw(4Hz); node1 = mul(node0, 0.5)
         let mut e = E::new(16.0);

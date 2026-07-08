@@ -104,6 +104,17 @@ fn binop_kind(code: u8) -> Kind {
         _ => Kind::Sub,
     }
 }
+/// Map a prelude sync-waveform code to a hard-sync `Kind`. Codes match the
+/// prelude (`Osc.syncSine=0 syncSaw=1 syncSquare=2 syncTri=3`), mirroring
+/// `src_kind`'s ordering.
+fn sync_kind(code: u8) -> Kind {
+    match code {
+        0 => Kind::SyncSine,
+        1 => Kind::SyncSaw,
+        2 => Kind::SyncSquare,
+        _ => Kind::SyncTri,
+    }
+}
 
 /// Resolve a number / Node / Port / Bus argument at `slot` into an engine
 /// `Input`, discriminating foreign objects by their leading `tag` byte. Task 2
@@ -158,6 +169,24 @@ pub(crate) fn node_src_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn node_src(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_src_impl(&vm);
+}
+
+/// `Node.sync_(wave, master, slave)` — a hard-sync oscillator: port 0 is the
+/// master frequency (resets the slave phase each cycle), port 1 the slave
+/// frequency. Mirrors `node_src_impl` but takes two frequency args instead
+/// of one.
+pub(crate) fn node_sync_impl<S: SlotApi>(vm: &S) {
+    let kind = sync_kind(vm.get_f(1) as u8);
+    let master = arg_input(vm, 2);
+    let slave = arg_input(vm, 3);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, kind, [master, slave, Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_sync(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_sync_impl(&vm);
 }
 
 pub(crate) fn node_env_impl<S: SlotApi>(vm: &S) {
@@ -519,6 +548,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method: &mut impl FnMut(&'static str, &'static str, bool, &'static str, fn(&S)),
 ) {
     method("main", "Node", true, "src_(_,_)", node_src_impl::<S>);
+    method("main", "Node", true, "sync_(_,_,_)", node_sync_impl::<S>);
     method("main", "Node", true, "env_(_,_)", node_env_impl::<S>);
     method("main", "Node", true, "noise_()", node_noise_impl::<S>);
     method("main", "Node", true, "pink_()", node_pink_impl::<S>);

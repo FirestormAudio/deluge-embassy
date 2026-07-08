@@ -108,6 +108,7 @@ foreign class Oled {
 //   Out.reset()                          // clear the graph
 foreign class Node {
   foreign static src_(kind, freq)
+  foreign static sync_(wave, master, slave)
   foreign static env_(attack, release)
   foreign static noise_()
   foreign static pink_()
@@ -178,6 +179,13 @@ class Osc {
   static saw(f) { Node.src_(1, f) }
   static square(f) { Node.src_(2, f) }
   static tri(f) { Node.src_(3, f) }
+  // Hard sync: `master` resets `slave`'s phase each cycle, locking the
+  // slave's pitch to the master's (a classic sync-lead timbre). `slave`
+  // is the audible waveform; `master` sets the fundamental.
+  static syncSine(master, slave) { Node.sync_(0, master, slave) }
+  static syncSaw(master, slave) { Node.sync_(1, master, slave) }
+  static syncSquare(master, slave) { Node.sync_(2, master, slave) }
+  static syncTri(master, slave) { Node.sync_(3, master, slave) }
   static wavetable(t, f) {
     if (t is Wavetable) return Node.wavetable_pooled_(t, f)
     return Node.wavetable_(t, f) // WT.x numeric id (static table)

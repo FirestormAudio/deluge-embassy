@@ -869,6 +869,7 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Oled", "show()", oled_show),
     // Audio: Node factories (static) + instance methods
     static_method("Node", "src_(_,_)", bindings_audio::node_src),
+    static_method("Node", "sync_(_,_,_)", bindings_audio::node_sync),
     static_method("Node", "env_(_,_)", bindings_audio::node_env),
     static_method("Node", "noise_()", bindings_audio::node_noise),
     static_method("Node", "pink_()", bindings_audio::node_pink),

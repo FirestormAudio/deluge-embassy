@@ -383,3 +383,24 @@ fn engine_host_upload_table_builds_band_limited() {
     assert_eq!(region.len(), deluge_wren_core::PYRAMID_LEN);
     assert!(region[..mipgen::N].iter().any(|&x| x != 0.0));
 }
+
+#[test]
+fn osc_sync_saw_emits_newnode() {
+    let cmds = run_and_capture_cmds("Osc.syncSaw(220, 660)");
+    assert_eq!(
+        cmds,
+        vec![Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::SyncSaw,
+            args: [Input::Const(220.0), Input::Const(660.0), Input::Const(0.0)],
+        }]
+    );
+}
+
+#[test]
+fn osc_sync_render_bounded_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Osc.syncSaw(220, 660))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0));
+}
