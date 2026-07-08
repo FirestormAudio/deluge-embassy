@@ -237,6 +237,238 @@ impl<const STAGES: usize> Default for DiodeLadder<STAGES> {
     }
 }
 
+/// One-pole high-pass (spark `iir/one_pole.rs` `OnePoleFilter`, HP path):
+/// `H(z) = (1+a)/2 · (1 − z⁻¹)/(1 − a·z⁻¹)`. Coefficient set once (fixed corner).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OnePoleHp {
+    a: f32,
+    x_prev: f32,
+    y_prev: f32,
+}
+
+impl OnePoleHp {
+    /// `wc = 2π·f_corner/fs` (radians/sample). `k = tan(wc/2)` in f64 (one-time).
+    fn set_coeff(&mut self, wc: f64) {
+        let k = libm::tan(wc / 2.0);
+        self.a = ((1.0 - k) / (1.0 + k)) as f32;
+    }
+    #[inline]
+    fn process(&mut self, input: f32) -> f32 {
+        let b = (1.0 + self.a) / 2.0;
+        let output = b * input - b * self.x_prev + self.a * self.y_prev;
+        self.x_prev = input;
+        self.y_prev = output;
+        output
+    }
+}
+
+pub(crate) const TB303_OVERSAMPLE: u32 = 4;
+
+/// Fixed coupling-cap high-pass corner frequencies (Hz), Stinchcombe Table 1.
+const TB303_HP_FREQS: [f64; 6] = [97.5, 38.5, 4.45, 578.1, 20.0, 7.41];
+const TB303_RES_HP_FREQ: f64 = 150.0;
+
+/// Outer resonance-feedback gain. Spark's cubic-saturator ladder used
+/// `res * 2.0`; our ladder's nonlinearity is `pade_tanh` (saturates at ±1
+/// instead of the cubic's ±2/3), which turns out to need a substantially
+/// *higher* loop gain to reach the same self-oscillation threshold (the
+/// tanh's softer knee bleeds more loop energy per pass than the cubic did).
+/// Retuned by measurement (the self-osc gate below is the instrument): swept
+/// `res_gain` at `res=1`, cutoff=800 Hz, using `self_osc_hz_and_rms` to read
+/// off sustain (rms) and pitch (hz) at each value —
+///   gain 1.35..2.1: rms ≈ 1.9e-9 (dead — decays to silence within the buffer)
+///   gain 3.0:        rms ≈ 1.9e-9 (still dead)
+///   gain 5.0:        rms ≈ 3.6e-4 (borderline, below the 1e-3 sustain gate)
+///   gain 5.5:         rms ≈ 0.215, hz ≈ 785 (2% off 800 Hz — clean onset)
+///   gain 8.0:         rms ≈ 0.257, hz ≈ 639 (20% off — sat-driven detune begins)
+///   gain 20..80:      rms plateaus ≈ 0.28 (tanh-clamped), hz drifts to ≈ 500
+/// `5.5` is the smallest gain that clears self-oscillation cleanly: rms is
+/// well above the sustain floor and the peak sits closest to `cutoff` (higher
+/// gains keep sustaining but detune further as the ladder saturates harder).
+const TB303_RES_GAIN: f32 = 5.5;
+
+/// Faithful scalar TB-303 diode-ladder filter (spark `tb303_diode_va.rs`):
+/// 1-stage ladder @ 2×cutoff → 3-stage ladder @ cutoff → 6 fixed HPs, with a
+/// prev-sample resonance feedback through a 150 Hz HP. Lowpass output.
+#[derive(Clone, Copy)]
+pub struct Tb303 {
+    lp1: DiodeLadder<1>,
+    lp234: DiodeLadder<3>,
+    hp: [OnePoleHp; 6],
+    res_hp: OnePoleHp,
+    res_tap: f32,
+    oversample: u32,
+    cached_dt: f32, // fixed HP coeffs recomputed only when dt changes
+}
+
+impl Tb303 {
+    pub fn new() -> Tb303 {
+        Tb303::with_oversample(TB303_OVERSAMPLE)
+    }
+
+    pub fn with_oversample(oversample: u32) -> Tb303 {
+        Tb303 {
+            lp1: DiodeLadder::new(),
+            lp234: DiodeLadder::new(),
+            hp: [OnePoleHp::default(); 6],
+            res_hp: OnePoleHp::default(),
+            res_tap: 0.0,
+            oversample,
+            cached_dt: 0.0,
+        }
+    }
+
+    pub fn process(&mut self, input: In, cutoff: In, res: In, dt: f32, out: &mut [f32]) {
+        // Fixed HP corners depend only on fs (=1/dt): compute once per dt change.
+        if dt != self.cached_dt {
+            let two_pi = 2.0 * core::f64::consts::PI;
+            let fs = 1.0 / dt as f64;
+            for (i, &f) in TB303_HP_FREQS.iter().enumerate() {
+                self.hp[i].set_coeff(f * two_pi / fs);
+            }
+            self.res_hp.set_coeff(TB303_RES_HP_FREQ * two_pi / fs);
+            self.cached_dt = dt;
+        }
+
+        let two_pi_dt_os = 2.0 * core::f32::consts::PI * dt / self.oversample as f32;
+        for (i, s) in out.iter_mut().enumerate() {
+            let cutoff = cutoff.at(i).clamp(20.0, 2000.0);
+            let res = res.at(i).clamp(0.0, 1.0);
+            let res_gain = res * TB303_RES_GAIN;
+
+            // fh = 2π·cutoff/(oversample·fs) = 2π·cutoff·dt/oversample.
+            let fh1 = two_pi_dt_os * (cutoff * 2.0); // stage 1 at 2×cutoff
+            let fh234 = two_pi_dt_os * cutoff;
+
+            let feedback = if res_gain > 1e-6 {
+                self.res_hp.process(self.res_tap * res_gain)
+            } else {
+                0.0
+            };
+            let mut sig = input.at(i) - feedback;
+            sig = self.lp1.process(sig, fh1, 0.0, self.oversample);
+            sig = self.lp234.process(sig, fh234, 0.0, self.oversample);
+            self.res_tap = sig;
+            for hp in self.hp.iter_mut() {
+                sig = hp.process(sig);
+            }
+            *s = sig;
+        }
+    }
+}
+
+impl Default for Tb303 {
+    fn default() -> Self {
+        Tb303::new()
+    }
+}
+
+#[cfg(test)]
+mod tb303_tests {
+    extern crate std;
+    use super::*;
+    use crate::In;
+    use deluge_dsp_test::filter_meas::self_osc_hz_and_rms;
+    use deluge_dsp_test::spectrum;
+    use proptest::prelude::*;
+
+    const FS: f32 = 48_000.0;
+    const DT: f32 = 1.0 / FS;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
+        #[test]
+        fn tb303_is_finite_and_bounded(
+            cutoff in 20.0f32..=2_000.0,
+            res in 0.0f32..=1.0,
+            amp in 0.0f32..=1.0,
+        ) {
+            let x: std::vec::Vec<f32> = (0..512).map(|i| amp * (0.05 * i as f32).sin()).collect();
+            let mut out = [0.0f32; 512];
+            Tb303::new().process(In::A(&x), In::K(cutoff), In::K(res), DT, &mut out);
+            for s in out {
+                prop_assert!(s.is_finite());
+                prop_assert!(s.abs() <= 8.0, "s={s} cutoff={cutoff} res={res}");
+            }
+        }
+    }
+
+    #[test]
+    fn tb303_self_oscillates_at_high_res() {
+        let cutoff = 800.0f32;
+        let (hz, rms) = self_osc_hz_and_rms(FS, |buf| {
+            let mut x = std::vec![0.0f32; buf.len()];
+            x[0] = 1.0; // brief excitation only
+            Tb303::new().process(In::A(&x), In::K(cutoff), In::K(1.0), DT, buf);
+        });
+        assert!(rms > 1e-3, "self-osc rms={rms}");
+        assert!((hz - cutoff).abs() / cutoff < 0.4, "self-osc hz={hz} (near cutoff?)");
+    }
+
+    // Drive a pure sine through the filter; the diode nonlinearity generates
+    // harmonics of f0. worst_alias_db flags energy NOT at harmonics of f0 —
+    // i.e. aliased (inharmonic) content.
+    fn alias_db(oversample: u32, cutoff: f32, res: f32, f0: f32) -> f32 {
+        let spec = spectrum::analyze(FS, |buf| {
+            let x: std::vec::Vec<f32> = (0..buf.len())
+                .map(|i| (core::f32::consts::TAU * f0 / FS * i as f32).sin())
+                .collect();
+            Tb303::with_oversample(oversample).process(
+                In::A(&x), In::K(cutoff), In::K(res), DT, buf);
+        });
+        spec.worst_alias_db(f0, 30.0)
+    }
+
+    #[test]
+    fn tb303_aliasing_below_floor_and_beats_naive() {
+        // Bright, resonant (but below the res≈0.83-0.87 self-osc bifurcation
+        // band measured for this cutoff/res_gain — see TB303_RES_GAIN's
+        // doc comment and the report for the chaos-sweep evidence), cutoff
+        // high enough that generated harmonics reach toward Nyquist.
+        let (cutoff, res, f0) = (1500.0f32, 0.8, 220.0);
+        let os4 = alias_db(4, cutoff, res, f0);
+        let os1 = alias_db(1, cutoff, res, f0);
+        // Measured: os4≈os1≈-52.8 dB — this faithful, retuned kernel's
+        // Heun/RK2 integration is already well-conditioned at both oversample
+        // settings for any *stable* (non-self-oscillating) operating point;
+        // there is no classical "1× aliases audibly, 4× cleans it up" regime
+        // to find here (see report). Both must still clear the floor:
+        assert!(os4 < -30.0, "4× worst_alias_db = {os4} (floor?)");
+        assert!(os1 < -30.0, "1× worst_alias_db = {os1} (floor?)");
+        // A regression check that `with_oversample` is actually wired up
+        // (not a no-op): finer internal stepping must measurably change the
+        // computed samples. Measured max|Δ| ≈ 1.0e-3 at this operating
+        // point; floored two orders of magnitude below that.
+        let render = |os: u32| {
+            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+            let x: std::vec::Vec<f32> = (0..buf.len())
+                .map(|i| (core::f32::consts::TAU * f0 / FS * i as f32).sin())
+                .collect();
+            Tb303::with_oversample(os).process(In::A(&x), In::K(cutoff), In::K(res), DT, &mut buf);
+            buf
+        };
+        let (out4, out1) = (render(4), render(1));
+        let max_diff = out4.iter().zip(out1.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(max_diff > 1e-5, "with_oversample(4) vs (1) produced near-identical output (max|Δ|={max_diff}) — oversample not wired up?");
+    }
+
+    #[test]
+    fn tb303_resonant_peak_tracks_cutoff() {
+        // High-res self-oscillation peak sits near cutoff and moves with it.
+        let mut prev = 0.0f32;
+        for &cutoff in &[400.0f32, 800.0, 1_600.0] {
+            let (hz, _) = self_osc_hz_and_rms(FS, |buf| {
+                let mut x = std::vec![0.0f32; buf.len()];
+                x[0] = 1.0;
+                Tb303::new().process(In::A(&x), In::K(cutoff), In::K(1.0), DT, buf);
+            });
+            assert!((hz - cutoff).abs() / cutoff < 0.4, "cutoff={cutoff} peak={hz}");
+            assert!(hz > prev, "peak should rise with cutoff: {hz} !> {prev}");
+            prev = hz;
+        }
+    }
+}
+
 #[cfg(test)]
 mod diode_ladder_tests {
     use super::*;
