@@ -34,7 +34,8 @@ use deluge_wren_core::Cmd;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 // Sizes satisfy the binding contract: NODES >= WREN_MAX_NODES(64), BUSES >= 8.
-type Eng = Engine<32, 64, 128, 8, 90112, 2048>; // BLOCK, NODES, OUTS, BUSES, PCAP, PCHUNK
+const PCAP: usize = 90112;
+type Eng = Engine<32, 64, 128, 8, PCAP, 2048>; // BLOCK, NODES, OUTS, BUSES, PCAP, PCHUNK
 const _: () = assert!(64 >= deluge_wren_core::WREN_MAX_NODES && 8 >= deluge_wren_core::WREN_MAX_BUSES);
 const SAMPLE_RATE: f32 = 44_100.0;
 
@@ -116,7 +117,52 @@ pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
 }
 
 // The firmware pool (PCAP in the `Eng` alias) must hold at least one full pyramid.
-const _: () = assert!(90112 >= deluge_wren_core::PYRAMID_LEN);
+const _: () = assert!(PCAP >= deluge_wren_core::PYRAMID_LEN);
+
+/// Build `nframes` band-limited pyramids into one contiguous pool region for
+/// `Wavetable.from2d`. `fill_frame(f, base)` is called once per frame (see
+/// `deluge_wren_core::Host::upload_table_2d`'s docs for the exact contract),
+/// filling `base` from the Wren list; this fn only allocates the pool region
+/// and builds each pyramid in-line — no VM access. `None` if `nframes == 0`,
+/// on pool exhaustion, or if `nframes * PYRAMID_LEN` wouldn't fit the pool
+/// even in principle (checked up front, before ever touching `eng`, so a huge
+/// `nframes` degrades to `None` rather than partially building).
+///
+/// **Concurrency / real-time note**: like [`upload_table`], this runs inline
+/// on the one cooperative executor (see the module's `## Concurrency` docs) —
+/// but the build cost here scales *linearly with `nframes`* (one IFFT pyramid
+/// build per frame, same sub-millisecond-ish cost as a single `upload_table`
+/// call each). A `Wavetable.from2d` with many frames can therefore stall
+/// `audio_task` for roughly `nframes` times as long as one `upload_table`
+/// call. This inline path is only real-time-safe for SMALL frame counts (a
+/// handful, e.g. a handful of morph keyframes) — a large dynamic 2D bank
+/// should use a deferred/async build (not yet implemented; the write-ahead
+/// lead a single-cycle build fits does not scale to dozens of frames) instead
+/// of blocking here.
+pub fn upload_table_2d(
+    nframes: usize,
+    fill_frame: &mut dyn FnMut(usize, &mut [f32]),
+) -> Option<deluge_audio_graph::PoolHandle> {
+    if nframes == 0 {
+        return None;
+    }
+    let total = nframes.checked_mul(deluge_wren_core::PYRAMID_LEN)?;
+    if total > PCAP {
+        return None; // wouldn't fit even in an empty pool — don't bother allocating
+    }
+    // SAFETY: see `upload_table`'s SAFETY comment above — same synchronous,
+    // non-yielding, single-executor argument applies here.
+    let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
+    let h = eng.pool_alloc(total)?;
+    for f in 0..nframes {
+        let mut base = [0.0f32; deluge_wren_core::BASE_LEN];
+        fill_frame(f, &mut base);
+        let start = f * deluge_wren_core::PYRAMID_LEN;
+        let region = &mut eng.pool_slice_mut(h)[start..start + deluge_wren_core::PYRAMID_LEN];
+        deluge_wren_core::build_pyramid_into(&base, region);
+    }
+    Some(h)
+}
 
 // ── Render task ──────────────────────────────────────────────────────────────
 

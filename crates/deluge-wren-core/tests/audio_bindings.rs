@@ -260,6 +260,78 @@ fn wavetable_from_round_trip_renders_finite_nonsilent_bounded_deterministic() {
 }
 
 #[test]
+fn osc_position_emits_setinput_port2() {
+    let cmds = run_and_capture_cmds(
+        "var w = Wavetable.from2d([[-1, 0, 1, 0], [1, 0, -1, 0]])\n\
+         var s = Osc.wavetable(w, 220)\n\
+         s.position = 0.5",
+    );
+    assert!(cmds.iter().any(|c| *c == Cmd::SetInput {
+        node: NodeId(0), port: 2, src: Input::Const(0.5)
+    }));
+}
+
+#[test]
+fn wavetable_from2d_unbound_on_cmd_capture_host_no_bogus_bindtable() {
+    // Mirrors `wavetable_from_unbound_on_cmd_capture_host_no_bogus_bindtable`:
+    // the Cmd-capture host has no pool, so `upload_table_2d` returns `None`
+    // and the handle stays unbound — `Osc.wavetable` must still create the
+    // node (graceful degrade to silent) but MUST NOT emit a `BindTable`.
+    let cmds = run_and_capture_cmds(
+        "var w = Wavetable.from2d([[-1, 0, 1, 0], [1, 0, -1, 0]])\n\
+         var v = Osc.wavetable(w, 220)",
+    );
+    assert!(cmds.iter().any(|c| matches!(c,
+        Cmd::NewNode { node: NodeId(0), kind: Kind::Wavetable, .. })));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })));
+}
+
+#[test]
+fn wavetable_from2d_round_trip_renders_finite_nonsilent_and_morphs() {
+    // Two maximally-different frames (frame 0 = silence, frame 1 = a loud
+    // square-ish wave) via a real `EngineHost`: `Wavetable.from2d` (nested
+    // list read) -> `Host::upload_table_2d` (one pyramid per frame in a
+    // single pool region) -> `TableSrc::Pooled` bind -> `Osc.wavetable`
+    // render through `Kind::Wavetable`'s `FRAMES>1` morph path (`process_morph`,
+    // reading `.position` on port 2). `position=0` must render frame 0
+    // (silence) exactly; `position=1` must render frame 1 (loud) and
+    // therefore differ audibly from `position=0`.
+    let n = 32;
+    let frame0: Vec<String> = (0..n).map(|_| "0.0".to_string()).collect();
+    let frame1: Vec<String> =
+        (0..n).map(|i| if i < n / 2 { "1.0".to_string() } else { "-1.0".to_string() }).collect();
+    let script_at = |pos: f32| {
+        format!(
+            "var w = Wavetable.from2d([[{}], [{}]])\n\
+             var s = Osc.wavetable(w, 220)\n\
+             s.position = {}\n\
+             Out.patch(s)",
+            frame0.join(", "),
+            frame1.join(", "),
+            pos
+        )
+    };
+
+    let mut out_pos0 = [StereoFrame::default(); 32];
+    run_and_render(&script_at(0.0), &mut out_pos0);
+    assert!(out_pos0.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
+    assert!(out_pos0.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
+    assert!(
+        out_pos0.iter().all(|f| f.l == 0.0 && f.r == 0.0),
+        "position=0 (silent frame) should render silence: {out_pos0:?}"
+    );
+
+    let mut out_pos1 = [StereoFrame::default(); 32];
+    run_and_render(&script_at(1.0), &mut out_pos1);
+    assert!(out_pos1.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
+    assert!(out_pos1.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
+    assert!(
+        out_pos1.iter().any(|f| f.l != 0.0),
+        "position=1 (loud frame) should render non-silent: {out_pos1:?}"
+    );
+}
+
+#[test]
 fn engine_host_upload_table_builds_band_limited() {
     let mut host = EngineHost::new(48_000.0);
     let mut base = [0.0f32; mipgen::N];

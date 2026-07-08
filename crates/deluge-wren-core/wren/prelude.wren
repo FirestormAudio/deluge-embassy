@@ -121,6 +121,7 @@ foreign class Node {
   foreign cutoff=(v)
   foreign pm=(v)
   foreign width=(v)
+  foreign position=(v)
   foreign feedback=(v)
   foreign gate(on)
   foreign trigger()
@@ -156,8 +157,18 @@ foreign class Port {
 // while another node still shares the same Wavetable (that frees the table
 // out from under the survivor). Misuse degrades gracefully (silence, or a
 // leak until the pool is exhausted) — never undefined behavior.
+//
+// `Wavetable.from2d([[frame0...], [frame1...], ...])` uploads a *multi-frame*
+// table (a nested list: one inner list per frame, each one base cycle) and
+// builds one pyramid per frame. A node built from it (`Osc.wavetable`) morphs
+// continuously across frames by `.position` (0 = frame 0, 1 = the last frame):
+//   var w = Wavetable.from2d([[-1, 0, 1, 0], [-1, -1, 1, 1]])
+//   var o = Osc.wavetable(w, 220)
+//   o.position = 0.5   // halfway between frame 0 and frame 1
+// Same lifetime contract as `from` above.
 foreign class Wavetable {
   foreign static from(samples)
+  foreign static from2d(frames)
 }
 
 class Osc {

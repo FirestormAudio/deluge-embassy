@@ -114,6 +114,16 @@ pub fn new_wavetable(id: u16, table_id: u16, freq: Input) {
 pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
     host().upload_table(base)
 }
+/// Upload a multi-frame table (`nframes` base-cycles, each filled by
+/// `fill_frame`) to the host's pool, building one pyramid per frame into a
+/// single contiguous region. `None` on a host with no pool or on pool
+/// exhaustion. Used by `Wavetable.from2d`.
+pub fn upload_table_2d(
+    nframes: usize,
+    fill_frame: &mut dyn FnMut(usize, &mut [f32]),
+) -> Option<deluge_audio_graph::PoolHandle> {
+    host().upload_table_2d(nframes, fill_frame)
+}
 /// Create a `Kind::Wavetable` node and bind it to a pooled (dynamically
 /// uploaded) table. The pooled counterpart of [`new_wavetable`]. Used by
 /// `Node.wavetable_pooled_(wt, freq)`.

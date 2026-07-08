@@ -75,4 +75,12 @@ impl Host for FwHost {
     fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
         crate::audio::upload_table(base)
     }
+
+    fn upload_table_2d(
+        &mut self,
+        nframes: usize,
+        fill_frame: &mut dyn FnMut(usize, &mut [f32]),
+    ) -> Option<deluge_audio_graph::PoolHandle> {
+        crate::audio::upload_table_2d(nframes, fill_frame)
+    }
 }
