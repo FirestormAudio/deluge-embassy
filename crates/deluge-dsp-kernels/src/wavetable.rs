@@ -114,15 +114,19 @@ impl WtOsc {
         }
     }
 
-    /// Multi-frame morphing read: linearly crossfades between two adjacent
-    /// frames of a flat, contiguous stack of compact pyramids (`region`,
-    /// `frames * COMPACT_LEN` long, each frame laid out like
-    /// `compact_levels` expects) selected by `position` (normalized `[0,1]`
-    /// across `frames`), while each frame's own sample is produced by the
-    /// same band-limited single-cycle read (`sample_one`) `process` uses.
-    /// `region.len() < frames * COMPACT_LEN` (or `frames == 0`) silently
-    /// produces silence (out left as-is by caller/zeroed) rather than
-    /// panicking, since callers may pass a not-yet-fully-uploaded region.
+    /// Multi-frame morphing read: Catmull-Rom cubic-blends across 4 clamped
+    /// frames (`f-1, f, f+1, f+2`) of a flat, contiguous stack of compact
+    /// pyramids (`region`, `frames * COMPACT_LEN` long, each frame laid out
+    /// like `compact_levels` expects) selected by `position` (normalized
+    /// `[0,1]` across `frames`), while each frame's own sample is produced by
+    /// the same band-limited single-cycle read (`sample_one`) `process`
+    /// uses. Out-of-range taps clamp to the first/last frame, so the blend
+    /// degrades gracefully near the ends (and is exact — `catmull_rom`
+    /// passes through its control points — at `position` `0`/`1` and every
+    /// interior frame boundary). `region.len() < frames * COMPACT_LEN` (or
+    /// `frames == 0`) silently produces silence (out left as-is by
+    /// caller/zeroed) rather than panicking, since callers may pass a
+    /// not-yet-fully-uploaded region.
     pub fn process_morph(
         &mut self, region: &[f32], frames: usize,
         freq: In, pmod: In, position: In, dt: f32, out: &mut [f32],
@@ -138,16 +142,20 @@ impl WtOsc {
             let fpos = position.at(i).clamp(0.0, 1.0) * last as f32;
             let f0 = fpos as usize;
             let f0 = if f0 > last { last } else { f0 };
-            let f1 = if f0 + 1 > last { last } else { f0 + 1 };
             let ffrac = fpos - f0 as f32;
-            let m0 = compact_levels(&region[f0 * COMPACT_LEN..(f0 + 1) * COMPACT_LEN]);
+            let fm1 = if f0 == 0 { 0 } else { f0 - 1 };
+            let f0c = if f0 > last { last } else { f0 };
+            let f1 = if f0c + 1 > last { last } else { f0c + 1 };
+            let f2 = if f0c + 2 > last { last } else { f0c + 2 };
+            let mm1 = compact_levels(&region[fm1 * COMPACT_LEN..(fm1 + 1) * COMPACT_LEN]);
+            let m0 = compact_levels(&region[f0c * COMPACT_LEN..(f0c + 1) * COMPACT_LEN]);
+            let m1 = compact_levels(&region[f1 * COMPACT_LEN..(f1 + 1) * COMPACT_LEN]);
+            let m2 = compact_levels(&region[f2 * COMPACT_LEN..(f2 + 1) * COMPACT_LEN]);
+            let ym1 = sample_one(&MipSet { levels: &mm1 }, ph, dtp);
             let y0 = sample_one(&MipSet { levels: &m0 }, ph, dtp);
-            let y = if f1 == f0 { y0 } else {
-                let m1 = compact_levels(&region[f1 * COMPACT_LEN..(f1 + 1) * COMPACT_LEN]);
-                let y1 = sample_one(&MipSet { levels: &m1 }, ph, dtp);
-                y0 + (y1 - y0) * ffrac.clamp(0.0, 1.0)
-            };
-            *s = y;
+            let y1 = sample_one(&MipSet { levels: &m1 }, ph, dtp);
+            let y2 = sample_one(&MipSet { levels: &m2 }, ph, dtp);
+            *s = catmull_rom(ym1, y0, y1, y2, ffrac.clamp(0.0, 1.0));
             self.phase += dtp; self.phase -= floorf(self.phase);
         }
     }
@@ -227,6 +235,17 @@ pub(crate) fn compact_levels(region: &[f32]) -> [&[f32]; LEVELS] {
     core::array::from_fn(|l| &region[level_offset(l)..level_offset(l) + level_len(l)])
 }
 
+/// Catmull-Rom cubic through 4 control points `(y0,y1,y2,y3)`, interpolating
+/// between `y1` (at `t=0`) and `y2` (at `t=1`) using `y0`/`y3` as the outer
+/// tangents. Shared by `interp_cubic` (phase axis, within one frame) and
+/// `process_morph` (frame axis, across morph frames).
+fn catmull_rom(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
+    let a = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+    let b = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c = -0.5 * y0 + 0.5 * y2;
+    ((a * t + b) * t + c) * t + y1
+}
+
 /// 4-point Catmull-Rom at fractional phase `ph` in [0,1) over a length-N table.
 fn interp_cubic(table: &[f32], ph: f32) -> f32 {
     let n = table.len();
@@ -237,10 +256,7 @@ fn interp_cubic(table: &[f32], ph: f32) -> f32 {
     let i2 = (i1 + 1) % n;
     let i3 = (i1 + 2) % n;
     let (y0, y1, y2, y3) = (table[i0], table[i1], table[i2], table[i3]);
-    let a = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
-    let b = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    let c = -0.5 * y0 + 0.5 * y2;
-    ((a * frac + b) * frac + c) * frac + y1
+    catmull_rom(y0, y1, y2, y3, frac)
 }
 
 #[cfg(test)]
@@ -575,6 +591,23 @@ mod tests {
         r
     }
 
+    /// Renders a single base waveform alone (compact-pyramid `process`, not
+    /// `process_morph`) at `f0`, starting from a fresh (phase=0) `WtOsc`. Used
+    /// as ground truth for individual morph-frame samples: since `process_morph`
+    /// also starts each render from a fresh `WtOsc` and uses the same
+    /// freq/dt, the per-sample phase trajectory is identical, so these values
+    /// are exactly the `sample_one` outputs `process_morph` reads for that
+    /// frame at each output index.
+    fn render_frame_alone(base: &[f32; N], f0: f32, sr: f32) -> [f32; 256] {
+        let mut region = vec![0.0f32; COMPACT_LEN];
+        mipgen::build_pyramid_flat_compact(base, &mut region);
+        let levels = compact_levels(&region);
+        let mut o = [0.0f32; 256];
+        let mut w = WtOsc::new();
+        w.process(MipSet { levels: &levels }, In::K(f0), In::K(0.0), 1.0 / sr, &mut o);
+        o
+    }
+
     #[test]
     fn morph_frames1_matches_single_cycle() {
         // FRAMES==1 morph must equal the single-cycle process bit-for-bit.
@@ -592,16 +625,85 @@ mod tests {
 
     #[test]
     fn morph_position_endpoints_and_midpoint() {
-        // position=0 → frame 0; position=1 → frame 1; position=0.5 → average.
+        // position=0 → frame 0 exactly; position=1 → frame 1 exactly
+        // (Catmull-Rom passes through its control points: `catmull_rom`
+        // returns its `y1` arg at t=0 and its `y2` arg at t=1, and the
+        // frame→arg mapping puts f0 in the `y1` slot, f1 in the `y2` slot).
         let mut saw = [0.0f32; N];
         let mut sq = [0.0f32; N];
         for i in 0..N { saw[i] = 2.0 * (i as f32 / N as f32) - 1.0; sq[i] = if i < N/2 {1.0} else {-1.0}; }
         let region = frame_region(&[saw, sq]);
         let sr = 48_000.0f32;
+        let f0hz = 220.0f32;
         let render = |pos: f32| { let mut o=[0.0f32;256]; let mut w=WtOsc::new();
-            w.process_morph(&region, 2, In::K(220.0), In::K(0.0), In::K(pos), 1.0/sr, &mut o); o };
-        let f0 = render(0.0); let f1 = render(1.0); let mid = render(0.5);
-        for i in 0..256 { assert!((mid[i] - 0.5*(f0[i]+f1[i])).abs() < 1e-4, "midpoint avg @ {i}"); }
+            w.process_morph(&region, 2, In::K(f0hz), In::K(0.0), In::K(pos), 1.0/sr, &mut o); o };
+
+        let ya = render_frame_alone(&saw, f0hz, sr); // frame 0 in isolation
+        let yb = render_frame_alone(&sq, f0hz, sr);  // frame 1 in isolation
+        let f0 = render(0.0);
+        let f1 = render(1.0);
+        assert_eq!(f0, ya, "position=0 must equal frame 0 exactly");
+        assert_eq!(f1, yb, "position=1 must equal frame 1 exactly");
+
+        // Midpoint: with only 2 frames, both outer taps clamp to duplicate
+        // the adjacent real frame (fm1==f0, f1==f2), i.e. the read is
+        // catmull_rom(A,A,B,B,0.5). That specific case's cubic polynomial
+        // happens to numerically equal the 2-tap linear average AT t=0.5
+        // (though not at other t — a property of the symmetric double-clamp,
+        // not of Catmull-Rom in general). Assert against the explicit
+        // 4-tap formula (not "the average") so this test documents *why*,
+        // and see `morph_cubic_frame_read_uses_four_frames` for a >=4-frame
+        // case where the cubic blend provably reads the outer taps and
+        // differs from the 2-tap linear result.
+        let mid = render(0.5);
+        for i in 0..256 {
+            let expected = catmull_rom(ya[i], ya[i], yb[i], yb[i], 0.5);
+            assert!((mid[i] - expected).abs() < 1e-4, "midpoint cubic @ {i}: {} vs {}", mid[i], expected);
+        }
+    }
+
+    #[test]
+    fn morph_cubic_frame_read_uses_four_frames() {
+        // With >=4 distinct (non-collinear) frames, the cubic frame blend
+        // must depend on the outer taps (f-1, f+2), not just the two
+        // bracketing frames (f, f+1) — proving it reads 4 frames, not 2.
+        let mut saw = [0.0f32; N];
+        let mut sq = [0.0f32; N];
+        let mut tri = [0.0f32; N];
+        let mut sine = [0.0f32; N];
+        for i in 0..N {
+            let t = i as f32 / N as f32;
+            saw[i] = 2.0 * t - 1.0;
+            sq[i] = if i < N / 2 { 1.0 } else { -1.0 };
+            tri[i] = 4.0 * (t - 0.5).abs() - 1.0;
+            sine[i] = libm::sinf(core::f32::consts::TAU * t);
+        }
+        let sr = 48_000.0f32;
+        let f0hz = 220.0f32;
+        let region = frame_region(&[saw, sq, tri, sine]); // frames 0..3, last=3
+
+        let ya = render_frame_alone(&saw, f0hz, sr);
+        let yb = render_frame_alone(&sq, f0hz, sr);
+        let yc = render_frame_alone(&tri, f0hz, sr);
+        let yd = render_frame_alone(&sine, f0hz, sr);
+
+        // position=0.5 -> fpos = 0.5*3 = 1.5 exactly: f0=1(sq), ffrac=0.5,
+        // fm1=0(saw), f0c=1(sq), f1=2(tri), f2=3(sine) — all 4 distinct frames.
+        let mut out = [0.0f32; 256];
+        let mut w = WtOsc::new();
+        w.process_morph(&region, 4, In::K(f0hz), In::K(0.0), In::K(0.5), 1.0 / sr, &mut out);
+
+        let mut max_abs_diff_from_linear = 0.0f32;
+        for i in 0..256 {
+            let expected_cubic = catmull_rom(ya[i], yb[i], yc[i], yd[i], 0.5);
+            assert!((out[i] - expected_cubic).abs() < 1e-4,
+                "sample {i}: {} vs expected cubic {expected_cubic} (reads all 4 frames)", out[i]);
+            let linear_2tap = 0.5 * (yb[i] + yc[i]);
+            max_abs_diff_from_linear = max_abs_diff_from_linear.max((out[i] - linear_2tap).abs());
+        }
+        assert!(max_abs_diff_from_linear > 1e-3,
+            "cubic blend should differ measurably from the old 2-tap linear average \
+             (max abs diff = {max_abs_diff_from_linear}); outer taps may not be in use");
     }
 
     #[test]
