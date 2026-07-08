@@ -115,6 +115,7 @@ foreign class Node {
   foreign static brown_()
   foreign static binop_(op, a, b)
   foreign static lpf_(input, cutoff)
+  foreign static svf_(input, cutoff, res, resp)
   foreign static patch_(node)
   foreign static reset_()
   foreign static split_(input)
@@ -122,6 +123,7 @@ foreign class Node {
   foreign static wavetable_pooled_(wt, freq)
   foreign freq=(v)
   foreign cutoff=(v)
+  foreign res=(v)
   foreign pm=(v)
   foreign width=(v)
   foreign position=(v)
@@ -192,6 +194,18 @@ class Osc {
   }
   static pink() { Node.pink_() }
   static brown() { Node.brown_() }
+}
+
+// State-variable filter: LP/HP/BP/notch from one topology, resonant and
+// audio-rate-modulatable. Each factory returns a Node you can modulate:
+//   var f = Svf.lp(Osc.saw(110), 1200, 0.6)
+//   f.cutoff = Osc.sine(3) * 400 + 1200   // wobble
+//   f.res = 0.9
+class Svf {
+  static lp(input, cutoff, res) { Node.svf_(input, cutoff, res, 0) }
+  static hp(input, cutoff, res) { Node.svf_(input, cutoff, res, 1) }
+  static bp(input, cutoff, res) { Node.svf_(input, cutoff, res, 2) }
+  static notch(input, cutoff, res) { Node.svf_(input, cutoff, res, 3) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

@@ -262,6 +262,31 @@ pub(crate) unsafe extern "C" fn node_lpf(raw: *mut WrenVM) {
     node_lpf_impl(&vm);
 }
 
+/// Wren response code → Kind (0=lp 1=hp 2=bp 3=notch), mirroring `src_kind`.
+fn svf_kind(code: u32) -> Kind {
+    match code {
+        0 => Kind::SvfLp,
+        1 => Kind::SvfHp,
+        2 => Kind::SvfBp,
+        _ => Kind::SvfNotch,
+    }
+}
+
+pub(crate) fn node_svf_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let cutoff = arg_input(vm, 2);
+    let res = arg_input(vm, 3);
+    let resp = vm.get_f(4) as u32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, svf_kind(resp), [input, cutoff, res]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_svf(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_svf_impl(&vm);
+}
+
 pub(crate) fn node_wavetable_impl<S: SlotApi>(vm: &S) {
     let table_id = vm.get_f(1) as u16;
     let freq = arg_input(vm, 2);
@@ -463,6 +488,16 @@ pub(crate) unsafe extern "C" fn node_set_cutoff(raw: *mut WrenVM) {
     node_set_cutoff_impl(&vm);
 }
 
+pub(crate) fn node_set_res_impl<S: SlotApi>(vm: &S) {
+    let v = arg_input(vm, 1);
+    audio::set_input(self_id(vm), 2, v); // port 2 = resonance
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_res(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_res_impl(&vm);
+}
+
 pub(crate) fn node_set_pm_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
     audio::set_input(self_id(vm), 1, v); // port 1 = phase-mod
@@ -555,6 +590,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "brown_()", node_brown_impl::<S>);
     method("main", "Node", true, "binop_(_,_,_)", node_binop_impl::<S>);
     method("main", "Node", true, "lpf_(_,_)", node_lpf_impl::<S>);
+    method("main", "Node", true, "svf_(_,_,_,_)", node_svf_impl::<S>);
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
     method("main", "Node", true, "reset_()", node_reset_impl::<S>);
     method("main", "Node", true, "split_(_)", node_split_impl::<S>);
@@ -562,6 +598,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "wavetable_pooled_(_,_)", node_wavetable_pooled_impl::<S>);
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
+    method("main", "Node", false, "res=(_)", node_set_res_impl::<S>);
     method("main", "Node", false, "pm=(_)", node_set_pm_impl::<S>);
     method("main", "Node", false, "width=(_)", node_set_width_impl::<S>);
     method("main", "Node", false, "position=(_)", node_set_position_impl::<S>);

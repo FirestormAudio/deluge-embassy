@@ -59,6 +59,21 @@ fn osc_pink_brown_render_finite_nonsilent() {
 }
 
 #[test]
+fn svf_lp_emits_newnode() {
+    // node0 = saw, node1 = svf lp over node0, cutoff 800, res 0.3
+    let cmds = run_and_capture_cmds("var x = Svf.lp(Osc.saw(110), 800, 0.3)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::SvfLp, .. })));
+}
+
+#[test]
+fn svf_lp_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Svf.lp(Osc.saw(110), 800, 0.5))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 4.0));
+    assert!(out.iter().any(|f| f.l != 0.0));
+}
+
+#[test]
 fn patch_writes_master_bus_and_sets_root() {
     let cmds = run_and_capture_cmds("Out.patch(Osc.saw(110))");
     assert_eq!(
