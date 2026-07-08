@@ -77,7 +77,9 @@ impl Svf {
     ) {
         // Const-cutoff fast path: coefficients once per block (exact tanf).
         if let (Some(fc), Some(r)) = (cutoff.as_const(), res.as_const()) {
-            let g = libm::tanf(PI * fc * dt);
+            let fc = fc.max(1.0);
+            let theta = (PI * fc * dt).min(0.49 * PI);
+            let g = libm::tanf(theta);
             let k = svf_k_from_res(r);
             let (a1, a2, a3) = svf_coeffs(g, k);
             for (i, s) in out.iter_mut().enumerate() {
@@ -327,6 +329,22 @@ mod svf_tests {
                     md = md.max((k_out[i] - a_out[i]).abs());
                 }
                 assert!(md < TOL, "fc={fc} res={res} max|Δ|={md}");
+            }
+        }
+    }
+
+    #[test]
+    fn const_cutoff_above_nyquist_is_finite_and_bounded() {
+        // fs=48k → Nyquist 24k; a const cutoff above it must clamp, not NaN.
+        for &fc in &[26_000.0f32, 36_000.0, 100_000.0] {
+            for resp in [SvfResp::Lp, SvfResp::Hp, SvfResp::Bp, SvfResp::Notch] {
+                let x: std::vec::Vec<f32> = (0..256).map(|i| (0.05 * i as f32).sin()).collect();
+                let mut out = [0.0f32; 256];
+                Svf::new().process(In::A(&x), In::K(fc), In::K(0.0), resp, DT, &mut out);
+                for s in out {
+                    assert!(s.is_finite(), "fc={fc} resp={resp:?} produced non-finite");
+                    assert!(s.abs() <= 4.0, "fc={fc} resp={resp:?} s={s}");
+                }
             }
         }
     }
