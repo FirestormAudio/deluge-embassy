@@ -120,6 +120,20 @@ fn moog_lp_renders_finite_nonsilent() {
 }
 
 #[test]
+fn resonator_emits_newnode() {
+    let cmds = run_and_capture_cmds("var x = Resonator.new(Osc.saw(110), 220, 0.3)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Modal, .. })));
+}
+
+#[test]
+fn resonator_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Resonator.new(Osc.saw(110), 220, 0.3))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0));
+    assert!(out.iter().any(|f| f.l != 0.0));
+}
+
+#[test]
 fn patch_writes_master_bus_and_sets_root() {
     let cmds = run_and_capture_cmds("Out.patch(Osc.saw(110))");
     assert_eq!(

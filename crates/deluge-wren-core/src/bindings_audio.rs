@@ -325,6 +325,20 @@ pub(crate) unsafe extern "C" fn node_ms20(raw: *mut WrenVM) {
     node_ms20_impl(&vm);
 }
 
+pub(crate) fn node_modal_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let freq = arg_input(vm, 2);
+    let damping = arg_input(vm, 3);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Modal, [input, freq, damping]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_modal(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_modal_impl(&vm);
+}
+
 pub(crate) fn node_set_drive_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // scalar control param (mirrors node_set_feedback_impl)
     audio::set_param(self_id(vm), 0, v);
@@ -605,6 +619,38 @@ pub(crate) unsafe extern "C" fn node_set_feedback(raw: *mut WrenVM) {
     node_set_feedback_impl(&vm);
 }
 
+pub(crate) fn node_set_structure_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // scalar control param — port 0 = structure (Kind::Modal)
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_structure(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_structure_impl(&vm);
+}
+
+pub(crate) fn node_set_brightness_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // scalar control param — port 1 = brightness (Kind::Modal)
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_brightness(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_brightness_impl(&vm);
+}
+
+// NOTE: `position=`/`node_set_position` already exist (wavetable morph → set_input). Do NOT
+// reuse or shadow them. The resonator's strike position uses `strike=`/`node_set_strike`.
+pub(crate) fn node_set_strike_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // scalar control param — port 2 = strike position (Kind::Modal)
+    audio::set_param(self_id(vm), 2, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_strike(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_strike_impl(&vm);
+}
+
 pub(crate) fn node_gate_impl<S: SlotApi>(vm: &S) {
     let on = vm.get_bool(1);
     audio::gate(self_id(vm), on);
@@ -660,6 +706,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "svf_(_,_,_,_)", node_svf_impl::<S>);
     method("main", "Node", true, "moog_(_,_,_,_)", node_moog_impl::<S>);
     method("main", "Node", true, "ms20_(_,_,_,_)", node_ms20_impl::<S>);
+    method("main", "Node", true, "modal_(_,_,_)", node_modal_impl::<S>);
     method("main", "Node", false, "drive=(_)", node_set_drive_impl::<S>);
     method("main", "Node", true, "tb303_(_,_,_)", node_tb303_impl::<S>);
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
@@ -674,6 +721,9 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "width=(_)", node_set_width_impl::<S>);
     method("main", "Node", false, "position=(_)", node_set_position_impl::<S>);
     method("main", "Node", false, "feedback=(_)", node_set_feedback_impl::<S>);
+    method("main", "Node", false, "structure=(_)", node_set_structure_impl::<S>);
+    method("main", "Node", false, "brightness=(_)", node_set_brightness_impl::<S>);
+    method("main", "Node", false, "strike=(_)", node_set_strike_impl::<S>);
     method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
     method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
     method("main", "Node", false, "out(_)", node_out_impl::<S>);

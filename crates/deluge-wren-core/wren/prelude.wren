@@ -118,6 +118,7 @@ foreign class Node {
   foreign static svf_(input, cutoff, res, resp)
   foreign static moog_(input, cutoff, res, poles)
   foreign static ms20_(input, cutoff, res, resp)
+  foreign static modal_(input, freq, damping)
   foreign drive=(v)
   foreign static tb303_(input, cutoff, res)
   foreign static patch_(node)
@@ -132,6 +133,9 @@ foreign class Node {
   foreign width=(v)
   foreign position=(v)
   foreign feedback=(v)
+  foreign structure=(v)
+  foreign brightness=(v)
+  foreign strike=(v)     // resonator strike position (position= is the wavetable's)
   foreign gate(on)
   foreign trigger()
   foreign out(p)
@@ -237,6 +241,16 @@ class Moog {
 class Ms20 {
   static lp(input, cutoff, res) { Node.ms20_(input, cutoff, res, 0) }
   static hp(input, cutoff, res) { Node.ms20_(input, cutoff, res, 1) }
+}
+
+// Modal resonator — a struck/plucked bank of tuned modes (strings, bells, plates).
+// Excite it with an input; ring it with freq/damping; shape it with structure/brightness/strike:
+//   var body = Resonator.new(Noise.pink() * Env.ar(0.0, 0.02), 220, 0.4)
+//   body.structure = 0.3    // toward inharmonic
+//   body.brightness = 0.8
+//   body.strike = 0.2       // strike position (comb)
+class Resonator {
+  static new(input, freq, damping) { Node.modal_(input, freq, damping) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order
