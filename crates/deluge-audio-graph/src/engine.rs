@@ -209,15 +209,12 @@ impl<
             // disjoint `arena` field) to coexist with `arr`.
             let arr = unsafe { &mut *self.outs.get() };
             let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
-            // Resolve a pooled table's flat region (immutable borrow of the
-            // disjoint `self.pool` field) BEFORE the node's `&mut` borrow
-            // below — `self.pool` and `self.arena` are separate fields of
-            // `Engine`, so the borrow checker tracks them independently as
-            // long as each is accessed as a direct field projection (not
-            // through a whole-`&mut self` helper method).
             // Resolve a pooled node's region MUTABLY (delay lines write it;
-            // wavetables reborrow it immutably in `process_resolved`). Still a
-            // disjoint field borrow of `self.pool` vs `self.arena`.
+            // wavetables reborrow it immutably in `process_resolved`) BEFORE
+            // the node's `&mut` borrow below — `self.pool` and `self.arena` are
+            // separate fields of `Engine`, so the borrow checker tracks them
+            // independently as long as each is accessed as a direct field
+            // projection (not through a whole-`&mut self` helper method).
             let pool_region: Option<&mut [f32]> = match table_src {
                 Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice_mut(h)),
                 _ => None,
