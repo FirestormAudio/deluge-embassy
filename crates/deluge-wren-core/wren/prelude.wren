@@ -138,6 +138,10 @@ foreign class Node {
   foreign static drive_(input, drive, tone, mix, shape)
   foreign tone=(v)
   foreign wet=(v)      // Drive dry/wet (NOT mix= — that's set_param 0, = drive here)
+  foreign static eq_(input, freq, gain, q, type)
+  foreign hz=(v)       // EQ centre/corner frequency (NOT freq= — that's the Osc's)
+  foreign gain=(v)     // EQ band gain in dB
+  foreign q=(v)        // EQ Q / bandwidth
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
@@ -350,6 +354,16 @@ class Drive {
   static hard(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 1) }
   static fold(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 2) }
   static tube(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 3) }
+}
+
+// Parametric EQ band (RBJ). `freq` Hz, `gain` dB, `q` bandwidth. Three types:
+//   Out.patch(EQ.peak(Osc.saw(110), 800, 6, 1.5))
+//   var e = EQ.lowShelf(pad, 200, -4, 0.707); e.hz = 250; e.gain = -6; e.q = 0.8
+// (LP/HP/BP/notch live on `Svf` — this adds the gain-shaping bands.)
+class EQ {
+  static peak(input, freq, gain, q)      { Node.eq_(input, freq, gain, q, 0) }
+  static lowShelf(input, freq, gain, q)  { Node.eq_(input, freq, gain, q, 1) }
+  static highShelf(input, freq, gain, q) { Node.eq_(input, freq, gain, q, 2) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

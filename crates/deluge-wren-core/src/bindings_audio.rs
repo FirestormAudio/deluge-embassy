@@ -753,6 +753,58 @@ pub(crate) unsafe extern "C" fn node_set_damp(raw: *mut WrenVM) {
     node_set_damp_impl(&vm);
 }
 
+/// `Node.eq_(input, freq, gain, q, type)` — a mono RBJ EQ band. Creates a
+/// `Kind::Eq` node (no buffer) and sets type/freq/gain/q params.
+pub(crate) fn node_eq_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let freq = vm.get_f(2) as f32;
+    let gain = vm.get_f(3) as f32;
+    let q = vm.get_f(4) as f32;
+    let ty = vm.get_f(5) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Eq, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 3, ty);
+    audio::set_param(id, 0, freq);
+    audio::set_param(id, 1, gain);
+    audio::set_param(id, 2, q);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_eq(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_eq_impl(&vm);
+}
+
+pub(crate) fn node_set_hz_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 0 = freq (Kind::Eq)
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_hz(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_hz_impl(&vm);
+}
+
+pub(crate) fn node_set_gain_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 1 = gain dB (Kind::Eq)
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_gain(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_gain_impl(&vm);
+}
+
+pub(crate) fn node_set_q_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 2 = Q (Kind::Eq)
+    audio::set_param(self_id(vm), 2, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_q(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_q_impl(&vm);
+}
+
 pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let id = audio::alloc_node_id();
@@ -1034,6 +1086,10 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "drive_(_,_,_,_,_)", node_drive_impl::<S>);
     method("main", "Node", false, "tone=(_)", node_set_tone_impl::<S>);
     method("main", "Node", false, "wet=(_)", node_set_wet_impl::<S>);
+    method("main", "Node", true, "eq_(_,_,_,_,_)", node_eq_impl::<S>);
+    method("main", "Node", false, "hz=(_)", node_set_hz_impl::<S>);
+    method("main", "Node", false, "gain=(_)", node_set_gain_impl::<S>);
+    method("main", "Node", false, "q=(_)", node_set_q_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);

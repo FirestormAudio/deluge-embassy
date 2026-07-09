@@ -799,3 +799,40 @@ fn drive_renders_mono_bounded_on_engine_host() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0), "drive should be non-silent");
 }
+
+#[test]
+fn eq_factories_emit_kind_eq_with_type() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    for (call, code) in [("peak", 0.0f32), ("lowShelf", 1.0), ("highShelf", 2.0)] {
+        let src = std::format!("var e = EQ.{}(Osc.saw(110), 1000, 6, 1)", call);
+        let cmds = run_and_capture_cmds(&src);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Eq, .. })), "{call}: {cmds:?}");
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, value, .. } if (*value - code).abs() < 1e-4)), "{call} type {code}: {cmds:?}");
+        for p in [0u8, 1, 2] {
+            assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "{call} missing SetParam {p}");
+        }
+    }
+}
+
+#[test]
+fn eq_setters_map_to_params() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds(
+        "var e = EQ.peak(Osc.saw(110), 1000, 0, 1)\ne.hz = 2000\ne.gain = 6\ne.q = 2",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })), "hz=→0: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })), "gain=→1: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, .. })), "q=→2: {cmds:?}");
+}
+
+#[test]
+fn eq_renders_mono_bounded_on_engine_host() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(EQ.highShelf(Osc.saw(110), 3000, 6, 0.707))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0), "eq should be non-silent");
+}
