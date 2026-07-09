@@ -10,6 +10,7 @@
 pub mod delay;
 pub mod drive;
 pub mod env;
+pub mod eq;
 pub mod filter;
 pub mod math;
 pub mod noise;
