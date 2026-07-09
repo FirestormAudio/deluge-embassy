@@ -66,7 +66,7 @@ pub struct ModDelay<const VOICES: usize> {
     rate: f32,        // LFO Hz          (param 1)
     depth: f32,       // [0,1) → fraction-of-base sweep (param 2)
     mix: f32,         // dry/wet [0,1]   (param 0)
-    feedback: f32,    // [0,~0.95] flanger regen (param 3)
+    feedback: f32,    // [0,0.9] flanger regen (param 3)
 }
 
 impl<const VOICES: usize> ModDelay<VOICES> {
@@ -74,7 +74,7 @@ impl<const VOICES: usize> ModDelay<VOICES> {
     pub fn set_mix(&mut self, v: f32);       // param 0, clamp [0,1]
     pub fn set_rate(&mut self, v: f32);      // param 1, clamp ≥0 (Hz)
     pub fn set_depth(&mut self, v: f32);     // param 2, clamp [0,1]
-    pub fn set_feedback(&mut self, v: f32);  // param 3, clamp [0,0.95]
+    pub fn set_feedback(&mut self, v: f32);  // param 3, clamp [0,0.9]
     /// One block. `input` = mono port 0; `buf` = pooled ring; writes the
     /// stereo pair `out_l`/`out_r`.
     pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32],
@@ -100,10 +100,15 @@ flange).
    - `pos_v = if VOICES == 1 { 0.0 } else { -1.0 + 2.0·v/(VOICES-1) }`
      (VOICES=3 → −1, 0, +1); `(gl, gr) = pan_gains(pos_v)`
    - `wet_l += tap·gl; wet_r += tap·gr`
-3. Normalize: `wet_l /= VOICES as f32; wet_r /= VOICES as f32` (bounded, keeps wet
+3. Normalize: also accumulate a **pre-pan** `wet_mono += tap` in the voice loop;
+   then `wet_l /= VOICES; wet_r /= VOICES; wet_mono /= VOICES` (bounded, keeps wet
    ≈ input level regardless of voice count).
-4. **Feedback (flanger):** `fb = feedback.clamp(0, 0.95) · (wet_l + wet_r)·0.5`;
-   `line.write(buf, x + fb)`. (Chorus `feedback = 0` → a plain modulated tap.)
+4. **Feedback (flanger):** `fb = feedback.clamp(0, 0.9) · wet_mono`; `line.write(buf,
+   x + fb)`. Feedback regenerates the **raw (pre-pan) delayed signal** so the
+   `feedback` knob is the true loop gain (a proper resonant flanger, up to ~0.9).
+   For `VOICES == 1`, `wet_mono == tap`. Chorus `feedback = 0` → a plain modulated
+   tap. Loop gain `≤ 0.9 < 1` ⇒ BIBO stable; sustained-input steady state reaches
+   `≈ 1/(1−0.9) = 10×`, so the boundedness gate allows `≤ 16`.
 5. `out_l[i] = x·(1 − mix) + wet_l·mix;  out_r[i] = x·(1 − mix) + wet_r·mix;`
 
 `no_std`, pure `f32`, deterministic (LFO is a phase accumulator; no RNG). The
@@ -161,8 +166,9 @@ stable (same argument as `Delay`).
   bounded.
 - **Mix balance.** `mix=0` → both channels ≈ dry input; `mix=1` → wet only.
 - **Boundedness (P0 gate).** Proptest: `rate ∈ [0,8] Hz`, `depth ∈ [0,1]`,
-  `mix/feedback ∈ [0,1]` (feedback clamped 0.95), bounded input → finite, within
-  a measured bound; buffer length covers `base·(1 + depth)` (max sweep).
+  `mix/feedback ∈ [0,1]` (feedback clamped 0.9), bounded input → finite and
+  `≤ 16` (raw-tap feedback loop gain ≤0.9 → steady state ~10×); test BOTH
+  `ModDelay<3>` (chorus) and `ModDelay<1>` (flanger); buffer covers `base·(1+depth)`.
 - **Depth 0 is a static (unmodulated) short delay** — no NaN, no motion.
 
 **Graph/Wren:**
