@@ -130,6 +130,11 @@ foreign class Node {
   foreign static delay_(input, time, feedback)
   foreign mix=(v)
   foreign damp=(v)     // Delay feedback-path damping (NOT damping= — that's the Resonator's)
+  foreign static chorus_(input, rate, depth, mix)
+  foreign static flanger_(input, rate, depth, feedback, mix)
+  foreign rate=(v)
+  foreign depth=(v)
+  foreign regen=(v)     // Flanger feedback (NOT feedback= — that's the Osc's)
   foreign freq=(v)
   foreign cutoff=(v)
   foreign res=(v)
@@ -284,6 +289,22 @@ class Pan {
 // ports); `mix`/`damp` are control params.
 class Delay {
   static new(input, time, feedback) { Node.delay_(input, time, feedback) }
+}
+
+// Chorus — a lush multi-voice stereo modulated delay. `rate` LFO Hz, `depth`
+// [0,1] sweep, `mix` dry/wet. Stereo (width-2); patch it straight out:
+//   Out.patch(Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5))
+//   var c = Chorus.new(pad, 0.3, 0.6, 0.5); c.rate = 0.8; c.depth = 0.7
+class Chorus {
+  static new(input, rate, depth, mix) { Node.chorus_(input, rate, depth, mix) }
+}
+
+// Flanger — a swept single-voice comb with feedback (`regen`). Short delay,
+// jet-sweep. `rate`/`depth` as chorus; `feedback` [0,0.95] is the resonance:
+//   Out.patch(Flanger.new(Osc.saw(110), 0.3, 0.7, 0.6, 0.5))
+//   var f = Flanger.new(pad, 0.2, 0.8, 0.7, 0.5); f.regen = 0.8
+class Flanger {
+  static new(input, rate, depth, feedback, mix) { Node.flanger_(input, rate, depth, feedback, mix) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

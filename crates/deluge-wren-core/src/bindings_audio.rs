@@ -23,6 +23,10 @@ pub(crate) const TAG_WT: u8 = 3;
 /// The delay `time` (port 1) is clamped to this length inside the kernel.
 pub(crate) const DELAY_MAX_SAMPLES: usize = 48_000;
 
+/// Ring length for a chorus/flanger node (~50 ms @ 48 kHz). Covers `base·(1+depth)`
+/// for both effects (chorus base 20 ms, flanger 2 ms) plus headroom.
+pub(crate) const CHORUS_BUF_SAMPLES: usize = 2400;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct NodeObj {
@@ -518,6 +522,82 @@ pub(crate) unsafe extern "C" fn node_set_mix(raw: *mut WrenVM) {
     node_set_mix_impl(&vm);
 }
 
+/// `Node.chorus_(input, rate, depth, mix)` — allocate a ring, create a width-2
+/// `Kind::Chorus` node, and set its rate/depth/mix params from the args. A
+/// host with no pool leaves it unbound (dry passthrough).
+pub(crate) fn node_chorus_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let rate = vm.get_f(2) as f32;
+    let depth = vm.get_f(3) as f32;
+    let mix = vm.get_f(4) as f32;
+    let handle = audio::alloc_buffer(CHORUS_BUF_SAMPLES);
+    let id = audio::alloc_node_id();
+    audio::new_pooled_node(id, Kind::Chorus, handle, input);
+    audio::set_param(id, 1, rate);
+    audio::set_param(id, 2, depth);
+    audio::set_param(id, 0, mix);
+    unsafe { return_node_w(vm, id, 2) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_chorus(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_chorus_impl(&vm);
+}
+
+/// `Node.flanger_(input, rate, depth, feedback, mix)` — like `node_chorus_impl`
+/// but `Kind::Flanger` (single voice) with a feedback (param 3) arg.
+pub(crate) fn node_flanger_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let rate = vm.get_f(2) as f32;
+    let depth = vm.get_f(3) as f32;
+    let feedback = vm.get_f(4) as f32;
+    let mix = vm.get_f(5) as f32;
+    let handle = audio::alloc_buffer(CHORUS_BUF_SAMPLES);
+    let id = audio::alloc_node_id();
+    audio::new_pooled_node(id, Kind::Flanger, handle, input);
+    audio::set_param(id, 1, rate);
+    audio::set_param(id, 2, depth);
+    audio::set_param(id, 3, feedback);
+    audio::set_param(id, 0, mix);
+    unsafe { return_node_w(vm, id, 2) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_flanger(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_flanger_impl(&vm);
+}
+
+pub(crate) fn node_set_rate_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 1 = rate (Kind::Chorus/Flanger)
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_rate(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_rate_impl(&vm);
+}
+
+pub(crate) fn node_set_depth_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 2 = depth
+    audio::set_param(self_id(vm), 2, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_depth(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_depth_impl(&vm);
+}
+
+// `regen=` (NOT `feedback=`, which is the Osc's set_param(0)): flanger feedback.
+pub(crate) fn node_set_regen_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 3 = feedback
+    audio::set_param(self_id(vm), 3, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_regen(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_regen_impl(&vm);
+}
+
 // NOTE: `damp=` (NOT `damping=`). `damping=` is already bound to
 // `node_set_res_impl` (Resonator, port-2 set_input); a Delay's port 2 is
 // feedback, so it needs a distinct selector → index 1 = damping (Kind::Delay).
@@ -804,6 +884,11 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "delay_(_,_,_)", node_delay_impl::<S>);
     method("main", "Node", false, "mix=(_)", node_set_mix_impl::<S>);
     method("main", "Node", false, "damp=(_)", node_set_damp_impl::<S>);
+    method("main", "Node", true, "chorus_(_,_,_,_)", node_chorus_impl::<S>);
+    method("main", "Node", true, "flanger_(_,_,_,_,_)", node_flanger_impl::<S>);
+    method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);
+    method("main", "Node", false, "depth=(_)", node_set_depth_impl::<S>);
+    method("main", "Node", false, "regen=(_)", node_set_regen_impl::<S>);
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
     method("main", "Node", false, "res=(_)", node_set_res_impl::<S>);

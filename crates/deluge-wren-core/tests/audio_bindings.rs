@@ -594,3 +594,54 @@ fn stereo_pan_renders_distinct_l_and_r() {
     assert!(sumr < 1e-3, "R should be ~silent at hard-left: {sumr}");
     assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
 }
+
+#[test]
+fn chorus_new_emits_node_and_params_no_bind_on_capture_host() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    // CmdCaptureHost has no pool → alloc_buffer None → NewNode + SetParams but
+    // NO BindTable (dry-passthrough contract, same as Ef-1 Delay). The real
+    // bind + render is covered by `chorus_renders_stereo_bounded_on_engine_host`.
+    let cmds = run_and_capture_cmds("var c = Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Chorus, .. })));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })), "no pool → no BindTable: {cmds:?}");
+    // rate(1)/depth(2)/mix(0) SetParams emitted from the constructor args (pool-independent).
+    for p in [0u8, 1, 2] {
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "missing SetParam {p}: {cmds:?}");
+    }
+}
+
+#[test]
+fn chorus_patch_routes_stereo() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    // A Chorus is width-2 → Out.patch emits the two side-writes.
+    let cmds = run_and_capture_cmds("Out.patch(Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5))");
+    let gains: std::vec::Vec<(f32, f32)> = cmds.iter().filter_map(|c| match c {
+        Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+        _ => None,
+    }).collect();
+    assert!(gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)), "not stereo-routed: {gains:?}");
+}
+
+#[test]
+fn flanger_regen_sets_feedback_param() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds(
+        "var f = Flanger.new(Osc.saw(110), 0.3, 0.7, 0.6, 0.5)\nf.regen = 0.8",
+    );
+    // Flanger.new sets feedback (param 3) from its arg; regen= sets it again.
+    let p3 = cmds.iter().filter(|c| matches!(c, Cmd::SetParam { param: 3, .. })).count();
+    assert!(p3 >= 2, "expected feedback param set by ctor and regen=: {cmds:?}");
+}
+
+#[test]
+fn chorus_renders_stereo_bounded_on_engine_host() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Chorus.new(Osc.saw(110), 1.0, 0.5, 0.6))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "chorus should be non-silent");
+}

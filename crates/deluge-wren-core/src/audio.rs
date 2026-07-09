@@ -171,6 +171,26 @@ pub fn new_delay(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, input:
     }
 }
 
+/// Create a pooled effect node of `kind` with `input` on port 0, binding a
+/// pool ring if `handle` is `Some` (unbound → dry passthrough). Params are set
+/// separately by the caller via `set_param`. Used by `Chorus`/`Flanger`.
+pub fn new_pooled_node(id: u16, kind: Kind, handle: Option<deluge_audio_graph::PoolHandle>, input: Input) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind,
+        args: [input, Input::Const(0.0), Input::Const(0.0)],
+    });
+    if let Some(h) = handle {
+        host().audio_cmd(Cmd::BindTable {
+            node: NodeId(id),
+            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+        });
+    }
+}
+
 pub fn set_input(id: u16, port: u8, src: Input) {
     if id == NULL_ID {
         return;
