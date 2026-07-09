@@ -6,8 +6,8 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{
-    env::Ar, filter::OnePole, filter::{Svf, SvfResp, Tb303}, math, noise::Noise, noise::NoiseColor,
-    osc::Osc, osc::SyncOsc, osc::Wave,
+    env::Ar, filter::OnePole, filter::{Moog, Svf, SvfResp, Tb303}, math, noise::Noise,
+    noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
 };
 use deluge_dsp_kernels::wavetable::{
     level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
@@ -44,6 +44,8 @@ pub enum Kind {
     SvfBp,
     SvfNotch,
     Tb303,
+    MoogLp4,
+    MoogLp2,
     Mul,
     Add,
     Sub,
@@ -61,6 +63,8 @@ enum State {
     OnePole(OnePole),
     Svf(Svf),
     Tb303(Tb303),
+    Moog4(Moog<4>),
+    Moog2(Moog<2>),
     Wt(WtOsc),
     Stateless,
 }
@@ -101,6 +105,8 @@ impl Node {
             Kind::Lpf => State::OnePole(OnePole::new()),
             Kind::SvfLp | Kind::SvfHp | Kind::SvfBp | Kind::SvfNotch => State::Svf(Svf::new()),
             Kind::Tb303 => State::Tb303(Tb303::new()),
+            Kind::MoogLp4 => State::Moog4(Moog::<4>::new()),
+            Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
         };
@@ -138,10 +144,11 @@ impl Node {
 
     /// Set a non-signal scalar parameter. For oscillators, `param 0` = feedback.
     pub fn set_param(&mut self, param: u8, value: f32) {
-        if let State::Osc(o) = &mut self.state {
-            if param == 0 {
-                o.set_feedback(value);
-            }
+        match &mut self.state {
+            State::Osc(o) if param == 0 => o.set_feedback(value),
+            State::Moog4(m) if param == 0 => m.set_drive(value),
+            State::Moog2(m) if param == 0 => m.set_drive(value),
+            _ => {}
         }
     }
 
@@ -224,6 +231,16 @@ impl Node {
             Kind::Tb303 => {
                 if let State::Tb303(f) = &mut self.state {
                     f.process(ins[0], ins[1], ins[2], dt, outs.port(0));
+                }
+            }
+            Kind::MoogLp4 => {
+                if let State::Moog4(m) = &mut self.state {
+                    m.process(ins[0], ins[1], ins[2], dt, outs.port(0));
+                }
+            }
+            Kind::MoogLp2 => {
+                if let State::Moog2(m) = &mut self.state {
+                    m.process(ins[0], ins[1], ins[2], dt, outs.port(0));
                 }
             }
             Kind::Mul => math::mul(ins[0], ins[1], outs.port(0)),
@@ -391,6 +408,45 @@ mod tests {
         }
         assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 8.0)); // TB-303 bound is ±8 (resonance loop), not ±1
         assert!(buf.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn moog_nodes_render_bounded_nonsilent() {
+        for kind in [Kind::MoogLp4, Kind::MoogLp2] {
+            let mut n = Node::new(kind, 0);
+            assert_eq!(Node::out_width(kind), 1);
+            let input = [0.6f32; 16];
+            let cutoff = [1_000.0f32; 16];
+            let res = [0.7f32; 16];
+            let ins = [In::A(&input), In::A(&cutoff), In::A(&res)];
+            let mut buf = [0.0f32; 16];
+            {
+                let mut outs = OutView::single(&mut buf);
+                n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+            }
+            assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 8.0), "kind={kind:?}");
+            assert!(buf.iter().any(|&s| s != 0.0), "kind={kind:?}");
+        }
+    }
+
+    #[test]
+    fn moog_drive_param_changes_output() {
+        let mk = |drive: Option<f32>| {
+            let mut n = Node::new(Kind::MoogLp4, 0);
+            if let Some(d) = drive {
+                n.set_param(0, d);
+            }
+            let input = [0.8f32; 32];
+            let (c, r) = ([2_000.0f32; 32], [0.5f32; 32]);
+            let ins = [In::A(&input), In::A(&c), In::A(&r)];
+            let mut buf = [0.0f32; 32];
+            {
+                let mut outs = OutView::single(&mut buf);
+                n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+            }
+            buf
+        };
+        assert!(mk(None) != mk(Some(4.0)), "drive param should change output");
     }
 
     #[test]
