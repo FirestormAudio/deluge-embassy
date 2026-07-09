@@ -550,6 +550,110 @@ impl Default for Ms20 {
     }
 }
 
+/// Number of modes in the modal resonator bank.
+pub const MODAL_MODES: usize = 16;
+
+/// Max inharmonicity (structure=1): `f_i = freq·i·√(1 + B·(i−1)²)`, `B = structure·MODAL_B_MAX`.
+const MODAL_B_MAX: f32 = 0.5;
+
+/// Slope of the `damping → k` curve (`k = SVF_K_MIN + damping²·MODAL_K_SLOPE`). Tuned by
+/// measurement (see `modal_tests`) so damping=0.5 rings then clearly decays within an
+/// 8192-sample buffer at 48 kHz, and higher damping decays measurably faster.
+const MODAL_K_SLOPE: f32 = 0.4;
+
+/// Output normalization numerator (`norm = MODAL_NORM_SCALE / active`) so a struck note is
+/// loud but stays within the ±8 kernel bound. Tuned by measurement (see `modal_tests`).
+const MODAL_NORM_SCALE: f32 = 0.5;
+
+/// Modal resonator: a bank of `N` SVF-bandpass modes (own state each), struck by the input.
+/// Reuses the `Svf` bandpass recurrence + coefficients. Rings-style controls.
+#[derive(Clone, Copy)]
+pub struct Modal<const N: usize> {
+    modes: [(f32, f32); N], // (ic1eq, ic2eq) per mode
+    structure: f32,         // [0,1] inharmonicity
+    brightness: f32,        // [0,1] spectral tilt
+    position: f32,          // [0,1] strike comb
+}
+
+impl<const N: usize> Modal<N> {
+    pub fn new() -> Self {
+        Modal { modes: [(0.0, 0.0); N], structure: 0.0, brightness: 0.7, position: 0.3 }
+    }
+    pub fn set_structure(&mut self, v: f32) {
+        self.structure = v.clamp(0.0, 1.0);
+    }
+    pub fn set_brightness(&mut self, v: f32) {
+        self.brightness = v.clamp(0.0, 1.0);
+    }
+    pub fn set_position(&mut self, v: f32) {
+        self.position = v.clamp(0.0, 1.0);
+    }
+
+    pub fn process(&mut self, input: In, freq: In, damping: In, dt: f32, out: &mut [f32]) {
+        let fbase = freq.at(0).clamp(20.0, 8_000.0);
+        let damp = damping.at(0).clamp(0.0, 1.0);
+        let b = self.structure * MODAL_B_MAX;
+        // damping → k (SVF resonance): low damping → tiny k (high Q, long ring),
+        // high damping → larger k (quick decay). Tuned by measurement (see
+        // MODAL_K_SLOPE's doc) so mid damping (0.5) rings then clearly decays
+        // within an 8192-sample buffer at 48 kHz.
+        let k = SVF_K_MIN + damp * damp * MODAL_K_SLOPE;
+        let theta_max = 0.49 * core::f32::consts::PI;
+        let nyq = 0.49 / dt; // ~0.49·fs
+
+        // Per-block per-mode coefficients + gains.
+        let mut a1 = [0.0f32; N];
+        let mut a2 = [0.0f32; N];
+        let mut a3 = [0.0f32; N];
+        let mut gain = [0.0f32; N];
+        let mut active = 0.0f32;
+        for i in 0..N {
+            let n = (i + 1) as f32; // mode index 1..N
+            let ratio = n * libm::sqrtf(1.0 + b * (n - 1.0) * (n - 1.0));
+            let fi = fbase * ratio;
+            if fi >= nyq {
+                continue; // muted (gain stays 0), state left frozen
+            }
+            let theta = (core::f32::consts::PI * fi * dt).min(theta_max);
+            let g = svf_tan_prewarp(theta);
+            let (c1, c2, c3) = svf_coeffs(g, k);
+            a1[i] = c1;
+            a2[i] = c2;
+            a3[i] = c3;
+            // comb (strike position) × spectral tilt (brightness).
+            let comb = libm::fabsf(libm::sinf(n * core::f32::consts::PI * self.position));
+            let tilt = libm::powf(self.brightness, n - 1.0);
+            gain[i] = comb * tilt;
+            active += gain[i];
+        }
+        // Normalize so a struck note peaks near unity (tuned; see MODAL_NORM_SCALE).
+        let norm = if active > 1e-6 { MODAL_NORM_SCALE / active } else { 0.0 };
+
+        for (j, s) in out.iter_mut().enumerate() {
+            let x = input.at(j);
+            let mut y = 0.0f32;
+            for i in 0..N {
+                if gain[i] == 0.0 {
+                    continue;
+                }
+                let (ic1, ic2) = self.modes[i];
+                let v3 = x - ic2;
+                let v1 = a1[i] * ic1 + a2[i] * v3; // bandpass
+                let v2 = ic2 + a2[i] * ic1 + a3[i] * v3;
+                self.modes[i] = (2.0 * v1 - ic1, 2.0 * v2 - ic2);
+                y += gain[i] * v1;
+            }
+            *s = y * norm;
+        }
+    }
+}
+
+impl<const N: usize> Default for Modal<N> {
+    fn default() -> Self {
+        Modal::new()
+    }
+}
+
 #[cfg(test)]
 mod tb303_tests {
     extern crate std;
@@ -1179,5 +1283,142 @@ mod ms20_tests {
         // delta with ~2× headroom, still comfortably above the near-zero baseline.
         let thd = |d| spec_at(Ms20Resp::Lp, 4_000.0, 0.3, d, 220.0).thd(220.0, 8);
         assert!(thd(4.0) > thd(1.0) + 0.01, "drive should raise THD");
+    }
+}
+
+#[cfg(test)]
+mod modal_tests {
+    extern crate std;
+    use super::*;
+    use crate::In;
+    use deluge_dsp_test::spectrum;
+    use proptest::prelude::*;
+
+    const FS: f32 = 48_000.0;
+    const DT: f32 = 1.0 / FS;
+
+    // Strike with a unit impulse; return (early_rms, late_rms) of the ring.
+    fn strike(structure: f32, brightness: f32, position: f32, freq: f32, damping: f32) -> (f32, f32) {
+        let mut m = Modal::<MODAL_MODES>::new();
+        m.set_structure(structure);
+        m.set_brightness(brightness);
+        m.set_position(position);
+        let mut x = std::vec![0.0f32; 8192];
+        x[0] = 1.0;
+        let mut out = [0.0f32; 8192];
+        m.process(In::A(&x), In::K(freq), In::K(damping), DT, &mut out);
+        let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+        (rms(&out[64..1088]), rms(&out[7168..8192]))
+    }
+
+    #[test]
+    fn modal_rings_and_decays() {
+        // A struck resonator rings (early energy) then decays (late ≪ early) at mid damping.
+        // Measured at damping=0.5 (MODAL_K_SLOPE=0.4): early_rms≈2.628e-3, late_rms≈6.51e-8
+        // (late/early ≈ 2.48e-5, well under the 0.5 gate).
+        let (early, late) = strike(0.0, 0.7, 0.3, 220.0, 0.5);
+        assert!(early > 1e-3, "no ring: early_rms={early}");
+        assert!(late < early * 0.5, "did not decay: early={early} late={late}");
+    }
+
+    #[test]
+    fn modal_decay_tracks_damping() {
+        // Measured: ratio(0.2)≈0.0930 (long ring, still audible at buffer end),
+        // ratio(0.8)≈3.4e-12 (fully decayed well before the late window) — clearly ordered.
+        let ratio = |d| { let (e, l) = strike(0.0, 0.7, 0.3, 220.0, d); l / e.max(1e-9) };
+        assert!(ratio(0.8) < ratio(0.2), "more damping should decay faster");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
+        #[test]
+        fn modal_is_finite_and_bounded(
+            freq in 20.0f32..=4_000.0,
+            damping in 0.0f32..=1.0,
+            structure in 0.0f32..=1.0,
+            brightness in 0.0f32..=1.0,
+            position in 0.0f32..=1.0,
+            amp in 0.0f32..=1.0,
+        ) {
+            let mut m = Modal::<MODAL_MODES>::new();
+            m.set_structure(structure); m.set_brightness(brightness); m.set_position(position);
+            let x: std::vec::Vec<f32> = (0..512).map(|i| amp * (0.05 * i as f32).sin()).collect();
+            let mut out = [0.0f32; 512];
+            m.process(In::A(&x), In::K(freq), In::K(damping), DT, &mut out);
+            for s in out {
+                prop_assert!(s.is_finite());
+                prop_assert!(s.abs() <= 8.0, "s={s} freq={freq} damping={damping}");
+            }
+        }
+    }
+
+    fn strike_spec(structure: f32, brightness: f32, position: f32, freq: f32, damping: f32) -> spectrum::Spectrum {
+        spectrum::analyze(FS, |buf| {
+            let mut m = Modal::<MODAL_MODES>::new();
+            m.set_structure(structure); m.set_brightness(brightness); m.set_position(position);
+            let mut x = std::vec![0.0f32; buf.len()];
+            x[0] = 1.0;
+            m.process(In::A(&x), In::K(freq), In::K(damping), DT, buf);
+        })
+    }
+
+    #[test]
+    fn modal_has_peak_at_fundamental() {
+        let spec = strike_spec(0.0, 0.9, 0.25, 220.0, 0.1);
+        // fundamental is a dominant spectral component
+        assert!(spec.level_at(220.0) > spec.level_at(220.0 * 1.5) * 2.0, "no fundamental peak");
+    }
+
+    #[test]
+    fn modal_structure_stretches_partials() {
+        // structure=0: 2nd partial ≈ 2×freq (harmonic). structure=1: stretched (> 2×freq).
+        // Measured: ratio_at(0.0)≈1.991, ratio_at(1.0)≈2.445 (matches theory closely: at
+        // n=2, B=MODAL_B_MAX=0.5, ratio=2·√(1+0.5)=2.449) — clears the ">2.0+0.3" gate.
+        let f0 = 220.0f32;
+        let ratio_at = |structure| {
+            let spec = strike_spec(structure, 0.9, 0.25, f0, 0.1);
+            // find the strongest bin between 1.5×f0 and 3.5×f0 (the 2nd partial region)
+            let (lo, hi) = ((1.5 * f0) as usize, (3.5 * f0) as usize);
+            let mut best = lo; let mut best_lvl = 0.0f32;
+            for hz in (lo..hi).step_by(2) {
+                let l = spec.level_at(hz as f32);
+                if l > best_lvl { best_lvl = l; best = hz; }
+            }
+            best as f32 / f0
+        };
+        assert!((ratio_at(0.0) - 2.0).abs() < 0.3, "structure=0 2nd partial not ~2× : {}", ratio_at(0.0));
+        assert!(ratio_at(1.0) > ratio_at(0.0) + 0.3, "structure=1 should stretch: {} vs {}", ratio_at(1.0), ratio_at(0.0));
+    }
+
+    #[test]
+    fn modal_position_nulls_a_mode() {
+        // position=0.5 → |sin(2π·0.5)|=0 → mode 2 (~2×freq) suppressed vs position=0.25.
+        // Measured: p25≈6.398, p50≈2.62e-5 (ratio ≈ 4.1e-6, far under the 0.3 gate) — the
+        // exact structural null, as expected.
+        let f0 = 220.0f32;
+        let p25 = strike_spec(0.0, 0.9, 0.25, f0, 0.1).level_at(2.0 * f0);
+        let p50 = strike_spec(0.0, 0.9, 0.5, f0, 0.1).level_at(2.0 * f0);
+        assert!(p50 < p25 * 0.3, "position=0.5 should null mode 2: p25={p25} p50={p50}");
+    }
+
+    #[test]
+    fn modal_brightness_shifts_spectrum() {
+        // Higher brightness → more high-partial energy (4th partial louder).
+        //
+        // Strike position 0.3, NOT the 0.25 used by the other modal_tests: the comb weight
+        // is `|sin(n·π·position)|` (the exact mechanism modal_position_nulls_a_mode checks
+        // for n=2), and at position=0.25 that comb is an EXACT structural zero at n=4
+        // (`|sin(4·π·0.25)| = |sin(π)| = 0`, confirmed to float precision — 1.2e-16) — every
+        // multiple of 4 sits on a comb node. That's not a bank defect, it's the same
+        // by-construction null the position gate validates; it just collides with probing
+        // the 4th partial specifically. Measured with the bank unchanged: at position=0.25
+        // dull=1.7e-5, bright=1.5e-5 — both pinned to FFT leakage/noise floor, no brightness
+        // effect reachable (mode 4 is silenced regardless of tilt). At position=0.3
+        // (comb_4=|sin(1.2π)|≈0.588, no coincidental null for n≤4) the same bank measures
+        // dull≈0.2156, bright≈3.158 (~14.7×) — well past the 2× gate.
+        let f0 = 220.0f32;
+        let dull = strike_spec(0.0, 0.2, 0.3, f0, 0.1).level_at(4.0 * f0);
+        let bright = strike_spec(0.0, 0.95, 0.3, f0, 0.1).level_at(4.0 * f0);
+        assert!(bright > dull * 2.0, "brightness should raise high partials: dull={dull} bright={bright}");
     }
 }
