@@ -300,7 +300,7 @@ class Chorus {
 }
 
 // Flanger — a swept single-voice comb with feedback (`regen`). Short delay,
-// jet-sweep. `rate`/`depth` as chorus; `feedback` [0,0.95] is the resonance:
+// jet-sweep. `rate`/`depth` as chorus; `feedback` [0,0.9] is the resonance:
 //   Out.patch(Flanger.new(Osc.saw(110), 0.3, 0.7, 0.6, 0.5))
 //   var f = Flanger.new(pad, 0.2, 0.8, 0.7, 0.5); f.regen = 0.8
 class Flanger {

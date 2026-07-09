@@ -24,3 +24,6 @@ vendor/
 /rtt-flasher.log
 **/node_modules/*
 .playwright-mcp/
+
+# Vite dependency cache (regeneratable)
+.vite/

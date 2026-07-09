@@ -155,7 +155,7 @@ pub struct ModDelay<const VOICES: usize> {
     rate: f32,      // LFO Hz
     depth: f32,     // [0, 0.99] fraction-of-base sweep
     mix: f32,       // dry/wet [0,1]
-    feedback: f32,  // [0, 0.95] flanger regen
+    feedback: f32,  // [0, 0.9] flanger regen (raw-tap loop gain)
 }
 
 impl<const VOICES: usize> ModDelay<VOICES> {
