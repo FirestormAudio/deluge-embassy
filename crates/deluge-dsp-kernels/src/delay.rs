@@ -35,6 +35,9 @@ impl DelayLine {
     /// Read `delay` samples back from the write cursor, 4-point (3rd-order)
     /// Hermite interpolation. `delay` is clamped to `[1.0, len-2]`. Returns
     /// `0.0` for a buffer too short (< 4) to interpolate.
+    /// Intended for delays of at least ~3 samples (the 4-point kernel needs a
+    /// valid tap on each side of the read point); musical delay times are far
+    /// larger, so this is not a practical limit.
     pub fn read_hermite(&self, buf: &[f32], delay: f32) -> f32 {
         let len = buf.len();
         if len < 4 {
@@ -107,10 +110,13 @@ mod tests {
         for k in 1..=32 {
             line.write(&mut buf, k as f32);
         }
-        // Between delay 2 (31.0) and delay 1 (32.0): delay 1.5 ≈ 31.5 on a
-        // linear ramp (Hermite is exact for a straight line).
-        let mid = line.read_hermite(&buf, 1.5);
-        assert!((mid - 31.5).abs() < 1e-3, "got {mid}");
+        // Between delay 6 (buf value 27) and delay 5 (28): delay 5.5 ≈ 27.5 on
+        // a linear ramp (Hermite is exact for a straight line, and all four
+        // interpolation taps lie in written history at this delay — a 4-point
+        // kernel needs valid samples on both sides of the read point, so very
+        // small fractional delays below ~3 samples are outside its range).
+        let mid = line.read_hermite(&buf, 5.5);
+        assert!((mid - 27.5).abs() < 1e-3, "got {mid}");
     }
 
     #[test]
