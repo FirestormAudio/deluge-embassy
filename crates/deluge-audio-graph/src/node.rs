@@ -6,7 +6,7 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{
-    delay::Delay,
+    delay::{Delay, ModDelay},
     env::Ar, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
 };
@@ -57,6 +57,8 @@ pub enum Kind {
     Pan,    // mono→stereo: port0 = L, port1 = R (constant-power)
     Wavetable,
     Delay,
+    Chorus,
+    Flanger,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -75,6 +77,8 @@ enum State {
     Modal(Modal<MODAL_MODES>),
     Wt(WtOsc),
     Delay(Delay),
+    Chorus(ModDelay<3>),
+    Flanger(ModDelay<1>),
     Stateless,
 }
 
@@ -121,6 +125,8 @@ impl Node {
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
             Kind::Delay => State::Delay(Delay::new()),
+            Kind::Chorus => State::Chorus(ModDelay::<3>::new(0.020)),
+            Kind::Flanger => State::Flanger(ModDelay::<1>::new(0.002)),
         };
         Node {
             kind,
@@ -133,7 +139,7 @@ impl Node {
 
     pub fn out_width(kind: Kind) -> usize {
         match kind {
-            Kind::Split2 | Kind::Pan => 2,
+            Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger => 2,
             _ => 1,
         }
     }
@@ -170,6 +176,20 @@ impl Node {
             State::Delay(d) => match param {
                 0 => d.set_mix(value),
                 1 => d.set_damping(value),
+                _ => {}
+            },
+            State::Chorus(md) => match param {
+                0 => md.set_mix(value),
+                1 => md.set_rate(value),
+                2 => md.set_depth(value),
+                3 => md.set_feedback(value),
+                _ => {}
+            },
+            State::Flanger(md) => match param {
+                0 => md.set_mix(value),
+                1 => md.set_rate(value),
+                2 => md.set_depth(value),
+                3 => md.set_feedback(value),
                 _ => {}
             },
             _ => {}
@@ -365,6 +385,31 @@ impl Node {
                     }
                 }
             }
+            Kind::Chorus | Kind::Flanger => {
+                // Mono→stereo modulated delay. Bound ring (≥4) → run the
+                // effect writing both ports; otherwise dry passthrough to both.
+                let (out_l, out_r) = outs.port_pair();
+                let ran = if let Some(buf) = pool_region {
+                    if buf.len() >= 4 {
+                        match &mut self.state {
+                            State::Chorus(md) => { md.process(ins[0], dt, buf, out_l, out_r); true }
+                            State::Flanger(md) => { md.process(ins[0], dt, buf, out_l, out_r); true }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !ran {
+                    for i in 0..out_l.len() {
+                        let x = ins[0].at(i);
+                        out_l[i] = x;
+                        out_r[i] = x;
+                    }
+                }
+            }
         }
     }
 }
@@ -412,6 +457,16 @@ impl<'a> OutView<'a> {
     }
     pub fn port(&mut self, p: usize) -> &mut [f32] {
         self.ports[p].as_deref_mut().expect("port index in range")
+    }
+
+    /// Both output ports as disjoint mutable slices (for width-2 stereo nodes).
+    /// Panics if this view has fewer than 2 ports.
+    pub fn port_pair(&mut self) -> (&mut [f32], &mut [f32]) {
+        let [a, b] = &mut self.ports;
+        (
+            a.as_deref_mut().expect("port 0 present"),
+            b.as_deref_mut().expect("port 1 present"),
+        )
     }
 }
 
@@ -668,5 +723,42 @@ mod tests {
         // L decreasing, R increasing across the block
         assert!(p0[0] > p0[3], "L should fall L→R: {:?}", p0);
         assert!(p1[0] < p1[3], "R should rise L→R: {:?}", p1);
+    }
+
+    #[test]
+    fn chorus_node_renders_stereo_with_buffer() {
+        let mut n = Node::new(Kind::Chorus, 0);
+        assert_eq!(Node::out_width(Kind::Chorus), 2);
+        n.set_param(0, 1.0); // mix = wet
+        n.set_param(1, 2.0); // rate
+        n.set_param(2, 0.6); // depth
+        let dt = 1.0 / 48_000.0;
+        let input: [f32; 64] = core::array::from_fn(|i| (i as f32 * 0.1).sin());
+        let ins = [In::A(&input), In::A(&[0.0; 64]), In::A(&[0.0; 64])];
+        let mut ring = [0.0f32; 4096];
+        let mut p0 = [0.0f32; 64];
+        let mut p1 = [0.0f32; 64];
+        {
+            let mut outs = OutView::pair(&mut p0, &mut p1);
+            n.process_resolved(&ins, dt, &mut outs, Some(&mut ring));
+        }
+        assert!(p0.iter().all(|s| s.is_finite() && s.abs() <= 8.0));
+        assert!(p1.iter().all(|s| s.is_finite() && s.abs() <= 8.0));
+    }
+
+    #[test]
+    fn chorus_node_without_buffer_is_dry_both_ports() {
+        let mut n = Node::new(Kind::Flanger, 0);
+        assert_eq!(Node::out_width(Kind::Flanger), 2);
+        let input = [0.4f32; 16];
+        let ins = [In::A(&input), In::A(&[0.0; 16]), In::A(&[0.0; 16])];
+        let mut p0 = [0.0f32; 16];
+        let mut p1 = [0.0f32; 16];
+        {
+            let mut outs = OutView::pair(&mut p0, &mut p1);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None); // no ring
+        }
+        assert!(p0.iter().all(|&s| (s - 0.4).abs() < 1e-6), "L dry: {p0:?}");
+        assert!(p1.iter().all(|&s| (s - 0.4).abs() < 1e-6), "R dry: {p1:?}");
     }
 }
