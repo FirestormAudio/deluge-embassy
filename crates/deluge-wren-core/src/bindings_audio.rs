@@ -831,6 +831,58 @@ pub(crate) unsafe extern "C" fn node_set_phase(raw: *mut WrenVM) {
     node_set_phase_impl(&vm);
 }
 
+/// `Node.sh_(input, clock)` — sample & hold. Ports 0=input, 1=clock.
+pub(crate) fn node_sh_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let clock = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::SampleHold, [input, clock, Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_sh(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_sh_impl(&vm);
+}
+
+/// `Node.slew_(input, time)` — one-pole glide. Ports 0=input, 1=time.
+pub(crate) fn node_slew_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let time = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Slew, [input, time, Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_slew(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_slew_impl(&vm);
+}
+
+/// `Node.steps_(values, clock)` — step sequencer. Reads the Wren list (slot 1)
+/// into `set_param` calls: param 0 = length, param k+1 = values[k] (up to
+/// MAX_STEPS; longer lists are truncated). Clock on port 0.
+pub(crate) fn node_steps_impl<S: SlotApi>(vm: &S) {
+    let count = vm.get_list_count(1).max(0) as usize;
+    let len = count.min(deluge_dsp_kernels::modutil::MAX_STEPS);
+    let clock = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Steps, [clock, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, len as f32);
+    vm.ensure_slots(3); // slot 2 = per-element scratch
+    for k in 0..len {
+        vm.get_list_element(1, k as i32, 2);
+        let v = vm.get_f(2) as f32;
+        audio::set_param(id, (k + 1) as u8, v);
+    }
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_steps(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_steps_impl(&vm);
+}
+
 pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let id = audio::alloc_node_id();
@@ -1118,6 +1170,9 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "q=(_)", node_set_q_impl::<S>);
     method("main", "Node", true, "lfo_(_,_)", node_lfo_impl::<S>);
     method("main", "Node", false, "phase=(_)", node_set_phase_impl::<S>);
+    method("main", "Node", true, "sh_(_,_)", node_sh_impl::<S>);
+    method("main", "Node", true, "slew_(_,_)", node_slew_impl::<S>);
+    method("main", "Node", true, "steps_(_,_)", node_steps_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);

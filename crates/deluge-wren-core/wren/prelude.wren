@@ -144,6 +144,9 @@ foreign class Node {
   foreign q=(v)        // EQ Q / bandwidth
   foreign static lfo_(rate, shape)
   foreign phase=(v)    // LFO start/retrigger phase [0,1)
+  foreign static sh_(input, clock)
+  foreign static slew_(input, time)
+  foreign static steps_(values, clock)
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
@@ -244,6 +247,27 @@ class LFO {
   static square(rate)     { Node.lfo_(rate, 3) }
   static sampleHold(rate) { Node.lfo_(rate, 4) }
   static random(rate)     { Node.lfo_(rate, 5) }
+}
+
+// Sample & hold: latch `input` on each rising edge of `clock` (any signal — an
+// LFO, a square, a metro):
+//   var rnd = SampleHold.new(Noise.pink(), Osc.square(4))   // stepped random
+class SampleHold {
+  static new(input, clock) { Node.sh_(input, clock) }
+}
+
+// Slew / glide: one-pole lag over `time` seconds. Smooths steps / portamento:
+//   osc.freq = Slew.new(pitchSeq, 0.02)
+class Slew {
+  static new(input, time) { Node.slew_(input, time) }
+}
+
+// Step sequencer: cycles a list of values, one per rising `clock` edge (up to 16
+// steps; the first clock plays step 0):
+//   var seq = Steps.new([0, 7, 5, 12], Osc.square(2))
+//   osc.freq = seq.to(110, 880)
+class Steps {
+  static new(values, clock) { Node.steps_(values, clock) }
 }
 
 // State-variable filter: LP/HP/BP/notch from one topology, resonant and

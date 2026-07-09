@@ -875,3 +875,35 @@ fn lfo_renders_bounded_on_engine_host() {
     run_and_render("Out.patch(LFO.tri(1000))", &mut out); // fast LFO so it moves
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
 }
+
+#[test]
+fn sample_hold_and_slew_factories_emit_nodes() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    let cmds = run_and_capture_cmds("var a = SampleHold.new(Osc.pink(), Osc.square(4))\nvar b = Slew.new(a, 0.05)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::SampleHold, .. })), "S&H: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Slew, .. })), "Slew: {cmds:?}");
+}
+
+#[test]
+fn steps_factory_emits_len_and_values() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    let cmds = run_and_capture_cmds("var s = Steps.new([10, 20, 30], Osc.square(2))");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Steps, .. })), "Steps: {cmds:?}");
+    // len = 3 → SetParam(0, 3)
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 3.0).abs() < 1e-4)), "len: {cmds:?}");
+    // values → SetParam(1, 10) SetParam(2, 20) SetParam(3, 30)
+    for (p, v) in [(1u8, 10.0f32), (2, 20.0), (3, 30.0)] {
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, value, .. } if *param == p && (*value - v).abs() < 1e-4)), "value {p}={v}: {cmds:?}");
+    }
+}
+
+#[test]
+fn steps_renders_bounded_on_engine_host() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Steps.new([0.2, -0.2], Osc.square(1000)))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+}
