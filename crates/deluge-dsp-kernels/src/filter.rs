@@ -528,17 +528,18 @@ impl Ms20 {
                     Ms20Resp::Hp => v0 - k * v1 - v2,
                 };
             }
-            // Safety clamp at the kernel's own contractual bound (±8, matching
-            // ms20_is_finite_and_bounded). Only the resonance *feedback* (the
-            // `k·ms20_clip(...)` term) is nonlinearly bounded above — the forward path
-            // (`drive·input`) is not, so in Hp mode (`v0 − k·v1 − v2`, which reintroduces
-            // the un-clipped v0 directly into the output) extreme corners of the gate's
-            // own domain (drive=8, amp=1) can add a few tenths past 8 from the resonance
-            // terms alone (measured: -8.014 at cutoff=20 Hz, res=0, drive≈7.62, amp≈0.996 —
-            // found by the proptest, not hand-picked). Lp never triggers this (its output is
-            // the fully-integrated, already-damped lowpass state); this clamp only engages
-            // in that narrow Hp corner and is inaudible in normal operation.
-            *s = self.dc.process(y).clamp(-8.0, 8.0);
+            // Output soft-saturation (MS-20 output stage): only the resonance
+            // *feedback* (the `k·ms20_clip(...)` term) is nonlinearly bounded going in —
+            // the forward path (`drive·input`, and `v0` directly in the Hp tap) is not,
+            // so under drive+resonance the pre-saturation output can reach tens-to-hundreds
+            // (e.g. Lp measured ≈92 at cutoff=18000, res=0.99, drive=8, well inside the
+            // tested domain — this is NOT limited to a narrow Hp corner). A hard clamp
+            // there would flatten that into a digital rail; instead run it through the same
+            // Padé tanh used for the resonance clip, scaled to ±8 (the kernel's contractual
+            // bound), giving an analog-style output limiter: ~transparent at normal levels
+            // (|y| ≲ 4), soft-clips heavy driven output. `pade_tanh` ∈ [-1,1], so this
+            // bounds the output to (-8, 8) by construction — DC-block first, then saturate.
+            *s = 8.0 * pade_tanh(self.dc.process(y) / 8.0);
         }
     }
 }
@@ -1141,6 +1142,31 @@ mod ms20_tests {
         assert!(mag(Ms20Resp::Hp, 5_000.0) - mag(Ms20Resp::Hp, 200.0) > 20.0);
         let s = mag(Ms20Resp::Lp, 4_000.0) - mag(Ms20Resp::Lp, 2_000.0);
         assert!(s < -8.0 && s > -18.0, "LP stopband slope {s} dB/oct (~ -12)");
+    }
+
+    #[test]
+    fn ms20_lp_passes_low_cutoff_passband() {
+        // Regression coverage for a low cutoff: all other ms20_tests use cutoff=1000 Hz,
+        // so the interaction between a low SVF cutoff and the 30 Hz output DC blocker
+        // (MS20_DC_HP_HZ) was untested. Probe at 60 Hz — comfortably above the 30 Hz DC
+        // corner, comfortably below a 300 Hz filter cutoff (a genuine passband point,
+        // not the filter's own -3dB knee) — at low, non-resonant res (0.2, matching the
+        // convention used by ms20_lp_hp_bands_and_slope).
+        //
+        // Measured at MS20_DC_HP_HZ=30: -1.97 dB — comfortably inside this gate, so the
+        // corner was kept at 30 (see that const's doc comment for why it's not lower).
+        // Note: closer to the filter's own cutoff (e.g. probing at 0.8x cutoff, as in an
+        // fc=150/probe=120 Hz setup) reads far more attenuated (-8 to -4 dB depending on
+        // res) — but that's the SVF core's own overdamped-region rolloff (confirmed by
+        // measuring with the DC blocker corner pushed to ~0 Hz: attenuation barely moves,
+        // e.g. -8.6 -> -8.3 dB), not the DC blocker, and isn't what this gate targets.
+        let mag = magnitude_db(FS, 60.0, |buf| {
+            let x: std::vec::Vec<f32> = (0..buf.len())
+                .map(|i| (core::f32::consts::TAU * 60.0 / FS * i as f32).sin())
+                .collect();
+            Ms20::new().process(In::A(&x), In::K(300.0), In::K(0.2), Ms20Resp::Lp, DT, buf);
+        });
+        assert!(mag > -4.0, "60 Hz passband unexpectedly attenuated: {mag} dB");
     }
 
     #[test]
