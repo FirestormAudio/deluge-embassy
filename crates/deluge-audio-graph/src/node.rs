@@ -6,7 +6,7 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{
-    env::Ar, filter::OnePole, filter::{Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303}, math,
+    env::Ar, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
 };
 use deluge_dsp_kernels::wavetable::{
@@ -48,6 +48,7 @@ pub enum Kind {
     MoogLp2,
     Ms20Lp,
     Ms20Hp,
+    Modal,
     Mul,
     Add,
     Sub,
@@ -68,6 +69,7 @@ enum State {
     Moog4(Moog<4>),
     Moog2(Moog<2>),
     Ms20(Ms20),
+    Modal(Modal<MODAL_MODES>),
     Wt(WtOsc),
     Stateless,
 }
@@ -111,6 +113,7 @@ impl Node {
             Kind::MoogLp4 => State::Moog4(Moog::<4>::new()),
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
+            Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
         };
@@ -153,6 +156,12 @@ impl Node {
             State::Moog4(m) if param == 0 => m.set_drive(value),
             State::Moog2(m) if param == 0 => m.set_drive(value),
             State::Ms20(m) if param == 0 => m.set_drive(value),
+            State::Modal(m) => match param {
+                0 => m.set_structure(value),
+                1 => m.set_brightness(value),
+                2 => m.set_position(value),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -252,6 +261,11 @@ impl Node {
                 let resp = if matches!(self.kind, Kind::Ms20Hp) { Ms20Resp::Hp } else { Ms20Resp::Lp };
                 if let State::Ms20(f) = &mut self.state {
                     f.process(ins[0], ins[1], ins[2], resp, dt, outs.port(0));
+                }
+            }
+            Kind::Modal => {
+                if let State::Modal(m) = &mut self.state {
+                    m.process(ins[0], ins[1], ins[2], dt, outs.port(0));
                 }
             }
             Kind::Mul => math::mul(ins[0], ins[1], outs.port(0)),
@@ -494,5 +508,24 @@ mod tests {
         }
         assert_eq!(p0, [0.75; 4]);
         assert_eq!(p1, [0.75; 4]); // both ports carry the same input
+    }
+
+    #[test]
+    fn modal_node_rings_bounded() {
+        let mut n = Node::new(Kind::Modal, 0);
+        assert_eq!(Node::out_width(Kind::Modal), 1);
+        n.set_param(1, 0.9); // brightness
+        let mut input = [0.0f32; 64];
+        input[0] = 1.0; // strike
+        let freq = [220.0f32; 64];
+        let damping = [0.2f32; 64];
+        let ins = [In::A(&input), In::A(&freq), In::A(&damping)];
+        let mut buf = [0.0f32; 64];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 8.0));
+        assert!(buf.iter().any(|&s| s != 0.0), "should ring");
     }
 }
