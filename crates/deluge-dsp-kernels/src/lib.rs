@@ -14,6 +14,7 @@ pub mod eq;
 pub mod filter;
 pub mod lfo;
 pub mod math;
+pub mod modutil;
 pub mod noise;
 pub mod osc;
 pub mod reverb;
