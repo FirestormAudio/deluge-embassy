@@ -116,6 +116,8 @@ foreign class Node {
   foreign static binop_(op, a, b)
   foreign static lpf_(input, cutoff)
   foreign static svf_(input, cutoff, res, resp)
+  foreign static moog_(input, cutoff, res, poles)
+  foreign drive=(v)
   foreign static tb303_(input, cutoff, res)
   foreign static patch_(node)
   foreign static reset_()
@@ -215,6 +217,16 @@ class Svf {
 //   f.cutoff = Env.ar(0.0, 0.3) * 1500 + 200
 class Tb303 {
   static lp(input, cutoff, res) { Node.tb303_(input, cutoff, res) }
+}
+
+// Moog transistor-ladder — the warm, self-oscillating classic. 24 dB (lp) or 12 dB (lp2);
+// `drive` overdrives the ladder for growl:
+//   var f = Moog.lp(Osc.saw(55), 800, 0.85)
+//   f.cutoff = Env.ar(0.0, 0.4) * 4000 + 200
+//   f.drive = 3
+class Moog {
+  static lp(input, cutoff, res)  { Node.moog_(input, cutoff, res, 4) }
+  static lp2(input, cutoff, res) { Node.moog_(input, cutoff, res, 2) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

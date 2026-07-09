@@ -88,6 +88,22 @@ fn tb303_lp_renders_finite_nonsilent() {
 }
 
 #[test]
+fn moog_lp_emits_newnode() {
+    let c4 = run_and_capture_cmds("var x = Moog.lp(Osc.saw(110), 1000, 0.7)");
+    assert!(c4.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::MoogLp4, .. })));
+    let c2 = run_and_capture_cmds("var x = Moog.lp2(Osc.saw(110), 1000, 0.7)");
+    assert!(c2.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::MoogLp2, .. })));
+}
+
+#[test]
+fn moog_lp_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Moog.lp(Osc.saw(110), 1000, 0.7))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0));
+    assert!(out.iter().any(|f| f.l != 0.0));
+}
+
+#[test]
 fn patch_writes_master_bus_and_sets_root() {
     let cmds = run_and_capture_cmds("Out.patch(Osc.saw(110))");
     assert_eq!(

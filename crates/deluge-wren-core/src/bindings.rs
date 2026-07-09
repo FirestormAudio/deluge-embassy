@@ -877,6 +877,8 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "binop_(_,_,_)", bindings_audio::node_binop),
     static_method("Node", "lpf_(_,_)", bindings_audio::node_lpf),
     static_method("Node", "svf_(_,_,_,_)", bindings_audio::node_svf),
+    static_method("Node", "moog_(_,_,_,_)", bindings_audio::node_moog),
+    method("Node", "drive=(_)", bindings_audio::node_set_drive),
     static_method("Node", "tb303_(_,_,_)", bindings_audio::node_tb303),
     static_method("Node", "patch_(_)", bindings_audio::node_patch),
     static_method("Node", "reset_()", bindings_audio::node_reset),

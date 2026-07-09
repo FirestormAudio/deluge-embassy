@@ -281,6 +281,39 @@ pub(crate) fn node_svf_impl<S: SlotApi>(vm: &S) {
     audio::new_node(id, svf_kind(resp), [input, cutoff, res]);
     unsafe { return_node(vm, id) };
 }
+
+fn moog_kind(code: u32) -> Kind {
+    if code == 2 {
+        Kind::MoogLp2
+    } else {
+        Kind::MoogLp4
+    }
+}
+
+pub(crate) fn node_moog_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let cutoff = arg_input(vm, 2);
+    let res = arg_input(vm, 3);
+    let poles = vm.get_f(4) as u32; // 4 (24 dB) or 2 (12 dB)
+    let id = audio::alloc_node_id();
+    audio::new_node(id, moog_kind(poles), [input, cutoff, res]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_moog(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_moog_impl(&vm);
+}
+
+pub(crate) fn node_set_drive_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // scalar control param (mirrors node_set_feedback_impl)
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_drive(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_drive_impl(&vm);
+}
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_svf(raw: *mut WrenVM) {
     let vm = Vm(raw);
@@ -605,6 +638,8 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "binop_(_,_,_)", node_binop_impl::<S>);
     method("main", "Node", true, "lpf_(_,_)", node_lpf_impl::<S>);
     method("main", "Node", true, "svf_(_,_,_,_)", node_svf_impl::<S>);
+    method("main", "Node", true, "moog_(_,_,_,_)", node_moog_impl::<S>);
+    method("main", "Node", false, "drive=(_)", node_set_drive_impl::<S>);
     method("main", "Node", true, "tb303_(_,_,_)", node_tb303_impl::<S>);
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
     method("main", "Node", true, "reset_()", node_reset_impl::<S>);
