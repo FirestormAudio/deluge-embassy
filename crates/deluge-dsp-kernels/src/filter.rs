@@ -101,7 +101,7 @@ impl Svf {
 
     /// One TPT step + response selection (spec §2).
     #[inline]
-    fn tick(&mut self, v0: f32, k: f32, a1: f32, a2: f32, a3: f32, resp: SvfResp) -> f32 {
+    pub(crate) fn tick(&mut self, v0: f32, k: f32, a1: f32, a2: f32, a3: f32, resp: SvfResp) -> f32 {
         let v3 = v0 - self.ic2eq;
         let v1 = a1 * self.ic1eq + a2 * v3;
         let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
@@ -154,7 +154,7 @@ fn svf_tan_prewarp(theta: f32) -> f32 {
 
 /// TPT coefficients from prewarped `g` and damping `k` (spec §2).
 #[inline]
-fn svf_coeffs(g: f32, k: f32) -> (f32, f32, f32) {
+pub(crate) fn svf_coeffs(g: f32, k: f32) -> (f32, f32, f32) {
     let a1 = 1.0 / (1.0 + g * (g + k));
     let a2 = g * a1;
     let a3 = g * a2;

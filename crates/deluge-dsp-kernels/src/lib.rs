@@ -8,6 +8,7 @@
 #![cfg_attr(feature = "simd", feature(portable_simd))]
 
 pub mod delay;
+pub mod drive;
 pub mod env;
 pub mod filter;
 pub mod math;
