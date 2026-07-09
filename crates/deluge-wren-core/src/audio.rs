@@ -201,6 +201,17 @@ pub fn bus_write(src: Input, bus: u16) {
     }
     host().audio_cmd(Cmd::BusWrite { src, bus: BusId(bus) });
 }
+/// Emit a per-side gained bus write (`gl` → L, `gr` → R). Used by width-aware
+/// routing to send a stereo (width-2) source's two ports to L and R.
+// Not yet called: the width-aware routing that consumes this lands in Task 5
+// (`write_source_to_bus`). Remove this `allow` once that call site exists.
+#[allow(dead_code)]
+pub fn bus_write_gains(src: Input, bus: u16, gl: f32, gr: f32) {
+    if bus == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::BusWriteGains { src, bus: BusId(bus), gl, gr });
+}
 pub fn set_root(bus: u16) {
     if bus == NULL_ID {
         return;

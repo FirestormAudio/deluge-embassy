@@ -124,6 +124,7 @@ foreign class Node {
   foreign static patch_(node)
   foreign static reset_()
   foreign static split_(input)
+  foreign static pan_(input, position)
   foreign static wavetable_(table, freq)
   foreign static wavetable_pooled_(wt, freq)
   foreign static delay_(input, time, feedback)
@@ -258,6 +259,18 @@ class Ms20 {
 //   body.damping = 0.6      // shorter ring
 class Resonator {
   static new(input, freq, damping) { Node.modal_(input, freq, damping) }
+}
+
+// Constant-power stereo pan: a mono input placed in the stereo field.
+// `position` -1 = hard left, 0 = center (-3 dB), +1 = hard right; it is a
+// port, so it can be modulated (auto-pan):
+//   Out.patch(Pan.new(Osc.saw(110), -0.3))
+//   var p = Pan.new(pad, 0)
+//   p.freq = ...            // (position is arg 2 at construction; patch via a node)
+// Pan is a stereo (width-2) node: Out.patch / a bus routes its L/R to the
+// stereo output.
+class Pan {
+  static new(input, position) { Node.pan_(input, position) }
 }
 
 // Feedback delay — echoes with damped repeats. `time` in seconds (up to ~1 s),

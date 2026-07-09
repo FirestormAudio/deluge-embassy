@@ -27,6 +27,7 @@ pub(crate) const DELAY_MAX_SAMPLES: usize = 48_000;
 #[derive(Clone, Copy)]
 pub(crate) struct NodeObj {
     pub tag: u8,
+    pub width: u8, // 1 = mono, 2 = stereo (port0=L, port1=R). Read by width-aware routing.
     pub id: u16,
 }
 impl WrenForeign for NodeObj {
@@ -156,8 +157,11 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
 fn self_id<S: SlotApi>(vm: &S) -> u16 {
     unsafe { vm.foreign_mut::<NodeObj>(0) }.id
 }
+unsafe fn return_node_w<S: SlotApi>(vm: &S, id: u16, width: u8) {
+    unsafe { vm.new_foreign_in(0, NodeObj { tag: TAG_NODE, width, id }) };
+}
 unsafe fn return_node<S: SlotApi>(vm: &S, id: u16) {
-    unsafe { vm.new_foreign_in(0, NodeObj { tag: TAG_NODE, id }) };
+    unsafe { return_node_w(vm, id, 1) };
 }
 
 // ── Factory statics (return a Node) ──────────────────────────────────────────
@@ -539,6 +543,23 @@ pub(crate) unsafe extern "C" fn node_split(raw: *mut WrenVM) {
     node_split_impl(&vm);
 }
 
+/// `Node.pan_(input, position)` — a constant-power mono→stereo pan node
+/// (`Kind::Pan`, width-2: port0=L, port1=R). `position` is port 1 (∈[-1,1],
+/// modulatable). Returns a WIDTH-2 node so width-aware routing sends its two
+/// ports to L/R (see `write_source_to_bus`, Task 5).
+pub(crate) fn node_pan_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let position = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Pan, [input, position, Input::Const(0.0)]);
+    unsafe { return_node_w(vm, id, 2) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_pan(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_pan_impl(&vm);
+}
+
 // ── Bus (factory + instance write) ───────────────────────────────────────────
 
 pub(crate) fn bus_new_impl<S: SlotApi>(vm: &S) {
@@ -758,6 +779,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
     method("main", "Node", true, "reset_()", node_reset_impl::<S>);
     method("main", "Node", true, "split_(_)", node_split_impl::<S>);
+    method("main", "Node", true, "pan_(_,_)", node_pan_impl::<S>);
     method("main", "Node", true, "wavetable_(_,_)", node_wavetable_impl::<S>);
     method("main", "Node", true, "wavetable_pooled_(_,_)", node_wavetable_pooled_impl::<S>);
     method("main", "Node", true, "delay_(_,_,_)", node_delay_impl::<S>);

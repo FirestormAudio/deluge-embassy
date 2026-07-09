@@ -540,3 +540,14 @@ fn delay_mix_and_damp_emit_setparam_0_and_1() {
         "damp= should SetParam(1): {cmds:?}"
     );
 }
+
+#[test]
+fn pan_new_emits_kind_pan_node() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    let cmds = run_and_capture_cmds("var p = Pan.new(Osc.saw(110), -0.5)");
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Pan, .. })),
+        "expected a NewNode(Pan): {cmds:?}"
+    );
+}
