@@ -31,9 +31,10 @@ completes Ef-3.
   specific offsets *into* the tank delays/allpasses (the defining Dattorro
   feature — exact node/offset table pinned in the plan from the paper).
 - **`Allpass` gains.** The Dattorro allpasses use per-stage gains (0.75/0.625
-  input; 0.7/0.5 tank). Extend the Ef-3a `Allpass` with a **gain-parameterized
-  tick** (`tick_g(buf, off, len, x, gain)`); the existing `tick` becomes
-  `tick_g(…, 0.5)` — non-breaking for `Freeverb`.
+  input; 0.7/0.5 tank). The Dattorro allpass uses a **different recurrence** than
+  the Ef-3a freeverb `Allpass` (`w = x − g·d; out = d + g·w`), so it's realized as
+  **standalone integer-read helper fns** (`plate_ap`/`plate_ap_read`) — the
+  existing `Allpass`/`Comb` are left untouched.
 - **One partitioned pooled buffer.** All delay elements are `DelayLine`s over
   disjoint slices of one region (`PLATE_BUF_SAMPLES` = Σ slice lengths, each slice
   sized for its base length + modulation/tap headroom). Mono→stereo (width-2).
@@ -60,8 +61,9 @@ completes Ef-3.
 ```rust
 impl Allpass {
     /// Schroeder allpass with an explicit feedback gain (Dattorro uses several).
-    pub fn tick_g(&mut self, buf: &mut [f32], off: usize, len: usize, x: f32, gain: f32) -> f32;
-    // existing `tick` delegates to `tick_g(…, 0.5)`.
+    // Dattorro allpass = standalone helper fns (not the freeverb `Allpass`):
+    //   plate_ap(slice, cursor, x, gain) / plate_ap_read(slice, cursor, x, gain, read_back)
+    //   → d = slice[read]; w = x - gain*d; slice[cursor] = w; advance; return d + gain*w
 }
 
 /// Dattorro plate reverb: input diffusion + a figure-8 modulated-allpass tank +
@@ -102,7 +104,7 @@ at their fixed offsets from the tank elements; `wet1 = mix·(width·0.5+0.5); we
 mix·((1−width)·0.5); dry = 1−mix`; `out_l = x·dry + tapL·wet1 + tapR·wet2; out_r =
 x·dry + tapR·wet1 + tapL·wet2`.
 
-**Mappings:** `decay = size·0.25 + 0.5` (∈ [0.5, 0.75] — plates decay faster than
+**Mappings:** `decay = size·0.4 + 0.5` (∈ [0.5, 0.9] — plates decay faster than
 halls); `damping = damp·0.4` (tank LP) with `bandwidth` derived from `damp` too;
 excursion LFO ~1 Hz (phase wrapped via `floorf`).
 
@@ -138,8 +140,7 @@ boundedness proptest is the gate).
 
 **Kernel (`deluge-dsp-kernels`):**
 - **Layout sum.** `PLATE_BUF_SAMPLES == Σ` slice lengths (pinned test).
-- **`tick_g` gain.** `Allpass::tick_g(…, 0.5)` equals the old `tick` (regression);
-  a different gain changes the output (allpass is still magnitude-flat).
+- **Layout sum.** `PLATE_BUF_SAMPLES == Σ` element lengths (pinned test).
 - **Impulse → dense decaying tail.** Non-silent well after the impulse; late-window
   energy < early-window; bounded.
 - **Size lengthens / damp darkens** the tail (monotonic).
