@@ -132,6 +132,9 @@ foreign class Node {
   foreign damp=(v)     // Delay feedback-path damping (NOT damping= — that's the Resonator's)
   foreign static chorus_(input, rate, depth, mix)
   foreign static flanger_(input, rate, depth, feedback, mix)
+  foreign static room_(input, roomsize, damp, mix)
+  foreign size=(v)
+  foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
   foreign depth=(v)
   foreign regen=(v)     // Flanger feedback (NOT feedback= — that's the Osc's)
@@ -305,6 +308,14 @@ class Chorus {
 //   var f = Flanger.new(pad, 0.2, 0.8, 0.7, 0.5); f.regen = 0.8
 class Flanger {
   static new(input, rate, depth, feedback, mix) { Node.flanger_(input, rate, depth, feedback, mix) }
+}
+
+// Room reverb (Schroeder-Moorer). `roomsize` [0,1] decay/size, `damp` [0,1]
+// high-frequency absorption, `mix` dry/wet. Stereo (width-2):
+//   Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.4))
+//   var r = Room.new(pad, 0.8, 0.3, 0.5); r.size = 0.9; r.damp = 0.6; r.spread = 0.8
+class Room {
+  static new(input, roomsize, damp, mix) { Node.room_(input, roomsize, damp, mix) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

@@ -645,3 +645,48 @@ fn chorus_renders_stereo_bounded_on_engine_host() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "chorus should be non-silent");
 }
+
+#[test]
+fn room_new_emits_node_and_params_no_bind_on_capture_host() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    let cmds = run_and_capture_cmds("var r = Room.new(Osc.saw(110), 0.7, 0.4, 0.5)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Room, .. })));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })), "no pool → no BindTable: {cmds:?}");
+    for p in [0u8, 1, 2] {
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "missing SetParam {p}: {cmds:?}");
+    }
+}
+
+#[test]
+fn room_patch_routes_stereo() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds("Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.5))");
+    let gains: std::vec::Vec<(f32, f32)> = cmds.iter().filter_map(|c| match c {
+        Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+        _ => None,
+    }).collect();
+    assert!(gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)), "not stereo-routed: {gains:?}");
+}
+
+#[test]
+fn room_size_and_spread_set_params_2_and_3() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds(
+        "var r = Room.new(Osc.saw(110), 0.5, 0.5, 0.5)\nr.size = 0.9\nr.spread = 0.3",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, .. })), "size→2: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, .. })), "spread→3: {cmds:?}");
+}
+
+#[test]
+fn room_renders_stereo_bounded_on_engine_host() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.6))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "reverb should be non-silent");
+}

@@ -27,6 +27,10 @@ pub(crate) const DELAY_MAX_SAMPLES: usize = 48_000;
 /// for both effects (chorus base 20 ms, flanger 2 ms) plus headroom.
 pub(crate) const CHORUS_BUF_SAMPLES: usize = 2400;
 
+/// Ring length for a Room reverb node. Keep in sync with
+/// `deluge_dsp_kernels::reverb::REVERB_BUF_SAMPLES` (Σ of the 24 line lengths).
+pub(crate) const REVERB_BUF_SAMPLES: usize = 25_450;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct NodeObj {
@@ -567,6 +571,28 @@ pub(crate) unsafe extern "C" fn node_flanger(raw: *mut WrenVM) {
     node_flanger_impl(&vm);
 }
 
+/// `Node.room_(input, roomsize, damp, mix)` — allocate the partitioned reverb
+/// buffer, create a width-2 `Kind::Room` node, and set roomsize/damp/mix. A host
+/// with no pool leaves it unbound (dry passthrough).
+pub(crate) fn node_room_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let roomsize = vm.get_f(2) as f32;
+    let damp = vm.get_f(3) as f32;
+    let mix = vm.get_f(4) as f32;
+    let handle = audio::alloc_buffer(REVERB_BUF_SAMPLES);
+    let id = audio::alloc_node_id();
+    audio::new_pooled_node(id, Kind::Room, handle, input);
+    audio::set_param(id, 2, roomsize);
+    audio::set_param(id, 1, damp);
+    audio::set_param(id, 0, mix);
+    unsafe { return_node_w(vm, id, 2) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_room(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_room_impl(&vm);
+}
+
 pub(crate) fn node_set_rate_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // param 1 = rate (Kind::Chorus/Flanger)
     audio::set_param(self_id(vm), 1, v);
@@ -575,6 +601,27 @@ pub(crate) fn node_set_rate_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn node_set_rate(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_set_rate_impl(&vm);
+}
+
+pub(crate) fn node_set_size_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 2 = roomsize (Kind::Room)
+    audio::set_param(self_id(vm), 2, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_size(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_size_impl(&vm);
+}
+
+// `spread=` (stereo width, param 3) — NOT `width=` (the Osc's PWM port setter).
+pub(crate) fn node_set_spread_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 3 = width (Kind::Room)
+    audio::set_param(self_id(vm), 3, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_spread(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_spread_impl(&vm);
 }
 
 pub(crate) fn node_set_depth_impl<S: SlotApi>(vm: &S) {
@@ -886,6 +933,9 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "damp=(_)", node_set_damp_impl::<S>);
     method("main", "Node", true, "chorus_(_,_,_,_)", node_chorus_impl::<S>);
     method("main", "Node", true, "flanger_(_,_,_,_,_)", node_flanger_impl::<S>);
+    method("main", "Node", true, "room_(_,_,_,_)", node_room_impl::<S>);
+    method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
+    method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);
     method("main", "Node", false, "depth=(_)", node_set_depth_impl::<S>);
     method("main", "Node", false, "regen=(_)", node_set_regen_impl::<S>);
