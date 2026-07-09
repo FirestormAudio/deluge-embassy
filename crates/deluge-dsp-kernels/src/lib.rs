@@ -12,6 +12,7 @@ pub mod drive;
 pub mod env;
 pub mod eq;
 pub mod filter;
+pub mod lfo;
 pub mod math;
 pub mod noise;
 pub mod osc;
