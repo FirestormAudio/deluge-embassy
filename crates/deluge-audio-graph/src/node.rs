@@ -9,6 +9,7 @@ use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
     env::Ar, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
+    reverb::{Freeverb, REVERB_BUF_SAMPLES},
 };
 use deluge_dsp_kernels::wavetable::{
     level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
@@ -59,6 +60,7 @@ pub enum Kind {
     Delay,
     Chorus,
     Flanger,
+    Room,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -79,6 +81,7 @@ enum State {
     Delay(Delay),
     Chorus(ModDelay<3>),
     Flanger(ModDelay<1>),
+    Room(Freeverb),
     Stateless,
 }
 
@@ -127,6 +130,7 @@ impl Node {
             Kind::Delay => State::Delay(Delay::new()),
             Kind::Chorus => State::Chorus(ModDelay::<3>::new(0.020)),
             Kind::Flanger => State::Flanger(ModDelay::<1>::new(0.002)),
+            Kind::Room => State::Room(Freeverb::new()),
         };
         Node {
             kind,
@@ -139,7 +143,7 @@ impl Node {
 
     pub fn out_width(kind: Kind) -> usize {
         match kind {
-            Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger => 2,
+            Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room => 2,
             _ => 1,
         }
     }
@@ -190,6 +194,13 @@ impl Node {
                 1 => md.set_rate(value),
                 2 => md.set_depth(value),
                 3 => md.set_feedback(value),
+                _ => {}
+            },
+            State::Room(fv) => match param {
+                0 => fv.set_mix(value),
+                1 => fv.set_damp(value),
+                2 => fv.set_roomsize(value),
+                3 => fv.set_width(value),
                 _ => {}
             },
             _ => {}
@@ -410,6 +421,32 @@ impl Node {
                     }
                 }
             }
+            Kind::Room => {
+                // Mono→stereo reverb. Bound region must hold the full partitioned
+                // layout (≥ REVERB_BUF_SAMPLES); otherwise dry passthrough both.
+                let (out_l, out_r) = outs.port_pair();
+                let ran = if let Some(buf) = pool_region {
+                    if buf.len() >= REVERB_BUF_SAMPLES {
+                        if let State::Room(fv) = &mut self.state {
+                            fv.process(ins[0], dt, buf, out_l, out_r);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !ran {
+                    for i in 0..out_l.len() {
+                        let x = ins[0].at(i);
+                        out_l[i] = x;
+                        out_r[i] = x;
+                    }
+                }
+            }
         }
     }
 }
@@ -472,6 +509,7 @@ impl<'a> OutView<'a> {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use crate::Input;
     use deluge_dsp_kernels::In;
@@ -760,5 +798,40 @@ mod tests {
         }
         assert!(p0.iter().all(|&s| (s - 0.4).abs() < 1e-6), "L dry: {p0:?}");
         assert!(p1.iter().all(|&s| (s - 0.4).abs() < 1e-6), "R dry: {p1:?}");
+    }
+
+    #[test]
+    fn room_node_renders_stereo_with_buffer() {
+        use deluge_dsp_kernels::reverb::REVERB_BUF_SAMPLES;
+        let mut n = Node::new(Kind::Room, 0);
+        assert_eq!(Node::out_width(Kind::Room), 2);
+        n.set_param(0, 1.0); // mix wet
+        n.set_param(2, 0.7); // roomsize
+        let input: [f32; 64] = core::array::from_fn(|i| if i == 0 { 1.0 } else { 0.0 });
+        let ins = [In::A(&input), In::A(&[0.0; 64]), In::A(&[0.0; 64])];
+        let mut ring = std::vec![0.0f32; REVERB_BUF_SAMPLES];
+        let mut p0 = [0.0f32; 64];
+        let mut p1 = [0.0f32; 64];
+        {
+            let mut outs = OutView::pair(&mut p0, &mut p1);
+            n.process_resolved(&ins, 1.0 / 44_100.0, &mut outs, Some(&mut ring));
+        }
+        assert!(p0.iter().all(|s| s.is_finite() && s.abs() <= 16.0));
+        assert!(p1.iter().all(|s| s.is_finite() && s.abs() <= 16.0));
+    }
+
+    #[test]
+    fn room_node_without_buffer_is_dry_both_ports() {
+        let mut n = Node::new(Kind::Room, 0);
+        let input = [0.4f32; 16];
+        let ins = [In::A(&input), In::A(&[0.0; 16]), In::A(&[0.0; 16])];
+        let mut p0 = [0.0f32; 16];
+        let mut p1 = [0.0f32; 16];
+        {
+            let mut outs = OutView::pair(&mut p0, &mut p1);
+            n.process_resolved(&ins, 1.0 / 44_100.0, &mut outs, None);
+        }
+        assert!(p0.iter().all(|&s| (s - 0.4).abs() < 1e-6));
+        assert!(p1.iter().all(|&s| (s - 0.4).abs() < 1e-6));
     }
 }
