@@ -5,6 +5,8 @@
 //! freeverb source. `no_std`, no heap.
 
 use crate::In;
+use crate::delay::DelayLine;
+use crate::fast_sin;
 
 const COMB: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
 const AP: [usize; 4] = [556, 441, 341, 225];
@@ -13,6 +15,39 @@ const GAIN: f32 = 0.015;
 
 /// Total samples the shared buffer must hold (Σ of all 24 line lengths).
 pub const REVERB_BUF_SAMPLES: usize = 25_450;
+
+const BASE_LEN: [usize; 8] = [1499, 1889, 2311, 2749, 3187, 3571, 3931, 4483];
+const MOD_MARGIN: usize = 16;
+const MOD_DEPTH: f32 = 8.0;
+const LFO_RATE: f32 = 0.7;
+const INJ: f32 = 0.05;
+const OUT: f32 = 1.0;
+const HADAMARD_NORM: f32 = 0.353_553_39; // 1/√8
+
+/// Σ of the 8 line slice lengths (`base + MOD_MARGIN`).
+pub const HALL_BUF_SAMPLES: usize = 23_748;
+
+/// In-place fast Walsh-Hadamard transform on 8 samples, normalized by 1/√8
+/// (orthonormal → energy-preserving). Adds/subtracts only.
+pub(crate) fn fwht8(v: &mut [f32; 8]) {
+    let mut h = 1;
+    while h < 8 {
+        let mut i = 0;
+        while i < 8 {
+            for j in i..i + h {
+                let a = v[j];
+                let b = v[j + h];
+                v[j] = a + b;
+                v[j + h] = a - b;
+            }
+            i += 2 * h;
+        }
+        h *= 2;
+    }
+    for x in v.iter_mut() {
+        *x *= HADAMARD_NORM;
+    }
+}
 
 /// Damped-feedback comb. Fixed integer delay = the slice length; cursor + one-pole
 /// damp state. `off`/`len` locate this comb's slice in the shared buffer.
@@ -152,6 +187,94 @@ impl Default for Freeverb {
     }
 }
 
+/// 8-line modulated FDN hall reverb over a shared partitioned buffer; mono in →
+/// stereo out. Feedback = `g · Hadamard · damp(taps)` with `g < 1` and an
+/// orthonormal matrix ⇒ BIBO-stable by construction.
+#[derive(Clone, Copy)]
+pub struct Fdn8 {
+    lines: [DelayLine; 8],
+    damp_z: [f32; 8],
+    lfo_phase: f32,
+    size: f32,
+    damp: f32,
+    width: f32,
+    mix: f32,
+}
+impl Fdn8 {
+    pub fn new() -> Fdn8 {
+        Fdn8 {
+            lines: [DelayLine::new(); 8],
+            damp_z: [0.0; 8],
+            lfo_phase: 0.0,
+            size: 0.5,
+            damp: 0.5,
+            width: 1.0,
+            mix: 0.5,
+        }
+    }
+    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
+    pub fn set_damp(&mut self, v: f32) { self.damp = v.clamp(0.0, 1.0); }
+    pub fn set_size(&mut self, v: f32) { self.size = v.clamp(0.0, 1.0); }
+    pub fn set_width(&mut self, v: f32) { self.width = v.clamp(0.0, 1.0); }
+
+    pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32], out_l: &mut [f32], out_r: &mut [f32]) {
+        if buf.len() < HALL_BUF_SAMPLES {
+            for i in 0..out_l.len() {
+                let x = input.at(i);
+                out_l[i] = x;
+                out_r[i] = x;
+            }
+            return;
+        }
+        let dc = self.damp * 0.4;
+        let g = self.size * 0.25 + 0.7;
+        let wet1 = self.mix * (self.width * 0.5 + 0.5);
+        let wet2 = self.mix * ((1.0 - self.width) * 0.5);
+        let dry = 1.0 - self.mix;
+        for i in 0..out_l.len() {
+            let x = input.at(i);
+            let p = self.lfo_phase + LFO_RATE * dt;
+            self.lfo_phase = p - libm::floorf(p);
+            // Read (modulated) all 8 lines.
+            let mut s = [0.0f32; 8];
+            let mut off = 0usize;
+            for k in 0..8 {
+                let len = BASE_LEN[k] + MOD_MARGIN;
+                let t = self.lfo_phase + k as f32 / 8.0;
+                let lfo = fast_sin(t - libm::floorf(t));
+                let d = BASE_LEN[k] as f32 - MOD_DEPTH * (0.5 + 0.5 * lfo);
+                s[k] = self.lines[k].read_hermite(&buf[off..off + len], d);
+                off += len;
+            }
+            // Per-line damping.
+            let mut h = [0.0f32; 8];
+            for k in 0..8 {
+                self.damp_z[k] = s[k] * (1.0 - dc) + self.damp_z[k] * dc;
+                h[k] = self.damp_z[k];
+            }
+            // Orthonormal Hadamard mix.
+            fwht8(&mut h);
+            // Feedback + inject + write.
+            let mut off = 0usize;
+            for k in 0..8 {
+                let len = BASE_LEN[k] + MOD_MARGIN;
+                self.lines[k].write(&mut buf[off..off + len], x * INJ + g * h[k]);
+                off += len;
+            }
+            // Output: even taps → L, odd → R.
+            let ol = (s[0] + s[2] + s[4] + s[6]) * OUT;
+            let or = (s[1] + s[3] + s[5] + s[7]) * OUT;
+            out_l[i] = x * dry + ol * wet1 + or * wet2;
+            out_r[i] = x * dry + or * wet1 + ol * wet2;
+        }
+    }
+}
+impl Default for Fdn8 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -253,6 +376,113 @@ mod tests {
         assert!(l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6));
     }
 
+    fn render_hall(fdn: &mut Fdn8, buf: &mut [f32], input: &[f32]) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
+        let mut l = std::vec![0.0f32; input.len()];
+        let mut r = std::vec![0.0f32; input.len()];
+        fdn.process(In::A(input), 1.0 / 44_100.0, buf, &mut l, &mut r);
+        (l, r)
+    }
+
+    #[test]
+    fn hall_layout_sums_to_buf_samples() {
+        let sum: usize = BASE_LEN.iter().map(|b| b + MOD_MARGIN).sum();
+        assert_eq!(sum, HALL_BUF_SAMPLES);
+    }
+
+    #[test]
+    fn fwht8_is_orthonormal() {
+        // Energy preserved: ‖fwht8(v)‖ ≈ ‖v‖.
+        let mut v = [0.3, -0.7, 1.1, 0.2, -0.5, 0.9, -0.1, 0.4];
+        let e_in: f32 = v.iter().map(|x| x * x).sum();
+        fwht8(&mut v);
+        let e_out: f32 = v.iter().map(|x| x * x).sum();
+        assert!((e_in - e_out).abs() < 1e-4, "not energy-preserving: {e_in} vs {e_out}");
+        // All-ones → only bin 0 = √8, rest 0.
+        let mut ones = [1.0f32; 8];
+        fwht8(&mut ones);
+        assert!((ones[0] - (8.0f32).sqrt()).abs() < 1e-4);
+        assert!(ones[1..].iter().all(|x| x.abs() < 1e-4));
+    }
+
+    #[test]
+    fn hall_impulse_produces_decaying_tail() {
+        let mut buf = std::vec![0.0f32; HALL_BUF_SAMPLES];
+        let mut fdn = Fdn8::new();
+        fdn.set_mix(1.0);
+        fdn.set_size(0.8);
+        let mut input = std::vec![0.0f32; 40_000];
+        input[0] = 1.0;
+        let (l, r) = render_hall(&mut fdn, &mut buf, &input);
+        assert!(l.iter().all(|v| v.is_finite()) && r.iter().all(|v| v.is_finite()));
+        let late: f32 = l[20_000..22_000].iter().map(|v| v * v).sum();
+        assert!(late > 1e-8, "tail died too fast: {late}");
+        let early: f32 = l[4_000..6_000].iter().map(|v| v * v).sum();
+        let later: f32 = l[30_000..32_000].iter().map(|v| v * v).sum();
+        assert!(early > later, "tail not decaying: {early} → {later}");
+    }
+
+    #[test]
+    fn hall_size_lengthens_tail() {
+        let tail = |size: f32| -> f32 {
+            let mut buf = std::vec![0.0f32; HALL_BUF_SAMPLES];
+            let mut fdn = Fdn8::new();
+            fdn.set_mix(1.0);
+            fdn.set_size(size);
+            let mut input = std::vec![0.0f32; 60_000];
+            input[0] = 1.0;
+            let (l, _r) = render_hall(&mut fdn, &mut buf, &input);
+            l[50_000..52_000].iter().map(|v| v * v).sum()
+        };
+        assert!(tail(0.95) > tail(0.3), "bigger size should decay slower");
+    }
+
+    #[test]
+    fn hall_damping_darkens_tail() {
+        let hf = |damp: f32| -> f32 {
+            let mut buf = std::vec![0.0f32; HALL_BUF_SAMPLES];
+            let mut fdn = Fdn8::new();
+            fdn.set_mix(1.0);
+            fdn.set_size(0.85);
+            fdn.set_damp(damp);
+            let mut input = std::vec![0.0f32; 30_000];
+            input[0] = 1.0;
+            let (l, _r) = render_hall(&mut fdn, &mut buf, &input);
+            l[15_000..19_000].windows(2).map(|w| (w[1] - w[0]).powi(2)).sum()
+        };
+        assert!(hf(0.9) < hf(0.05), "more damping → less HF in the tail");
+    }
+
+    #[test]
+    fn hall_output_is_stereo() {
+        let mut buf = std::vec![0.0f32; HALL_BUF_SAMPLES];
+        let mut fdn = Fdn8::new();
+        fdn.set_mix(1.0);
+        let input: std::vec::Vec<f32> = (0..12_000).map(|i| (i as f32 * 0.03).sin()).collect();
+        let (l, r) = render_hall(&mut fdn, &mut buf, &input);
+        let diff: f32 = l.iter().zip(&r).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff > 1.0, "hall should be stereo (l != r): {diff}");
+    }
+
+    #[test]
+    fn hall_mix_zero_is_dry() {
+        let mut buf = std::vec![0.0f32; HALL_BUF_SAMPLES];
+        let mut fdn = Fdn8::new();
+        fdn.set_mix(0.0);
+        let input = std::vec![0.5f32; 256];
+        let (l, r) = render_hall(&mut fdn, &mut buf, &input);
+        assert!((l[100] - 0.5).abs() < 1e-4 && (r[100] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn hall_short_buffer_is_dry_passthrough() {
+        let mut buf = std::vec![0.0f32; 64];
+        let mut fdn = Fdn8::new();
+        fdn.set_mix(1.0);
+        let input = std::vec![0.3f32; 32];
+        let (l, r) = render_hall(&mut fdn, &mut buf, &input);
+        assert!(l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6));
+    }
+
     use proptest::prelude::*;
     proptest! {
         #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
@@ -269,6 +499,28 @@ mod tests {
             fv.set_roomsize(roomsize); fv.set_damp(damp); fv.set_width(width); fv.set_mix(mix);
             let input = std::vec![amp; 4_000];
             let (l, r) = render(&mut fv, &mut buf, &input);
+            for (a, b) in l.iter().zip(&r) {
+                prop_assert!(a.is_finite() && b.is_finite());
+                prop_assert!(a.abs() <= 16.0 && b.abs() <= 16.0, "unbounded: {a},{b}");
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+        #[test]
+        fn hall_is_finite_and_bounded(
+            size in 0.0f32..1.0,
+            damp in 0.0f32..1.0,
+            width in 0.0f32..1.0,
+            mix in 0.0f32..1.0,
+            amp in 0.0f32..1.0,
+        ) {
+            let mut buf = std::vec![0.0f32; HALL_BUF_SAMPLES];
+            let mut fdn = Fdn8::new();
+            fdn.set_size(size); fdn.set_damp(damp); fdn.set_width(width); fdn.set_mix(mix);
+            let input = std::vec![amp; 6_000];
+            let (l, r) = render_hall(&mut fdn, &mut buf, &input);
             for (a, b) in l.iter().zip(&r) {
                 prop_assert!(a.is_finite() && b.is_finite());
                 prop_assert!(a.abs() <= 16.0 && b.abs() <= 16.0, "unbounded: {a},{b}");
