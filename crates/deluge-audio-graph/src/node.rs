@@ -9,6 +9,7 @@ use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
     drive::{Drive, Shape},
     env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
+    modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
 };
@@ -67,6 +68,9 @@ pub enum Kind {
     Drive,
     Eq,
     Lfo,
+    SampleHold,
+    Slew,
+    Steps,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -93,6 +97,9 @@ enum State {
     Drive(Drive),
     Eq(Eq),
     Lfo(Lfo),
+    SampleHold(SampleHold),
+    Slew(Slew),
+    Steps(Steps),
     Stateless,
 }
 
@@ -147,6 +154,9 @@ impl Node {
             Kind::Drive => State::Drive(Drive::new(Shape::Soft)),
             Kind::Eq => State::Eq(Eq::new(EqType::Peak)),
             Kind::Lfo => State::Lfo(Lfo::new()),
+            Kind::SampleHold => State::SampleHold(SampleHold::new()),
+            Kind::Slew => State::Slew(Slew::new()),
+            Kind::Steps => State::Steps(Steps::new()),
         };
         Node {
             kind,
@@ -255,6 +265,10 @@ impl Node {
                 0 => l.set_shape(value as u8),
                 1 => l.set_phase(value),
                 _ => {}
+            },
+            State::Steps(s) => match param {
+                0 => s.set_len(value as u8),
+                k => s.set_value(k as usize, value),
             },
             _ => {}
         }
@@ -561,6 +575,21 @@ impl Node {
             Kind::Lfo => {
                 if let State::Lfo(l) = &mut self.state {
                     l.process(ins[0], dt, outs.port(0));
+                }
+            }
+            Kind::SampleHold => {
+                if let State::SampleHold(sh) = &mut self.state {
+                    sh.process(ins[0], ins[1], outs.port(0));
+                }
+            }
+            Kind::Slew => {
+                if let State::Slew(s) = &mut self.state {
+                    s.process(ins[0], ins[1], dt, outs.port(0));
+                }
+            }
+            Kind::Steps => {
+                if let State::Steps(s) = &mut self.state {
+                    s.process(ins[0], outs.port(0)); // clock on port 0
                 }
             }
         }
@@ -1131,5 +1160,40 @@ mod tests {
             n.process_resolved(&ins1, 1.0 / 48_000.0, &mut outs, None);
         }
         assert!(one[0] < -0.99, "trigger resets saw to ~−1: {}", one[0]);
+    }
+
+    #[test]
+    fn sample_hold_node_latches() {
+        let mut n = Node::new(Kind::SampleHold, 0);
+        assert_eq!(Node::out_width(Kind::SampleHold), 1);
+        let input: [f32; 16] = core::array::from_fn(|i| i as f32 * 0.1);
+        let clock: [f32; 16] = core::array::from_fn(|i| if (4..7).contains(&i) { 1.0 } else { -1.0 });
+        let ins = [In::A(&input), In::A(&clock), In::A(&[0.0; 16])];
+        let mut buf = [0.0f32; 16];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf[2].abs() < 1e-6, "held 0 before edge");
+        assert!((buf[8] - 0.4).abs() < 1e-6, "latched input at edge (sample 4 = 0.4)");
+    }
+
+    #[test]
+    fn steps_node_sequences() {
+        let mut n = Node::new(Kind::Steps, 0);
+        assert_eq!(Node::out_width(Kind::Steps), 1);
+        n.set_param(0, 2.0); // len
+        n.set_param(1, 5.0); // values[0]
+        n.set_param(2, 9.0); // values[1]
+        let clock: [f32; 32] = core::array::from_fn(|i| if (8..11).contains(&i) || (16..19).contains(&i) { 1.0 } else { -1.0 });
+        let ins = [In::A(&clock), In::A(&[0.0; 32]), In::A(&[0.0; 32])];
+        let mut buf = [0.0f32; 32];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!((buf[4] - 5.0).abs() < 1e-6, "step 0");
+        assert!((buf[12] - 5.0).abs() < 1e-6, "first edge keeps step 0");
+        assert!((buf[20] - 9.0).abs() < 1e-6, "2nd edge → step 1");
     }
 }
