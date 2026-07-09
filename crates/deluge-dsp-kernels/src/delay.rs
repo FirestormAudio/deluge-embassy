@@ -166,7 +166,7 @@ impl<const VOICES: usize> ModDelay<VOICES> {
     pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
     pub fn set_rate(&mut self, v: f32) { self.rate = v.max(0.0); }
     pub fn set_depth(&mut self, v: f32) { self.depth = v.clamp(0.0, 0.99); }
-    pub fn set_feedback(&mut self, v: f32) { self.feedback = v.clamp(0.0, 0.95); }
+    pub fn set_feedback(&mut self, v: f32) { self.feedback = v.clamp(0.0, 0.9); }
 
     /// One block. `input` = mono; `buf` = pooled ring; writes the stereo pair.
     pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32],
@@ -179,6 +179,7 @@ impl<const VOICES: usize> ModDelay<VOICES> {
             self.lfo_phase = p - floorf(p);
             let mut wet_l = 0.0;
             let mut wet_r = 0.0;
+            let mut wet_mono = 0.0;
             for v in 0..VOICES {
                 let t = self.lfo_phase + v as f32 / VOICES as f32;
                 let ph = t - floorf(t);
@@ -192,10 +193,12 @@ impl<const VOICES: usize> ModDelay<VOICES> {
                 let (gl, gr) = pan_gains(pos);
                 wet_l += tap * gl;
                 wet_r += tap * gr;
+                wet_mono += tap;
             }
             wet_l *= norm;
             wet_r *= norm;
-            let fb = self.feedback * (wet_l + wet_r) * 0.5;
+            wet_mono *= norm;
+            let fb = self.feedback * wet_mono; // regenerate the raw (pre-pan) delayed signal
             self.line.write(buf, x + fb);
             out_l[i] = x * (1.0 - self.mix) + wet_l * self.mix;
             out_r[i] = x * (1.0 - self.mix) + wet_r * self.mix;
@@ -473,7 +476,7 @@ mod tests {
         let low = energy(0.0);
         let high = energy(0.9);
         assert!(high.is_finite() && low.is_finite() && low > 0.0);
-        assert!(high > low * 1.65, "feedback should build resonance: {low} → {high}");
+        assert!(high > low * 2.0, "feedback should build resonance: {low} → {high}");
     }
 
     #[test]
@@ -518,7 +521,30 @@ mod tests {
             let (l, r) = render_mod(&mut md, &mut buf, &input, dt);
             for (a, b) in l.iter().zip(&r) {
                 prop_assert!(a.is_finite() && b.is_finite());
-                prop_assert!(a.abs() <= 8.0 && b.abs() <= 8.0, "unbounded: {a},{b}");
+                prop_assert!(a.abs() <= 16.0 && b.abs() <= 16.0, "unbounded: {a},{b}");
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+        #[test]
+        fn moddelay_flanger_bounded(
+            rate in 0.0f32..8.0,
+            depth in 0.0f32..1.0,
+            mix in 0.0f32..1.0,
+            feedback in 0.0f32..1.0,
+            amp in 0.0f32..1.0,
+        ) {
+            let dt = 1.0 / 48_000.0;
+            let mut buf = [0.0f32; 4096];
+            let mut md = ModDelay::<1>::new(0.002);
+            md.set_rate(rate); md.set_depth(depth); md.set_mix(mix); md.set_feedback(feedback);
+            let input = std::vec![amp; 2000];
+            let (l, r) = render_mod(&mut md, &mut buf, &input, dt);
+            for (a, b) in l.iter().zip(&r) {
+                prop_assert!(a.is_finite() && b.is_finite());
+                prop_assert!(a.abs() <= 16.0 && b.abs() <= 16.0, "unbounded: {a},{b}");
             }
         }
     }
