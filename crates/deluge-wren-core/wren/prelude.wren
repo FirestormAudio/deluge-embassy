@@ -134,6 +134,7 @@ foreign class Node {
   foreign static flanger_(input, rate, depth, feedback, mix)
   foreign static room_(input, roomsize, damp, mix)
   foreign static hall_(input, size, damp, mix)
+  foreign static plate_(input, size, damp, mix)
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
@@ -326,6 +327,15 @@ class Room {
 //   var h = Hall.new(pad, 0.9, 0.3, 0.5); h.size = 0.95; h.spread = 0.8
 class Hall {
   static new(input, size, damp, mix) { Node.hall_(input, size, damp, mix) }
+}
+
+// Plate reverb (Dattorro) — a bright, dense, metallic-smooth plate. `size` [0,1]
+// decay/length, `damp` [0,1] HF absorption, `mix` dry/wet. Stereo (width-2);
+// reuses the Room controls (size=/damp=/spread=):
+//   Out.patch(Plate.new(Osc.saw(110), 0.85, 0.4, 0.4))
+//   var p = Plate.new(pad, 0.9, 0.3, 0.5); p.size = 0.95; p.spread = 0.8
+class Plate {
+  static new(input, size, damp, mix) { Node.plate_(input, size, damp, mix) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

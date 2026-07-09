@@ -35,6 +35,10 @@ pub(crate) const REVERB_BUF_SAMPLES: usize = 25_450;
 /// `deluge_dsp_kernels::reverb::HALL_BUF_SAMPLES`.
 pub(crate) const HALL_BUF_SAMPLES: usize = 23_748;
 
+/// Ring length for a Plate (Dattorro) reverb node. Keep in sync with
+/// `deluge_dsp_kernels::reverb::PLATE_BUF_SAMPLES`.
+pub(crate) const PLATE_BUF_SAMPLES: usize = 22_494;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct NodeObj {
@@ -619,6 +623,28 @@ pub(crate) unsafe extern "C" fn node_hall(raw: *mut WrenVM) {
     node_hall_impl(&vm);
 }
 
+/// `Node.plate_(input, size, damp, mix)` — allocate the Dattorro buffer, create a
+/// width-2 `Kind::Plate` node, and set size/damp/mix. Reuses the Room setters.
+/// Unbound → dry passthrough.
+pub(crate) fn node_plate_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let size = vm.get_f(2) as f32;
+    let damp = vm.get_f(3) as f32;
+    let mix = vm.get_f(4) as f32;
+    let handle = audio::alloc_buffer(PLATE_BUF_SAMPLES);
+    let id = audio::alloc_node_id();
+    audio::new_pooled_node(id, Kind::Plate, handle, input);
+    audio::set_param(id, 2, size);
+    audio::set_param(id, 1, damp);
+    audio::set_param(id, 0, mix);
+    unsafe { return_node_w(vm, id, 2) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_plate(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_plate_impl(&vm);
+}
+
 pub(crate) fn node_set_rate_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // param 1 = rate (Kind::Chorus/Flanger)
     audio::set_param(self_id(vm), 1, v);
@@ -961,6 +987,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "flanger_(_,_,_,_,_)", node_flanger_impl::<S>);
     method("main", "Node", true, "room_(_,_,_,_)", node_room_impl::<S>);
     method("main", "Node", true, "hall_(_,_,_,_)", node_hall_impl::<S>);
+    method("main", "Node", true, "plate_(_,_,_,_)", node_plate_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);

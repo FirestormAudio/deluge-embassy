@@ -726,3 +726,37 @@ fn hall_renders_stereo_bounded_on_engine_host() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "hall should be non-silent");
 }
+
+#[test]
+fn plate_new_emits_node_and_params_no_bind_on_capture_host() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    let cmds = run_and_capture_cmds("var p = Plate.new(Osc.saw(110), 0.8, 0.4, 0.5)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Plate, .. })));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })), "no pool → no BindTable: {cmds:?}");
+    for p in [0u8, 1, 2] {
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "missing SetParam {p}: {cmds:?}");
+    }
+}
+
+#[test]
+fn plate_patch_routes_stereo() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds("Out.patch(Plate.new(Osc.saw(110), 0.8, 0.4, 0.5))");
+    let gains: std::vec::Vec<(f32, f32)> = cmds.iter().filter_map(|c| match c {
+        Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+        _ => None,
+    }).collect();
+    assert!(gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)), "not stereo-routed: {gains:?}");
+}
+
+#[test]
+fn plate_renders_stereo_bounded_on_engine_host() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Plate.new(Osc.saw(110), 0.85, 0.4, 0.6))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "plate should be non-silent");
+}
