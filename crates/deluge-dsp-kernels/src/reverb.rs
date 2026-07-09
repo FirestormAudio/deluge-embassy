@@ -275,6 +275,162 @@ impl Default for Fdn8 {
     }
 }
 
+/// Dattorro element lengths, order [idf0,idf1,idf2,idf3, ad1L,ad1R, daL,daR, ad2L,ad2R, dbL,dbR].
+const PLATE_LEN: [usize; 12] = [142, 107, 379, 277, 672, 908, 4453, 4217, 1800, 2656, 3720, 3163];
+pub const PLATE_BUF_SAMPLES: usize = 22_494;
+const PLATE_BANDWIDTH: f32 = 0.9995;
+const PLATE_DDIFF1: f32 = 0.7;
+const PLATE_DDIFF2: f32 = 0.5;
+const PLATE_EXC_DEPTH: usize = 16;
+const PLATE_LFO_RATE: f32 = 1.0;
+const PLATE_OUT_SCALE: f32 = 0.6;
+
+/// Dattorro allpass reading at the full slice length (`slice[cursor]`).
+fn plate_ap(slice: &mut [f32], c: &mut usize, x: f32, gain: f32) -> f32 {
+    let len = slice.len();
+    let d = slice[*c];
+    let w = x - gain * d;
+    slice[*c] = w;
+    *c += 1;
+    if *c >= len {
+        *c = 0;
+    }
+    d + gain * w
+}
+
+/// Dattorro allpass reading `read_back` samples behind the cursor (modulated ad1).
+fn plate_ap_read(slice: &mut [f32], c: &mut usize, x: f32, gain: f32, read_back: usize) -> f32 {
+    let len = slice.len();
+    let d = slice[(*c + len - read_back) % len];
+    let w = x - gain * d;
+    slice[*c] = w;
+    *c += 1;
+    if *c >= len {
+        *c = 0;
+    }
+    d + gain * w
+}
+
+/// Plain delay: return the len-samples-ago output, write `x`, advance.
+fn plate_delay(slice: &mut [f32], c: &mut usize, x: f32) -> f32 {
+    let len = slice.len();
+    let out = slice[*c];
+    slice[*c] = x;
+    *c += 1;
+    if *c >= len {
+        *c = 0;
+    }
+    out
+}
+
+/// Read `offset` samples behind the cursor (output tap; no state change).
+#[inline]
+fn plate_tap(slice: &[f32], c: usize, offset: usize) -> f32 {
+    let len = slice.len();
+    slice[(c + len - offset) % len]
+}
+
+/// Dattorro plate reverb: input diffusion + a figure-8 modulated-allpass tank +
+/// a multi-tap output network, over one partitioned buffer. Mono in → stereo out.
+#[derive(Clone, Copy)]
+pub struct Dattorro {
+    c: [usize; 12],   // per-element cursors
+    damp_z: [f32; 2], // per-half damping LP state
+    bw: f32,          // input bandwidth LP state
+    lfo_phase: f32,   // excursion LFO
+    size: f32,
+    damp: f32,
+    width: f32,
+    mix: f32,
+}
+impl Dattorro {
+    pub fn new() -> Dattorro {
+        Dattorro { c: [0; 12], damp_z: [0.0; 2], bw: 0.0, lfo_phase: 0.0, size: 0.5, damp: 0.5, width: 1.0, mix: 0.5 }
+    }
+    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
+    pub fn set_damp(&mut self, v: f32) { self.damp = v.clamp(0.0, 1.0); }
+    pub fn set_size(&mut self, v: f32) { self.size = v.clamp(0.0, 1.0); }
+    pub fn set_width(&mut self, v: f32) { self.width = v.clamp(0.0, 1.0); }
+
+    pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32], out_l: &mut [f32], out_r: &mut [f32]) {
+        if buf.len() < PLATE_BUF_SAMPLES {
+            for i in 0..out_l.len() {
+                let x = input.at(i);
+                out_l[i] = x;
+                out_r[i] = x;
+            }
+            return;
+        }
+        // Element offsets (cumulative walk).
+        let mut off = [0usize; 12];
+        {
+            let mut o = 0;
+            for k in 0..12 {
+                off[k] = o;
+                o += PLATE_LEN[k];
+            }
+        }
+        let decay = self.size * 0.4 + 0.5;
+        let damp_c = 1.0 - self.damp * 0.9;
+        let wet1 = self.mix * (self.width * 0.5 + 0.5);
+        let wet2 = self.mix * ((1.0 - self.width) * 0.5);
+        let dry = 1.0 - self.mix;
+        // Convenience: a mutable slice for element k.
+        macro_rules! el {
+            ($k:expr) => {
+                &mut buf[off[$k]..off[$k] + PLATE_LEN[$k]]
+            };
+        }
+        for i in 0..out_l.len() {
+            let x = input.at(i);
+            // Input bandwidth low-pass.
+            self.bw += (x - self.bw) * PLATE_BANDWIDTH;
+            let mut s = self.bw;
+            // 4 series input diffusers.
+            for k in 0..4 {
+                let g = if k < 2 { 0.75 } else { 0.625 };
+                s = plate_ap(el!(k), &mut self.c[k], s, g);
+            }
+            // Excursion LFO → integer read-offset for the two ad1 allpasses.
+            let p = self.lfo_phase + PLATE_LFO_RATE * dt;
+            self.lfo_phase = p - libm::floorf(p);
+            let exc = (PLATE_EXC_DEPTH as f32 * (0.5 + 0.5 * fast_sin(self.lfo_phase))) as usize;
+            // Cross-feed: read both post-damping-delay (db) outputs before writes.
+            let fb_l = buf[off[11] + self.c[11]] * decay; // dbR output → left half
+            let fb_r = buf[off[10] + self.c[10]] * decay; // dbL output → right half
+            // Left half (elements 4=ad1L, 6=daL, 8=ad2L, 10=dbL).
+            let mut t = s + fb_l;
+            t = plate_ap_read(el!(4), &mut self.c[4], t, -PLATE_DDIFF1, PLATE_LEN[4] - exc);
+            t = plate_delay(el!(6), &mut self.c[6], t);
+            self.damp_z[0] += (t - self.damp_z[0]) * damp_c;
+            t = self.damp_z[0] * decay;
+            t = plate_ap(el!(8), &mut self.c[8], t, PLATE_DDIFF2);
+            plate_delay(el!(10), &mut self.c[10], t);
+            // Right half (elements 5=ad1R, 7=daR, 9=ad2R, 11=dbR).
+            let mut u = s + fb_r;
+            u = plate_ap_read(el!(5), &mut self.c[5], u, -PLATE_DDIFF1, PLATE_LEN[5] - exc);
+            u = plate_delay(el!(7), &mut self.c[7], u);
+            self.damp_z[1] += (u - self.damp_z[1]) * damp_c;
+            u = self.damp_z[1] * decay;
+            u = plate_ap(el!(9), &mut self.c[9], u, PLATE_DDIFF2);
+            plate_delay(el!(11), &mut self.c[11], u);
+            // Output taps (read-only, after all writes/advances).
+            let ta = |k: usize, o: usize| plate_tap(&buf[off[k]..off[k] + PLATE_LEN[k]], self.c[k], o);
+            let yl = PLATE_OUT_SCALE
+                * (ta(7, 266) + ta(7, 2974) - ta(9, 1913) + ta(11, 1996) - ta(6, 1990) - ta(8, 187) - ta(10, 1066));
+            let yr = PLATE_OUT_SCALE
+                * (ta(6, 353) + ta(6, 3627) - ta(8, 1228) + ta(10, 2673) - ta(7, 2111) - ta(9, 335) - ta(11, 121));
+            out_l[i] = x * dry + yl * wet1 + yr * wet2;
+            out_r[i] = x * dry + yr * wet1 + yl * wet2;
+        }
+    }
+}
+impl Default for Dattorro {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -524,6 +680,120 @@ mod tests {
             for (a, b) in l.iter().zip(&r) {
                 prop_assert!(a.is_finite() && b.is_finite());
                 prop_assert!(a.abs() <= 16.0 && b.abs() <= 16.0, "unbounded: {a},{b}");
+            }
+        }
+    }
+
+    fn render_plate(d: &mut Dattorro, buf: &mut [f32], input: &[f32]) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
+        let mut l = std::vec![0.0f32; input.len()];
+        let mut r = std::vec![0.0f32; input.len()];
+        d.process(In::A(input), 1.0 / 44_100.0, buf, &mut l, &mut r);
+        (l, r)
+    }
+
+    #[test]
+    fn plate_layout_sums_to_buf_samples() {
+        let sum: usize = PLATE_LEN.iter().sum();
+        assert_eq!(sum, PLATE_BUF_SAMPLES);
+    }
+
+    #[test]
+    fn plate_impulse_produces_decaying_tail() {
+        let mut buf = std::vec![0.0f32; PLATE_BUF_SAMPLES];
+        let mut d = Dattorro::new();
+        d.set_mix(1.0);
+        d.set_size(0.8);
+        let mut input = std::vec![0.0f32; 40_000];
+        input[0] = 1.0;
+        let (l, r) = render_plate(&mut d, &mut buf, &input);
+        assert!(l.iter().all(|v| v.is_finite()) && r.iter().all(|v| v.is_finite()));
+        let late: f32 = l[20_000..22_000].iter().map(|v| v * v).sum();
+        assert!(late > 1e-9, "tail died too fast: {late}");
+        let early: f32 = l[4_000..6_000].iter().map(|v| v * v).sum();
+        let later: f32 = l[30_000..32_000].iter().map(|v| v * v).sum();
+        assert!(early > later, "tail not decaying: {early} → {later}");
+    }
+
+    #[test]
+    fn plate_size_lengthens_tail() {
+        let tail = |size: f32| -> f32 {
+            let mut buf = std::vec![0.0f32; PLATE_BUF_SAMPLES];
+            let mut d = Dattorro::new();
+            d.set_mix(1.0);
+            d.set_size(size);
+            let mut input = std::vec![0.0f32; 50_000];
+            input[0] = 1.0;
+            let (l, _r) = render_plate(&mut d, &mut buf, &input);
+            l[40_000..42_000].iter().map(|v| v * v).sum()
+        };
+        assert!(tail(0.95) > tail(0.2), "bigger size should decay slower");
+    }
+
+    #[test]
+    fn plate_damping_darkens_tail() {
+        let hf = |damp: f32| -> f32 {
+            let mut buf = std::vec![0.0f32; PLATE_BUF_SAMPLES];
+            let mut d = Dattorro::new();
+            d.set_mix(1.0);
+            d.set_size(0.85);
+            d.set_damp(damp);
+            let mut input = std::vec![0.0f32; 25_000];
+            input[0] = 1.0;
+            let (l, _r) = render_plate(&mut d, &mut buf, &input);
+            l[12_000..16_000].windows(2).map(|w| (w[1] - w[0]).powi(2)).sum()
+        };
+        assert!(hf(0.9) < hf(0.05), "more damping → less HF in the tail");
+    }
+
+    #[test]
+    fn plate_output_is_stereo() {
+        let mut buf = std::vec![0.0f32; PLATE_BUF_SAMPLES];
+        let mut d = Dattorro::new();
+        d.set_mix(1.0);
+        let input: std::vec::Vec<f32> = (0..12_000).map(|i| (i as f32 * 0.03).sin()).collect();
+        let (l, r) = render_plate(&mut d, &mut buf, &input);
+        let diff: f32 = l.iter().zip(&r).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff > 1.0, "plate should be stereo (l != r): {diff}");
+    }
+
+    #[test]
+    fn plate_mix_zero_is_dry() {
+        let mut buf = std::vec![0.0f32; PLATE_BUF_SAMPLES];
+        let mut d = Dattorro::new();
+        d.set_mix(0.0);
+        let input = std::vec![0.5f32; 256];
+        let (l, r) = render_plate(&mut d, &mut buf, &input);
+        assert!((l[100] - 0.5).abs() < 1e-4 && (r[100] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn plate_short_buffer_is_dry_passthrough() {
+        let mut buf = std::vec![0.0f32; 64];
+        let mut d = Dattorro::new();
+        d.set_mix(1.0);
+        let input = std::vec![0.3f32; 32];
+        let (l, r) = render_plate(&mut d, &mut buf, &input);
+        assert!(l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+        #[test]
+        fn plate_is_finite_and_bounded(
+            size in 0.0f32..1.0,
+            damp in 0.0f32..1.0,
+            width in 0.0f32..1.0,
+            mix in 0.0f32..1.0,
+            amp in 0.0f32..1.0,
+        ) {
+            let mut buf = std::vec![0.0f32; PLATE_BUF_SAMPLES];
+            let mut d = Dattorro::new();
+            d.set_size(size); d.set_damp(damp); d.set_width(width); d.set_mix(mix);
+            let input = std::vec![amp; 6_000];
+            let (l, r) = render_plate(&mut d, &mut buf, &input);
+            for (a, b) in l.iter().zip(&r) {
+                prop_assert!(a.is_finite() && b.is_finite());
+                prop_assert!(a.abs() <= 32.0 && b.abs() <= 32.0, "unbounded: {a},{b}");
             }
         }
     }
