@@ -230,8 +230,6 @@ class Osc {
     if (t is Wavetable) return Node.wavetable_pooled_(t, f)
     return Node.wavetable_(t, f) // WT.x numeric id (static table)
   }
-  static pink() { Node.pink_() }
-  static brown() { Node.brown_() }
 }
 
 // Low-frequency modulator. Bipolar [-1,1]; scale with `.to(min, max)`:
@@ -251,7 +249,7 @@ class LFO {
 
 // Sample & hold: latch `input` on each rising edge of `clock` (any signal — an
 // LFO, a square, a metro):
-//   var rnd = SampleHold.new(Osc.pink(), Osc.square(4))   // stepped random
+//   var rnd = SampleHold.new(Noise.pink(), Osc.square(4))   // stepped random
 class SampleHold {
   static new(input, clock) { Node.sh_(input, clock) }
 }
@@ -435,6 +433,8 @@ class Env {
 
 class Noise {
   static new() { Node.noise_() }
+  static pink() { Node.pink_() }
+  static brown() { Node.brown_() }
 }
 
 // A width-2 test node: routes its input to both output ports 0 and 1.

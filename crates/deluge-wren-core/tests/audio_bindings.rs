@@ -20,8 +20,8 @@ fn osc_saw_emits_newnode() {
 }
 
 #[test]
-fn osc_pink_emits_newnode() {
-    let cmds = run_and_capture_cmds("Osc.pink()");
+fn noise_pink_emits_newnode() {
+    let cmds = run_and_capture_cmds("Noise.pink()");
     assert_eq!(
         cmds,
         vec![Cmd::NewNode {
@@ -33,8 +33,8 @@ fn osc_pink_emits_newnode() {
 }
 
 #[test]
-fn osc_brown_emits_newnode() {
-    let cmds = run_and_capture_cmds("Osc.brown()");
+fn noise_brown_emits_newnode() {
+    let cmds = run_and_capture_cmds("Noise.brown()");
     assert_eq!(
         cmds,
         vec![Cmd::NewNode {
@@ -46,14 +46,14 @@ fn osc_brown_emits_newnode() {
 }
 
 #[test]
-fn osc_pink_brown_render_finite_nonsilent() {
+fn noise_pink_brown_render_finite_nonsilent() {
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Osc.pink())", &mut out);
+    run_and_render("Out.patch(Noise.pink())", &mut out);
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0));
 
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Osc.brown())", &mut out);
+    run_and_render("Out.patch(Noise.brown())", &mut out);
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0));
 }
@@ -880,7 +880,7 @@ fn lfo_renders_bounded_on_engine_host() {
 fn sample_hold_and_slew_factories_emit_nodes() {
     use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
-    let cmds = run_and_capture_cmds("var a = SampleHold.new(Osc.pink(), Osc.square(4))\nvar b = Slew.new(a, 0.05)");
+    let cmds = run_and_capture_cmds("var a = SampleHold.new(Noise.pink(), Osc.square(4))\nvar b = Slew.new(a, 0.05)");
     assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::SampleHold, .. })), "S&H: {cmds:?}");
     assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Slew, .. })), "Slew: {cmds:?}");
 }
