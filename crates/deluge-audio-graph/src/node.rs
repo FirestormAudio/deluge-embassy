@@ -1179,6 +1179,30 @@ mod tests {
     }
 
     #[test]
+    fn slew_node_glides_toward_input() {
+        // Port 0 = input (a step to 1.0), port 1 = time (short → fast glide).
+        // A port-swap in the render arm would treat 1.0 as the time constant
+        // and ~0 as the input, so the output would crawl toward ~0 instead —
+        // this test pins the input=0/time=1 wiring, not just boundedness.
+        let mut n = Node::new(Kind::Slew, 0);
+        assert_eq!(Node::out_width(Kind::Slew), 1);
+        let input = [1.0f32; 32];
+        let time = [0.0005f32; 32];
+        let ins = [In::A(&input), In::A(&time), In::A(&[0.0; 32])];
+        let mut buf = [0.0f32; 32];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf[0] < 0.1, "starts near 0: {}", buf[0]);
+        assert!(buf[31] > 0.5, "glides toward the input (1.0): {}", buf[31]);
+        assert!(
+            buf.windows(2).all(|w| w[1] >= w[0]),
+            "monotonically rising toward the step"
+        );
+    }
+
+    #[test]
     fn steps_node_sequences() {
         let mut n = Node::new(Kind::Steps, 0);
         assert_eq!(Node::out_width(Kind::Steps), 1);
