@@ -121,13 +121,12 @@ impl Delay {
         buf: &mut [f32],
         out: &mut [f32],
     ) {
-        let max_d = if buf.len() >= 2 { (buf.len() - 2) as f32 } else { 1.0 };
         // One-pole coefficient: damping 0 → g=1 (bright/no filtering),
         // damping→1 → g→0 (dark). g is applied as damp_z += g*(y - damp_z).
         let g = 1.0 - self.damping;
         for i in 0..out.len() {
             let x = input.at(i);
-            let d = (time.at(i) / dt).clamp(1.0, max_d);
+            let d = time.at(i) / dt;
             let y = self.line.read_hermite(buf, d);
             self.damp_z += g * (y - self.damp_z);
             let fb = feedback.at(i).clamp(0.0, 0.98) * self.damp_z;
@@ -205,7 +204,6 @@ mod tests {
     // ── Delay effect ──────────────────────────────────────────────────────
 
     extern crate std; // test-only: std::vec for dynamic render buffers (this crate is no_std)
-    use crate::In;
 
     // Render a whole block through a Delay with constant control values.
     fn render_delay(
@@ -340,5 +338,20 @@ mod tests {
                 prop_assert!(v.abs() <= 64.0, "unbounded: {v}");
             }
         }
+    }
+
+    #[test]
+    fn process_short_buffer_does_not_panic() {
+        // A tiny (len 2) ring must not panic — read_hermite returns 0.0 for
+        // len<4. Regression for the removed unguarded max_d clamp.
+        let dt = 1.0 / 48_000.0;
+        let input = [0.5f32; 8];
+        let t = [0.001f32; 8];
+        let fb = [0.5f32; 8];
+        let mut out = [0.0f32; 8];
+        let mut d = Delay::new();
+        let mut buf = [0.0f32; 2];
+        d.process(In::A(&input), In::A(&t), In::A(&fb), dt, &mut buf, &mut out);
+        assert!(out.iter().all(|v| v.is_finite()));
     }
 }
