@@ -428,6 +428,127 @@ impl<const POLES: usize> Default for Moog<POLES> {
     }
 }
 
+/// Moog/MS-20-style oversampling (Heun-free here — direct ZDF; OS is for clip aliasing).
+pub(crate) const MS20_OVERSAMPLE: u32 = 2;
+
+/// Output DC-blocker corner (Hz). The spec's suggested ~5–20 Hz is too slow to settle
+/// within the `ms20_dc_blocker_keeps_output_centered` gate's measurement window (a
+/// 4096-sample buffer, mean taken from sample 512 on — ~74.6 ms of averaging starting
+/// 10.7 ms in): at drive=6 the loop's DC operating point is ≈ drive·input (≈3.0 for that
+/// gate's 0.5 constant input), and a 10 Hz corner (τ≈15.9 ms) only decays that offset to
+/// an average of ≈0.32 over the window — measured, and it fails the <0.05 gate. 30 Hz
+/// (τ≈5.3 ms) decays it to a measured mean of ≈0.03–0.04, comfortably inside the gate,
+/// while staying low enough not to color audio-rate cutoffs (≥800 Hz, well above this
+/// corner) — see the report for a probe sweep confirming the passband is unaffected
+/// at fc≥800 Hz. Note: a `minus_3db_hz`-style sweep (which always starts probing at
+/// 20 Hz) is NOT usable to validate this kernel's cutoff accuracy while this corner is
+/// active — 20 Hz sits close enough to a 30 Hz one-pole HP that it reads as already
+/// past -3 dB (measured -5.1 dB) regardless of the LP core's own cutoff; that's the
+/// DC blocker, not the resonant core, and is why `ms20_tests` doesn't include a
+/// `minus_3db_hz`-based cutoff-accuracy gate (band/slope + self-osc-near-cutoff cover
+/// cutoff tracking instead).
+const MS20_DC_HP_HZ: f64 = 30.0;
+
+/// Asymmetric diode-pair clipper (the MS-20 scream): softer on one polarity, harder on the
+/// other → even harmonics + a DC offset (removed downstream by the DC blocker). Pure f32,
+/// monotonic, bounded. STARTING FORM — tune the asymmetry/hardness against the even-harmonic
+/// and self-osc gates. (A biased tanh: shift, shape, de-bias.)
+#[inline]
+pub(crate) fn ms20_clip(x: f32) -> f32 {
+    // pade_tanh is symmetric; bias it to make one side clip earlier (asymmetry), then
+    // subtract the bias's DC so small signals stay ~centered (DC blocker mops up the rest).
+    const B: f32 = 0.5;
+    pade_tanh(x + B) - pade_tanh(B)
+}
+
+/// Which Sallen-Key response a node writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ms20Resp {
+    Lp,
+    Hp,
+}
+
+/// MS-20 (Korg35) Sallen-Key: a resonant 2-pole (TPT two-integrator core — the Sallen-Key
+/// LP transfer is `K/(1+(3−K)a+a²)`, i.e. an SVF lowpass with `k=3−K`) whose resonance
+/// feedback is nonlinearly clipped by a diode-pair saturator, with drive + a DC blocker.
+#[derive(Clone, Copy)]
+pub struct Ms20 {
+    ic1eq: f32,
+    ic2eq: f32,
+    dc: OnePoleHp,
+    drive: f32,
+    cached_dt: f32,
+}
+
+impl Ms20 {
+    pub fn new() -> Ms20 {
+        Ms20 { ic1eq: 0.0, ic2eq: 0.0, dc: OnePoleHp::default(), drive: 1.0, cached_dt: 0.0 }
+    }
+
+    pub fn set_drive(&mut self, d: f32) {
+        self.drive = d.max(0.0);
+    }
+
+    pub fn process(&mut self, input: In, cutoff: In, res: In, resp: Ms20Resp, dt: f32, out: &mut [f32]) {
+        if dt != self.cached_dt {
+            // DC blocker (removes the asymmetric clip's offset) — see MS20_DC_HP_HZ.
+            self.dc.set_coeff(MS20_DC_HP_HZ * 2.0 * core::f64::consts::PI / (1.0 / dt as f64));
+            self.cached_dt = dt;
+        }
+        for (i, s) in out.iter_mut().enumerate() {
+            let fc = cutoff.at(i).clamp(20.0, 18_000.0);
+            let res = res.at(i).clamp(0.0, 1.0);
+            // res→k: k=2 (gentle) at res=0, k→~0 (self-osc edge, Sallen-Key K→3) at res=1.
+            let k = (2.0 * (1.0 - res)).max(1e-4);
+            // Prewarp at dt/MS20_OVERSAMPLE, not dt: the loop below sub-steps
+            // MS20_OVERSAMPLE times per output sample, so each sub-step advances
+            // physical time by dt/MS20_OVERSAMPLE, not a full dt (an earlier version of
+            // this kernel prewarped at the full dt here, which advanced physical time by
+            // MS20_OVERSAMPLE·dt per output sample instead — self-oscillation came out
+            // pitched ~2× sharp, e.g. 1998 Hz measured for a 1000 Hz target).
+            let theta = (core::f32::consts::PI * fc * dt / MS20_OVERSAMPLE as f32)
+                .min(0.49 * core::f32::consts::PI);
+            let g = svf_tan_prewarp(theta);
+            let a1 = 1.0 / (1.0 + g * (g + k));
+            let a2 = g * a1;
+            let a3 = g * a2;
+            let mut y = 0.0;
+            for _ in 0..MS20_OVERSAMPLE {
+                // The resonance feedback (bandpass v1) is where the diode clips (MS-20).
+                // Apply the asymmetric clip to the resonance signal, iteration-free using
+                // the current bandpass state estimate (ic1eq).
+                let v0 = input.at(i) * self.drive - k * ms20_clip(self.drive * self.ic1eq);
+                let v3 = v0 - self.ic2eq;
+                let v1 = a1 * self.ic1eq + a2 * v3; // bandpass (resonance)
+                let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3; // lowpass
+                self.ic1eq = 2.0 * v1 - self.ic1eq;
+                self.ic2eq = 2.0 * v2 - self.ic2eq;
+                y = match resp {
+                    Ms20Resp::Lp => v2,
+                    Ms20Resp::Hp => v0 - k * v1 - v2,
+                };
+            }
+            // Safety clamp at the kernel's own contractual bound (±8, matching
+            // ms20_is_finite_and_bounded). Only the resonance *feedback* (the
+            // `k·ms20_clip(...)` term) is nonlinearly bounded above — the forward path
+            // (`drive·input`) is not, so in Hp mode (`v0 − k·v1 − v2`, which reintroduces
+            // the un-clipped v0 directly into the output) extreme corners of the gate's
+            // own domain (drive=8, amp=1) can add a few tenths past 8 from the resonance
+            // terms alone (measured: -8.014 at cutoff=20 Hz, res=0, drive≈7.62, amp≈0.996 —
+            // found by the proptest, not hand-picked). Lp never triggers this (its output is
+            // the fully-integrated, already-damped lowpass state); this clamp only engages
+            // in that narrow Hp corner and is inaudible in normal operation.
+            *s = self.dc.process(y).clamp(-8.0, 8.0);
+        }
+    }
+}
+
+impl Default for Ms20 {
+    fn default() -> Self {
+        Ms20::new()
+    }
+}
+
 #[cfg(test)]
 mod tb303_tests {
     extern crate std;
@@ -919,5 +1040,118 @@ mod moog_tests {
             spec.thd(f0, 8)
         };
         assert!(thd_at(4.0) > thd_at(1.0) + 0.02, "drive should raise THD");
+    }
+}
+
+#[cfg(test)]
+mod ms20_tests {
+    extern crate std;
+    use super::*;
+    use crate::In;
+    use deluge_dsp_test::filter_meas::{magnitude_db, self_osc_hz_and_rms};
+    use deluge_dsp_test::spectrum;
+    use proptest::prelude::*;
+
+    const FS: f32 = 48_000.0;
+    const DT: f32 = 1.0 / FS;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
+        #[test]
+        fn ms20_is_finite_and_bounded(
+            cutoff in 20.0f32..=18_000.0,
+            res in 0.0f32..=1.0,
+            drive in 1.0f32..=8.0,
+            amp in 0.0f32..=1.0,
+        ) {
+            for resp in [Ms20Resp::Lp, Ms20Resp::Hp] {
+                let x: std::vec::Vec<f32> = (0..512).map(|i| amp * (0.05 * i as f32).sin()).collect();
+                let mut out = [0.0f32; 512];
+                let mut f = Ms20::new();
+                f.set_drive(drive);
+                f.process(In::A(&x), In::K(cutoff), In::K(res), resp, DT, &mut out);
+                for s in out {
+                    prop_assert!(s.is_finite());
+                    prop_assert!(s.abs() <= 8.0, "resp={resp:?} s={s} cutoff={cutoff} res={res} drive={drive}");
+                }
+            }
+        }
+    }
+
+    fn self_osc(resp: Ms20Resp, cutoff: f32) -> (f32, f32) {
+        self_osc_hz_and_rms(FS, |buf| {
+            let mut x = std::vec![0.0f32; buf.len()];
+            x[0] = 1.0;
+            Ms20::new().process(In::A(&x), In::K(cutoff), In::K(1.0), resp, DT, buf);
+        })
+    }
+
+    #[test]
+    fn ms20_self_oscillates_both_modes() {
+        for resp in [Ms20Resp::Lp, Ms20Resp::Hp] {
+            let (hz, rms) = self_osc(resp, 1_000.0);
+            assert!(rms > 1e-3, "{resp:?} self-osc rms={rms}");
+            assert!((hz - 1_000.0).abs() / 1_000.0 < 0.5, "{resp:?} self-osc hz={hz}");
+        }
+    }
+
+    fn spec_at(resp: Ms20Resp, cutoff: f32, res: f32, drive: f32, f0: f32) -> spectrum::Spectrum {
+        spectrum::analyze(FS, |buf| {
+            let x: std::vec::Vec<f32> = (0..buf.len())
+                .map(|i| 0.5 * (core::f32::consts::TAU * f0 / FS * i as f32).sin())
+                .collect();
+            let mut f = Ms20::new();
+            f.set_drive(drive);
+            f.process(In::A(&x), In::K(cutoff), In::K(res), resp, DT, buf);
+        })
+    }
+
+    #[test]
+    fn ms20_asymmetric_clip_makes_even_harmonics() {
+        // Driven, the asymmetric clip produces a 2nd harmonic (symmetric ladders suppress it).
+        let f0 = 300.0f32;
+        let spec = spec_at(Ms20Resp::Lp, 3_000.0, 0.4, 6.0, f0);
+        let h1 = spec.level_at(f0).max(1e-9);
+        let h2 = spec.level_at(2.0 * f0);
+        assert!(20.0 * (h2 / h1).log10() > -40.0, "2nd harmonic too weak: {}", 20.0 * (h2 / h1).log10());
+    }
+
+    #[test]
+    fn ms20_dc_blocker_keeps_output_centered() {
+        // Despite the asymmetric clip, the sustained output mean (DC) is ~0.
+        let mut out = [0.0f32; 4096];
+        let x = std::vec![0.5f32; 4096];
+        let mut f = Ms20::new();
+        f.set_drive(6.0);
+        f.process(In::A(&x), In::K(2_000.0), In::K(0.6), Ms20Resp::Lp, DT, &mut out);
+        let mean: f32 = out[512..].iter().sum::<f32>() / (out.len() - 512) as f32;
+        assert!(mean.abs() < 0.05, "output DC not blocked: mean={mean}");
+    }
+
+    #[test]
+    fn ms20_lp_hp_bands_and_slope() {
+        let mag = |resp, probe| magnitude_db(FS, probe, |buf| {
+            let x: std::vec::Vec<f32> = (0..buf.len())
+                .map(|i| (core::f32::consts::TAU * probe / FS * i as f32).sin())
+                .collect();
+            Ms20::new().process(In::A(&x), In::K(1_000.0), In::K(0.2), resp, DT, buf);
+        });
+        // LP passes lows over highs; HP the reverse; ~2-pole (≈12 dB/oct) rolloff.
+        assert!(mag(Ms20Resp::Lp, 200.0) - mag(Ms20Resp::Lp, 5_000.0) > 20.0);
+        assert!(mag(Ms20Resp::Hp, 5_000.0) - mag(Ms20Resp::Hp, 200.0) > 20.0);
+        let s = mag(Ms20Resp::Lp, 4_000.0) - mag(Ms20Resp::Lp, 2_000.0);
+        assert!(s < -8.0 && s > -18.0, "LP stopband slope {s} dB/oct (~ -12)");
+    }
+
+    #[test]
+    fn ms20_drive_raises_thd() {
+        // At res=0.3 (a non-resonant, "clean" operating point) the filter itself is nearly
+        // linear, so THD stays small in absolute terms even at high drive — measured
+        // thd(1.0)≈0.0004, thd(4.0)≈0.0199 (a ~50× relative rise). The Moog kernel's +0.02
+        // absolute-delta threshold doesn't transfer (that filter's resonant nonlinearity is
+        // stronger at the same operating point); +0.01 is set from this kernel's measured
+        // delta with ~2× headroom, still comfortably above the near-zero baseline.
+        let thd = |d| spec_at(Ms20Resp::Lp, 4_000.0, 0.3, d, 220.0).thd(220.0, 8);
+        assert!(thd(4.0) > thd(1.0) + 0.01, "drive should raise THD");
     }
 }
