@@ -251,7 +251,7 @@ class LFO {
 
 // Sample & hold: latch `input` on each rising edge of `clock` (any signal — an
 // LFO, a square, a metro):
-//   var rnd = SampleHold.new(Noise.pink(), Osc.square(4))   // stepped random
+//   var rnd = SampleHold.new(Osc.pink(), Osc.square(4))   // stepped random
 class SampleHold {
   static new(input, clock) { Node.sh_(input, clock) }
 }
