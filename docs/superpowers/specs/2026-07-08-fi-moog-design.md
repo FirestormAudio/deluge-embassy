@@ -31,7 +31,8 @@ Fi-5 modal resonator.
 - **Switchable slope.** 24 dB/oct (4-pole, `DiodeLadder<4>`) and 12 dB/oct (2-pole,
   `DiodeLadder<2>`) — a signature Moog control, free from the const-generic core.
 - **Drive.** A pre-ladder input gain into the `pade_tanh` for the overdriven-Moog growl.
-- **Self-oscillating** at max resonance (both slopes), bounded.
+- **Self-oscillating** at max resonance (4-pole; the 2-pole resonates strongly but cannot
+  self-oscillate — two cascaded one-poles reach 180° phase only at ∞), bounded.
 - **QA-proven** via the Fi-1 harness: cutoff stability vs resonance (the compensation gate),
   self-oscillation, measured slope (≈24/≈12 dB/oct), drive raises THD, resonant-peak tracking,
   boundedness.
@@ -68,18 +69,21 @@ impl<const POLES: usize> Moog<POLES> {
 cutoff = cutoff.at(i).clamp(20.0, ~18_000.0)     // Moog range (wider than the 303's 2 kHz)
 res    = res.at(i).clamp(0.0, 1.0)
 fh     = 2π·cutoff·dt / OS
-x      = input.at(i) · self.drive · (1.0 + MOOG_COMP·res)     // drive + resonance compensation
-out[i] = self.ladder.process(x, fh, res · MOOG_K, OS)          // native ladder feedback = (res·MOOG_K)·4
+ladder_res = res · MOOG_K[POLES]
+k          = ladder_res · 4                                    // ladder loop gain
+x      = input.at(i) · self.drive · (1.0 + k)                  // drive + resonance compensation
+out[i] = self.ladder.process(x, fh, ladder_res, OS)            // native ladder feedback = k
 ```
 
-**The two tuned constants (the DSP substance), both set by measurement (§4):**
-- **`MOOG_COMP`** — the input compensation gain. Tuned so the measured `minus_3db_hz` cutoff
-  stays put (within a small tolerance) as `res` sweeps `0→1`. Without it, high resonance
-  drops and detunes the passband. (May be a single constant, or per-slope if needed.)
-- **`MOOG_K[POLES]`** — the feedback scale so `res=1` self-oscillates cleanly at each slope.
-  The ladder's feedback is `pade_tanh(y_last)·(res·MOOG_K)·4`; a 4-pole self-oscillates at
-  loop gain 4 (`MOOG_K[4] ≈ 1.0`), a 2-pole needs less (`MOOG_K[2] < 1.0`). Set from the
-  self-oscillation gate per slope.
+**As-built (both settled by measurement, §4):**
+- **Resonance compensation is derived, not a free constant.** The ladder feedback drops the
+  passband gain by ≈`1/(1+k)` (`k = ladder_res·4`), so the input is pre-scaled by exactly
+  `(1+k)` — this holds the passband **level** flat as resonance rises (measured ~0 dB drift
+  across `res`). No magic `MOOG_COMP`; it falls out of `k`. (Note: the meaningful gate is
+  passband *level* stability, not the `−3 dB` point, which a growing resonant peak reshapes.)
+- **`MOOG_K[POLES]`** — per-slope feedback scale. Both are `1.0` as built: the 4-pole
+  self-oscillates cleanly at `res=1` (loop gain 4); the 2-pole uses the same scale and
+  resonates modestly (it structurally cannot self-oscillate). Kept per-slope for future tuning.
 
 `no_std`; pure `f32` arithmetic in the hot loop; deterministic; reuses `DiodeLadder`/`pade_tanh`
 verbatim (no edits to them). No SIMD.
@@ -111,15 +115,18 @@ Reuse the Fi-1 harness (`deluge_dsp_test::filter_meas::{magnitude_db, minus_3db_
 self_osc_hz_and_rms}`) and `spectrum::{analyze, slope_db_per_octave, thd, level_at}`.
 
 **`deluge-dsp-kernels` tests:**
-- **Cutoff stability vs resonance (the compensation gate — the key one).** For a fixed
-  `cutoff`, sweep `res` `0→0.9`; the measured `minus_3db_hz` stays within a tolerance (e.g.
-  ±15%) of the low-res value. This is what `MOOG_COMP` buys — a wrong/zero compensation makes
-  the cutoff drift with resonance and fails this.
+- **Passband level stability vs resonance (the compensation gate — the key one).** For a
+  fixed `cutoff`, sweep `res` `0.1→0.9`; the measured passband level (`magnitude_db` at a
+  frequency well below cutoff) stays within a few dB (measured ~0 dB drift). This is what the
+  `(1+k)` compensation buys — without it the ladder feedback drops the passband gain and the
+  filter gets quieter as resonance rises. (The `−3 dB` point is *not* used — a growing
+  resonant peak reshapes it regardless of compensation.)
 - **Slope is correct.** `slope_db_per_octave` in the stopband is ≈ **−24 dB/oct** for
   `Moog<4>` and ≈ **−12 dB/oct** for `Moog<2>` (within a measured tolerance). Proves the
   pole-count/slope switch works.
-- **Self-oscillation both slopes.** At `res=1` with a brief excitation, each slope sustains a
-  bounded tone near `cutoff` (via `self_osc_hz_and_rms`) — validates `MOOG_K[POLES]`.
+- **Self-oscillation (4-pole).** At `res=1` with a brief excitation, the 4-pole sustains a
+  bounded tone near `cutoff` (via `self_osc_hz_and_rms`). The **2-pole resonates** (its peak
+  near cutoff grows with resonance) but does NOT self-oscillate — a separate gate.
 - **Resonant peak tracks cutoff.** The high-resonance spectral peak sits near `cutoff` and
   rises monotonically with it.
 - **Drive adds harmonics.** At a fixed `cutoff`/`res`, `thd` (or high-harmonic energy) at
