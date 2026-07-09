@@ -8,7 +8,7 @@ use crate::Input;
 use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
     drive::{Drive, Shape},
-    env::Ar, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
+    env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
 };
@@ -65,6 +65,7 @@ pub enum Kind {
     Hall,
     Plate,
     Drive,
+    Eq,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -89,6 +90,7 @@ enum State {
     Hall(Fdn8),
     Plate(Dattorro),
     Drive(Drive),
+    Eq(Eq),
     Stateless,
 }
 
@@ -141,6 +143,7 @@ impl Node {
             Kind::Hall => State::Hall(Fdn8::new()),
             Kind::Plate => State::Plate(Dattorro::new()),
             Kind::Drive => State::Drive(Drive::new(Shape::Soft)),
+            Kind::Eq => State::Eq(Eq::new(EqType::Peak)),
         };
         Node {
             kind,
@@ -232,6 +235,13 @@ impl Node {
                 1 => d.set_tone(value),
                 2 => d.set_mix(value),
                 3 => d.set_shape(value as u8),
+                _ => {}
+            },
+            State::Eq(e) => match param {
+                0 => e.set_freq(value),
+                1 => e.set_gain(value),
+                2 => e.set_q(value),
+                3 => e.set_type(value as u8),
                 _ => {}
             },
             _ => {}
@@ -529,6 +539,11 @@ impl Node {
             Kind::Drive => {
                 if let State::Drive(d) = &mut self.state {
                     d.process(ins[0], dt, outs.port(0));
+                }
+            }
+            Kind::Eq => {
+                if let State::Eq(e) = &mut self.state {
+                    e.process(ins[0], dt, outs.port(0));
                 }
             }
         }
@@ -1024,5 +1039,42 @@ mod tests {
             buf
         };
         assert!(mk(0.0) != mk(2.0), "soft vs fold should differ");
+    }
+
+    #[test]
+    fn eq_node_renders_mono_bounded() {
+        let mut n = Node::new(Kind::Eq, 0);
+        assert_eq!(Node::out_width(Kind::Eq), 1);
+        n.set_param(0, 1000.0); // freq
+        n.set_param(1, 12.0); // gain dB
+        n.set_param(2, 1.0); // q
+        n.set_param(3, 0.0); // peak
+        let input: [f32; 64] = core::array::from_fn(|i| 0.5 * (i as f32 * 0.13).sin());
+        let ins = [In::A(&input), In::A(&[0.0; 64]), In::A(&[0.0; 64])];
+        let mut buf = [0.0f32; 64];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 32.0));
+        assert!(buf.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn eq_zero_gain_passes_through() {
+        // 0 dB peak → identity biquad → output ≈ input.
+        let mut n = Node::new(Kind::Eq, 0);
+        n.set_param(0, 1000.0);
+        n.set_param(1, 0.0); // 0 dB
+        n.set_param(2, 1.0);
+        let input = [0.4f32; 32];
+        let ins = [In::A(&input), In::A(&[0.0; 32]), In::A(&[0.0; 32])];
+        let mut buf = [0.0f32; 32];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        // After settling, a DC input through a 0 dB EQ ≈ input.
+        assert!((buf[31] - 0.4).abs() < 1e-3, "0 dB should pass through: {}", buf[31]);
     }
 }
