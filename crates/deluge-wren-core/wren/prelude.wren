@@ -126,6 +126,9 @@ foreign class Node {
   foreign static split_(input)
   foreign static wavetable_(table, freq)
   foreign static wavetable_pooled_(wt, freq)
+  foreign static delay_(input, time, feedback)
+  foreign mix=(v)
+  foreign damp=(v)     // Delay feedback-path damping (NOT damping= — that's the Resonator's)
   foreign freq=(v)
   foreign cutoff=(v)
   foreign res=(v)
@@ -255,6 +258,19 @@ class Ms20 {
 //   body.damping = 0.6      // shorter ring
 class Resonator {
   static new(input, freq, damping) { Node.modal_(input, freq, damping) }
+}
+
+// Feedback delay — echoes with damped repeats. `time` in seconds (up to ~1 s),
+// `feedback` [0, 0.98], `mix` dry/wet, `damp` darkens the repeats:
+//   var d = Delay.new(Osc.saw(110) * Env.ar(0.0, 0.2), 0.25, 0.5)
+//   d.mix = 0.4
+//   d.damp = 0.3
+//   Out.patch(d)
+// The ring buffer is node-scoped pool memory (like a pooled Wavetable): it is
+// released when the node is freed. `time`/`feedback` can be modulated (they are
+// ports); `mix`/`damp` are control params.
+class Delay {
+  static new(input, time, feedback) { Node.delay_(input, time, feedback) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

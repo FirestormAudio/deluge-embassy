@@ -19,6 +19,10 @@ pub(crate) const TAG_PORT: u8 = 1;
 pub(crate) const TAG_BUS: u8 = 2;
 pub(crate) const TAG_WT: u8 = 3;
 
+/// Ring-buffer length for a `Delay` node: ≈1.09 s @ 44.1 kHz, 1.0 s @ 48 kHz.
+/// The delay `time` (port 1) is clamped to this length inside the kernel.
+pub(crate) const DELAY_MAX_SAMPLES: usize = 48_000;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct NodeObj {
@@ -481,6 +485,48 @@ pub(crate) unsafe extern "C" fn node_wavetable_pooled(raw: *mut WrenVM) {
     node_wavetable_pooled_impl(&vm);
 }
 
+/// `Node.delay_(input, time, feedback)` — allocate a zeroed ring buffer and
+/// create a `Kind::Delay` node bound to it (ports 0/1/2 = input/time/feedback).
+/// On a host with no pool the alloc returns `None`; the node is still created
+/// but unbound, rendering dry passthrough rather than panicking.
+pub(crate) fn node_delay_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let time = arg_input(vm, 2);
+    let feedback = arg_input(vm, 3);
+    let handle = audio::alloc_buffer(DELAY_MAX_SAMPLES);
+    let id = audio::alloc_node_id();
+    audio::new_delay(id, handle, input, time, feedback);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_delay(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_delay_impl(&vm);
+}
+
+pub(crate) fn node_set_mix_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // scalar control param — index 0 = mix (Kind::Delay)
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_mix(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_mix_impl(&vm);
+}
+
+// NOTE: `damp=` (NOT `damping=`). `damping=` is already bound to
+// `node_set_res_impl` (Resonator, port-2 set_input); a Delay's port 2 is
+// feedback, so it needs a distinct selector → index 1 = damping (Kind::Delay).
+pub(crate) fn node_set_damp_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_damp(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_damp_impl(&vm);
+}
+
 pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let id = audio::alloc_node_id();
@@ -714,6 +760,9 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "split_(_)", node_split_impl::<S>);
     method("main", "Node", true, "wavetable_(_,_)", node_wavetable_impl::<S>);
     method("main", "Node", true, "wavetable_pooled_(_,_)", node_wavetable_pooled_impl::<S>);
+    method("main", "Node", true, "delay_(_,_,_)", node_delay_impl::<S>);
+    method("main", "Node", false, "mix=(_)", node_set_mix_impl::<S>);
+    method("main", "Node", false, "damp=(_)", node_set_damp_impl::<S>);
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
     method("main", "Node", false, "res=(_)", node_set_res_impl::<S>);

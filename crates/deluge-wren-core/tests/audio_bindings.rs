@@ -490,3 +490,53 @@ fn osc_sync_render_bounded_nonsilent() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0));
 }
+
+#[test]
+fn delay_new_emits_newnode_and_bindtable_on_engine_host_and_renders_bounded() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var d = Delay.new(Osc.saw(110), 0.01, 0.4)\n\
+         d.mix = 0.5\n\
+         d.damp = 0.3\n\
+         Out.patch(d)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0), "delay output should be non-silent");
+}
+
+#[test]
+fn delay_on_cmd_capture_host_creates_node_without_bindtable() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    // CmdCaptureHost has no pool → alloc_buffer returns None → the node is
+    // created but NOT bound (dry passthrough), never a bogus BindTable.
+    let cmds = run_and_capture_cmds("var d = Delay.new(Osc.saw(110), 0.01, 0.4)\nOut.patch(d)");
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Delay, .. })),
+        "expected a NewNode(Delay): {cmds:?}"
+    );
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })),
+        "unbound delay must not emit BindTable: {cmds:?}"
+    );
+}
+
+#[test]
+fn delay_mix_and_damp_emit_setparam_0_and_1() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds(
+        "var d = Delay.new(Osc.saw(110), 0.01, 0.4)\nd.mix = 0.5\nd.damp = 0.3",
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
+        "mix= should SetParam(0): {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })),
+        "damp= should SetParam(1): {cmds:?}"
+    );
+}
