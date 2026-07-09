@@ -6,6 +6,7 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{
+    delay::Delay,
     env::Ar, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
 };
@@ -54,6 +55,7 @@ pub enum Kind {
     Sub,
     Split2, // width-2 test node: input → both ports
     Wavetable,
+    Delay,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -71,6 +73,7 @@ enum State {
     Ms20(Ms20),
     Modal(Modal<MODAL_MODES>),
     Wt(WtOsc),
+    Delay(Delay),
     Stateless,
 }
 
@@ -116,6 +119,7 @@ impl Node {
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
+            Kind::Delay => State::Delay(Delay::new()),
         };
         Node {
             kind,
@@ -162,6 +166,11 @@ impl Node {
                 2 => m.set_position(value),
                 _ => {}
             },
+            State::Delay(d) => match param {
+                0 => d.set_mix(value),
+                1 => d.set_damping(value),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -191,7 +200,7 @@ impl Node {
         ins: &[In; MAX_INPUTS],
         dt: f32,
         outs: &mut OutView,
-        pool_region: Option<&[f32]>,
+        pool_region: Option<&mut [f32]>,
     ) {
         match self.kind {
             Kind::Sine | Kind::Saw | Kind::Square | Kind::Tri => {
@@ -284,6 +293,9 @@ impl Node {
                 // Unbound table, an invalid static id, a missing pool region,
                 // or a too-short pool region leaves the output untouched
                 // (silence for a freshly-zeroed arena slot) — never panic.
+                // Wavetable only reads its region; reborrow immutably so the
+                // rest of this arm is unchanged by the `&mut` widening.
+                let pool_region: Option<&[f32]> = pool_region.as_deref();
                 if let State::Wt(o) = &mut self.state {
                     // Resolve the flat compact-pyramid region (static or
                     // pooled), then route by frame count: `FRAMES == 1`
@@ -313,6 +325,30 @@ impl Node {
                         } else {
                             o.process_morph(region, frames, ins[0], ins[1], ins[2], dt, outs.port(0));
                         }
+                    }
+                }
+            }
+            Kind::Delay => {
+                // Bound ring buffer (≥4 samples) → run the effect; otherwise
+                // dry passthrough (out = input), never panic.
+                let ran = if let Some(buf) = pool_region {
+                    if buf.len() >= 4 {
+                        if let State::Delay(d) = &mut self.state {
+                            d.process(ins[0], ins[1], ins[2], dt, buf, outs.port(0));
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !ran {
+                    let port = outs.port(0);
+                    for i in 0..port.len() {
+                        port[i] = ins[0].at(i);
                     }
                 }
             }
@@ -527,5 +563,47 @@ mod tests {
         }
         assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 8.0));
         assert!(buf.iter().any(|&s| s != 0.0), "should ring");
+    }
+
+    #[test]
+    fn delay_node_with_buffer_delays_and_passes_through() {
+        // Bound buffer → the node runs the Delay kernel; no buffer → dry.
+        let mut n = Node::new(Kind::Delay, 0);
+        assert_eq!(Node::out_width(Kind::Delay), 1);
+        // input impulse, time = 4 samples @ dt below, feedback 0.
+        let dt = 1.0 / 48_000.0;
+        let mut input = [0.0f32; 32];
+        input[0] = 1.0;
+        let time = [4.0 * dt; 32];
+        let fb = [0.0f32; 32];
+        let ins = [In::A(&input), In::A(&time), In::A(&fb)];
+        n.set_param(0, 1.0); // mix = fully wet
+        let mut ring = [0.0f32; 256];
+        let mut buf = [0.0f32; 32];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, dt, &mut outs, Some(&mut ring));
+        }
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 2.0));
+        // Impulse shows up around sample 4, not at 0.
+        assert!(buf[4].abs() > 0.5, "delayed impulse missing: {:?}", &buf[..8]);
+        assert!(buf[0].abs() < 1e-3, "wet output should be silent at t0");
+    }
+
+    #[test]
+    fn delay_node_without_buffer_is_dry_passthrough() {
+        let mut n = Node::new(Kind::Delay, 0);
+        let dt = 1.0 / 48_000.0;
+        let input = [0.6f32; 16];
+        let time = [0.01f32; 16];
+        let fb = [0.5f32; 16];
+        let ins = [In::A(&input), In::A(&time), In::A(&fb)];
+        let mut buf = [0.0f32; 16];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, dt, &mut outs, None); // no ring buffer
+        }
+        // No buffer bound → dry passthrough (out == input), never panic.
+        assert!(buf.iter().all(|&s| (s - 0.6).abs() < 1e-6), "expected dry: {buf:?}");
     }
 }
