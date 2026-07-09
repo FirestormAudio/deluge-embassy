@@ -7,6 +7,7 @@
 use crate::Input;
 use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
+    drive::{Drive, Shape},
     env::Ar, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
@@ -63,6 +64,7 @@ pub enum Kind {
     Room,
     Hall,
     Plate,
+    Drive,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -86,6 +88,7 @@ enum State {
     Room(Freeverb),
     Hall(Fdn8),
     Plate(Dattorro),
+    Drive(Drive),
     Stateless,
 }
 
@@ -137,6 +140,7 @@ impl Node {
             Kind::Room => State::Room(Freeverb::new()),
             Kind::Hall => State::Hall(Fdn8::new()),
             Kind::Plate => State::Plate(Dattorro::new()),
+            Kind::Drive => State::Drive(Drive::new(Shape::Soft)),
         };
         Node {
             kind,
@@ -221,6 +225,13 @@ impl Node {
                 1 => d.set_damp(value),
                 2 => d.set_size(value),
                 3 => d.set_width(value),
+                _ => {}
+            },
+            State::Drive(d) => match param {
+                0 => d.set_drive(value),
+                1 => d.set_tone(value),
+                2 => d.set_mix(value),
+                3 => d.set_shape(value as u8),
                 _ => {}
             },
             _ => {}
@@ -513,6 +524,11 @@ impl Node {
                         out_l[i] = x;
                         out_r[i] = x;
                     }
+                }
+            }
+            Kind::Drive => {
+                if let State::Drive(d) = &mut self.state {
+                    d.process(ins[0], dt, outs.port(0));
                 }
             }
         }
@@ -971,5 +987,42 @@ mod tests {
         }
         assert!(p0.iter().all(|&s| (s - 0.4).abs() < 1e-6));
         assert!(p1.iter().all(|&s| (s - 0.4).abs() < 1e-6));
+    }
+
+    #[test]
+    fn drive_node_renders_mono_bounded() {
+        let mut n = Node::new(Kind::Drive, 0);
+        assert_eq!(Node::out_width(Kind::Drive), 1);
+        n.set_param(0, 1.0); // drive
+        n.set_param(2, 1.0); // mix
+        n.set_param(3, 1.0); // shape = hard
+        let input: [f32; 64] = core::array::from_fn(|i| 0.8 * (i as f32 * 0.2).sin());
+        let ins = [In::A(&input), In::A(&[0.0; 64]), In::A(&[0.0; 64])];
+        let mut buf = [0.0f32; 64];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 4.0));
+        assert!(buf.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn drive_shape_param_changes_output() {
+        let mk = |shape: f32| {
+            let mut n = Node::new(Kind::Drive, 0);
+            n.set_param(0, 1.0); // drive
+            n.set_param(2, 1.0); // mix
+            n.set_param(3, shape);
+            let input = [0.9f32; 32];
+            let ins = [In::A(&input), In::A(&[0.0; 32]), In::A(&[0.0; 32])];
+            let mut buf = [0.0f32; 32];
+            {
+                let mut outs = OutView::single(&mut buf);
+                n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+            }
+            buf
+        };
+        assert!(mk(0.0) != mk(2.0), "soft vs fold should differ");
     }
 }
