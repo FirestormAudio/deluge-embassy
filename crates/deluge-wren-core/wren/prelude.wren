@@ -133,6 +133,7 @@ foreign class Node {
   foreign static chorus_(input, rate, depth, mix)
   foreign static flanger_(input, rate, depth, feedback, mix)
   foreign static room_(input, roomsize, damp, mix)
+  foreign static hall_(input, size, damp, mix)
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
@@ -316,6 +317,15 @@ class Flanger {
 //   var r = Room.new(pad, 0.8, 0.3, 0.5); r.size = 0.9; r.damp = 0.6; r.spread = 0.8
 class Room {
   static new(input, roomsize, damp, mix) { Node.room_(input, roomsize, damp, mix) }
+}
+
+// Hall reverb (8-line modulated FDN) — a dense, smooth, lush tail. `size` [0,1]
+// decay/length, `damp` [0,1] HF absorption, `mix` dry/wet. Stereo (width-2);
+// reuses the Room controls (size=/damp=/spread=):
+//   Out.patch(Hall.new(Osc.saw(110), 0.85, 0.4, 0.4))
+//   var h = Hall.new(pad, 0.9, 0.3, 0.5); h.size = 0.95; h.spread = 0.8
+class Hall {
+  static new(input, size, damp, mix) { Node.hall_(input, size, damp, mix) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

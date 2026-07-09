@@ -31,6 +31,10 @@ pub(crate) const CHORUS_BUF_SAMPLES: usize = 2400;
 /// `deluge_dsp_kernels::reverb::REVERB_BUF_SAMPLES` (Σ of the 24 line lengths).
 pub(crate) const REVERB_BUF_SAMPLES: usize = 25_450;
 
+/// Ring length for a Hall (FDN) reverb node. Keep in sync with
+/// `deluge_dsp_kernels::reverb::HALL_BUF_SAMPLES`.
+pub(crate) const HALL_BUF_SAMPLES: usize = 23_748;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct NodeObj {
@@ -593,6 +597,28 @@ pub(crate) unsafe extern "C" fn node_room(raw: *mut WrenVM) {
     node_room_impl(&vm);
 }
 
+/// `Node.hall_(input, size, damp, mix)` — allocate the FDN buffer, create a
+/// width-2 `Kind::Hall` node, and set size/damp/mix. Reuses the Room setters
+/// (`mix=`/`damp=`/`size=`/`spread=`). Unbound → dry passthrough.
+pub(crate) fn node_hall_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let size = vm.get_f(2) as f32;
+    let damp = vm.get_f(3) as f32;
+    let mix = vm.get_f(4) as f32;
+    let handle = audio::alloc_buffer(HALL_BUF_SAMPLES);
+    let id = audio::alloc_node_id();
+    audio::new_pooled_node(id, Kind::Hall, handle, input);
+    audio::set_param(id, 2, size);
+    audio::set_param(id, 1, damp);
+    audio::set_param(id, 0, mix);
+    unsafe { return_node_w(vm, id, 2) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_hall(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_hall_impl(&vm);
+}
+
 pub(crate) fn node_set_rate_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // param 1 = rate (Kind::Chorus/Flanger)
     audio::set_param(self_id(vm), 1, v);
@@ -934,6 +960,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "chorus_(_,_,_,_)", node_chorus_impl::<S>);
     method("main", "Node", true, "flanger_(_,_,_,_,_)", node_flanger_impl::<S>);
     method("main", "Node", true, "room_(_,_,_,_)", node_room_impl::<S>);
+    method("main", "Node", true, "hall_(_,_,_,_)", node_hall_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);

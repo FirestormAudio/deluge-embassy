@@ -894,6 +894,7 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "chorus_(_,_,_,_)", bindings_audio::node_chorus),
     static_method("Node", "flanger_(_,_,_,_,_)", bindings_audio::node_flanger),
     static_method("Node", "room_(_,_,_,_)", bindings_audio::node_room),
+    static_method("Node", "hall_(_,_,_,_)", bindings_audio::node_hall),
     method("Node", "size=(_)", bindings_audio::node_set_size),
     method("Node", "spread=(_)", bindings_audio::node_set_spread),
     method("Node", "rate=(_)", bindings_audio::node_set_rate),
