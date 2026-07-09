@@ -141,6 +141,36 @@ pub fn new_wavetable_pooled(id: u16, handle: deluge_audio_graph::PoolHandle, fre
         src: deluge_audio_graph::node::TableSrc::Pooled(handle),
     });
 }
+
+/// Allocate a zeroed effect ring buffer in the host pool (`None` on a host with
+/// no pool, e.g. the Cmd-capture test host, or on exhaustion). Used by
+/// `Node.delay_`.
+pub fn alloc_buffer(len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+    host().alloc_buffer(len)
+}
+
+/// Create a `Kind::Delay` node (ports 0/1/2 = input/time/feedback). A bound
+/// `handle` emits `NewNode` + `BindTable{Pooled}`; an unbound one (alloc
+/// failed) still creates the node but skips the bind, so it renders as dry
+/// passthrough instead of panicking — the same contract as
+/// [`new_wavetable_pooled`].
+pub fn new_delay(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, input: Input, time: Input, feedback: Input) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind: Kind::Delay,
+        args: [input, time, feedback],
+    });
+    if let Some(h) = handle {
+        host().audio_cmd(Cmd::BindTable {
+            node: NodeId(id),
+            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+        });
+    }
+}
+
 pub fn set_input(id: u16, port: u8, src: Input) {
     if id == NULL_ID {
         return;

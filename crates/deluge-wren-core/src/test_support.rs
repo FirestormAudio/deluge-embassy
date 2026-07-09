@@ -339,6 +339,11 @@ impl Host for EngineHost {
         }
         Some(h)
     }
+    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+        let h = self.eng.pool_alloc(len)?;
+        self.eng.pool_slice_mut(h).fill(0.0); // ring buffers must start clean
+        Some(h)
+    }
 }
 
 static mut ENGINE_HOST: Option<EngineHost> = None;

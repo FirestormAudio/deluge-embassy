@@ -85,6 +85,19 @@ pub trait Host {
         let _ = (nframes, fill_frame);
         None
     }
+
+    /// Allocate a **zeroed** pool region of `len` f32s (a delay/effect ring
+    /// buffer) in the host's `deluge_audio_graph::Engine` and return its
+    /// handle. Unlike [`Host::upload_table`], no pyramid is built — the region
+    /// is raw scratch the effect writes each block.
+    ///
+    /// Default: unsupported (no pool) → `None`, so hosts with no audio engine
+    /// (e.g. [`crate::test_support::CmdCaptureHost`]) degrade to an unbound
+    /// (dry-passthrough) effect rather than requiring an override.
+    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+        let _ = len;
+        None
+    }
 }
 
 /// Build a band-limited mip pyramid from `base` (one single cycle, padded or
