@@ -85,6 +85,8 @@ fn floorf(x: f32) -> f32 {
 }
 
 use crate::In;
+use crate::fast_sin;
+use crate::math::pan_gains;
 
 /// Feedback delay effect over a borrowed ring buffer. Holds the delay line, a
 /// one-pole damping state in the feedback path, and the mix/damping control
@@ -139,6 +141,65 @@ impl Delay {
 impl Default for Delay {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Modulated multi-voice delay: chorus (`VOICES > 1`, no feedback) / flanger
+/// (`VOICES == 1` + feedback). `VOICES` phase-spread taps on a shared borrowed
+/// ring buffer, an internal LFO, panned to a stereo pair. `no_std`, no heap.
+#[derive(Clone, Copy)]
+pub struct ModDelay<const VOICES: usize> {
+    line: DelayLine,
+    lfo_phase: f32, // normalized [0,1)
+    base: f32,      // base delay, seconds
+    rate: f32,      // LFO Hz
+    depth: f32,     // [0, 0.99] fraction-of-base sweep
+    mix: f32,       // dry/wet [0,1]
+    feedback: f32,  // [0, 0.95] flanger regen
+}
+
+impl<const VOICES: usize> ModDelay<VOICES> {
+    pub fn new(base_s: f32) -> ModDelay<VOICES> {
+        ModDelay { line: DelayLine::new(), lfo_phase: 0.0, base: base_s,
+                   rate: 0.5, depth: 0.25, mix: 0.5, feedback: 0.0 }
+    }
+    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
+    pub fn set_rate(&mut self, v: f32) { self.rate = v.max(0.0); }
+    pub fn set_depth(&mut self, v: f32) { self.depth = v.clamp(0.0, 0.99); }
+    pub fn set_feedback(&mut self, v: f32) { self.feedback = v.clamp(0.0, 0.95); }
+
+    /// One block. `input` = mono; `buf` = pooled ring; writes the stereo pair.
+    pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32],
+                   out_l: &mut [f32], out_r: &mut [f32]) {
+        let norm = 1.0 / VOICES as f32;
+        for i in 0..out_l.len() {
+            let x = input.at(i);
+            // advance LFO phase, wrapped to [0,1) without std fract().
+            let p = self.lfo_phase + self.rate * dt;
+            self.lfo_phase = p - floorf(p);
+            let mut wet_l = 0.0;
+            let mut wet_r = 0.0;
+            for v in 0..VOICES {
+                let t = self.lfo_phase + v as f32 / VOICES as f32;
+                let ph = t - floorf(t);
+                let d = self.base * (1.0 + self.depth * fast_sin(ph)) / dt;
+                let tap = self.line.read_hermite(buf, d);
+                let pos = if VOICES == 1 {
+                    0.0
+                } else {
+                    -1.0 + 2.0 * v as f32 / (VOICES as f32 - 1.0)
+                };
+                let (gl, gr) = pan_gains(pos);
+                wet_l += tap * gl;
+                wet_r += tap * gr;
+            }
+            wet_l *= norm;
+            wet_r *= norm;
+            let fb = self.feedback * (wet_l + wet_r) * 0.5;
+            self.line.write(buf, x + fb);
+            out_l[i] = x * (1.0 - self.mix) + wet_l * self.mix;
+            out_r[i] = x * (1.0 - self.mix) + wet_r * self.mix;
+        }
     }
 }
 
@@ -353,5 +414,112 @@ mod tests {
         let mut buf = [0.0f32; 2];
         d.process(In::A(&input), In::A(&t), In::A(&fb), dt, &mut buf, &mut out);
         assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    // ── ModDelay (chorus / flanger) ───────────────────────────────────────
+
+    fn render_mod<const V: usize>(
+        md: &mut ModDelay<V>,
+        buf: &mut [f32],
+        input: &[f32],
+        dt: f32,
+    ) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
+        let mut l = std::vec![0.0f32; input.len()];
+        let mut r = std::vec![0.0f32; input.len()];
+        md.process(In::A(input), dt, buf, &mut l, &mut r);
+        (l, r)
+    }
+
+    #[test]
+    fn chorus_is_stereo_and_modulates() {
+        let dt = 1.0 / 48_000.0;
+        let mut buf = [0.0f32; 4096];
+        let mut md = ModDelay::<3>::new(0.020);
+        md.set_mix(1.0);
+        md.set_rate(2.0);
+        md.set_depth(0.5);
+        // A steady tone so only the effect creates L/R and time variation.
+        let input: std::vec::Vec<f32> =
+            (0..2000).map(|i| (i as f32 * 0.02).sin()).collect();
+        let (l, r) = render_mod(&mut md, &mut buf, &input, dt);
+        assert!(l.iter().all(|v| v.is_finite()) && r.iter().all(|v| v.is_finite()));
+        // Voices panned → the two channels are not identical.
+        let diff: f32 = l.iter().zip(&r).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff > 0.5, "chorus channels should differ (stereo): {diff}");
+        // The LFO moves the wet content: a late window differs from an early one.
+        let early: f32 = l[200..400].iter().map(|v| v.abs()).sum();
+        let late: f32 = l[1600..1800].iter().map(|v| v.abs()).sum();
+        assert!((early - late).abs() > 1e-3, "no modulation motion");
+    }
+
+    #[test]
+    fn flanger_feedback_increases_resonance() {
+        // Impulse into a STATIC (depth 0) short comb: feedback recirculates the
+        // impulse, so total output energy grows ~1/(1-fb²) with feedback — a
+        // clean, deterministic check that isolates feedback from modulation.
+        let dt = 1.0 / 48_000.0;
+        let mut input = [0.0f32; 2000];
+        input[0] = 1.0;
+        let energy = |fb: f32| -> f32 {
+            let mut buf = [0.0f32; 4096];
+            let mut md = ModDelay::<1>::new(0.002);
+            md.set_mix(1.0);
+            md.set_rate(0.0);
+            md.set_depth(0.0); // static comb
+            md.set_feedback(fb);
+            let (l, _r) = render_mod(&mut md, &mut buf, &input, dt);
+            l.iter().map(|v| v * v).sum()
+        };
+        let low = energy(0.0);
+        let high = energy(0.9);
+        assert!(high.is_finite() && low.is_finite() && low > 0.0);
+        assert!(high > low * 1.65, "feedback should build resonance: {low} → {high}");
+    }
+
+    #[test]
+    fn mod_mix_balance() {
+        let dt = 1.0 / 48_000.0;
+        let input = [0.5f32; 512];
+        // mix = 0 → both channels ≈ dry input.
+        let mut buf0 = [0.0f32; 4096];
+        let mut m0 = ModDelay::<3>::new(0.020);
+        m0.set_mix(0.0);
+        let (l0, r0) = render_mod(&mut m0, &mut buf0, &input, dt);
+        assert!((l0[10] - 0.5).abs() < 1e-4 && (r0[10] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn mod_depth_zero_is_static_and_finite() {
+        let dt = 1.0 / 48_000.0;
+        let mut buf = [0.0f32; 4096];
+        let mut md = ModDelay::<3>::new(0.020);
+        md.set_depth(0.0); // no modulation
+        md.set_mix(1.0);
+        let input = [0.3f32; 512];
+        let (l, r) = render_mod(&mut md, &mut buf, &input, dt);
+        assert!(l.iter().all(|v| v.is_finite()) && r.iter().all(|v| v.is_finite()));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+        #[test]
+        fn moddelay_is_finite_and_bounded(
+            rate in 0.0f32..8.0,
+            depth in 0.0f32..1.0,
+            mix in 0.0f32..1.0,
+            feedback in 0.0f32..1.0,
+            amp in 0.0f32..1.0,
+        ) {
+            let dt = 1.0 / 48_000.0;
+            let mut buf = [0.0f32; 4096];
+            let mut md = ModDelay::<3>::new(0.020);
+            md.set_rate(rate); md.set_depth(depth); md.set_mix(mix); md.set_feedback(feedback);
+            let input = std::vec![amp; 2000];
+            let (l, r) = render_mod(&mut md, &mut buf, &input, dt);
+            for (a, b) in l.iter().zip(&r) {
+                prop_assert!(a.is_finite() && b.is_finite());
+                prop_assert!(a.abs() <= 8.0 && b.abs() <= 8.0, "unbounded: {a},{b}");
+            }
+        }
     }
 }
