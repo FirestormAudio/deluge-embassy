@@ -88,7 +88,7 @@ headroom for modulation + Hermite, e.g. 16); `MOD_DEPTH` (~8 samples); LFO rate
 3. **Damping:** `damp_z[k] = s[k]·(1−dc) + damp_z[k]·dc` where `dc = damp·0.4`;
    `sd[k] = damp_z[k]`.
 4. **Hadamard mix:** `h = sd; fwht8(&mut h);` (orthonormal).
-5. **Feedback + inject + write:** `g = size·0.28 + 0.7`; for each `k`,
+5. **Feedback + inject + write:** `g = size·0.25 + 0.7` (∈ [0.7, 0.95] < 1); for each `k`,
    `lines[k].write(slice_k, input.at(i)·INJ + g·h[k])`.
 6. **Output:** `ol = (s[0]+s[2]+s[4]+s[6])·OUT; or = (s[1]+s[3]+s[5]+s[7])·OUT`;
    `wet1 = mix·(width·0.5+0.5); wet2 = mix·((1−width)·0.5); dry = 1−mix`;
