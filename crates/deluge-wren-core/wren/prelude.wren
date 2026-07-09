@@ -117,6 +117,7 @@ foreign class Node {
   foreign static lpf_(input, cutoff)
   foreign static svf_(input, cutoff, res, resp)
   foreign static moog_(input, cutoff, res, poles)
+  foreign static ms20_(input, cutoff, res, resp)
   foreign drive=(v)
   foreign static tb303_(input, cutoff, res)
   foreign static patch_(node)
@@ -227,6 +228,15 @@ class Tb303 {
 class Moog {
   static lp(input, cutoff, res)  { Node.moog_(input, cutoff, res, 4) }
   static lp2(input, cutoff, res) { Node.moog_(input, cutoff, res, 2) }
+}
+
+// Korg MS-20 (Korg35) Sallen-Key — the screaming, diode-clipped 2-pole. LP or HP;
+// crank `res` for the self-oscillating scream, `drive` for grit:
+//   var f = Ms20.hp(Osc.saw(110), 1200, 0.9)
+//   f.drive = 4
+class Ms20 {
+  static lp(input, cutoff, res) { Node.ms20_(input, cutoff, res, 0) }
+  static hp(input, cutoff, res) { Node.ms20_(input, cutoff, res, 1) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

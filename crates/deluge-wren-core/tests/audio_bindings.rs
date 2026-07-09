@@ -96,6 +96,22 @@ fn moog_lp_emits_newnode() {
 }
 
 #[test]
+fn ms20_emits_newnode() {
+    let lp = run_and_capture_cmds("var x = Ms20.lp(Osc.saw(110), 1000, 0.7)");
+    assert!(lp.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Ms20Lp, .. })));
+    let hp = run_and_capture_cmds("var x = Ms20.hp(Osc.saw(110), 1000, 0.7)");
+    assert!(hp.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Ms20Hp, .. })));
+}
+
+#[test]
+fn ms20_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Ms20.lp(Osc.saw(110), 1000, 0.7))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0));
+    assert!(out.iter().any(|f| f.l != 0.0));
+}
+
+#[test]
 fn moog_lp_renders_finite_nonsilent() {
     let mut out = [StereoFrame::default(); 32];
     run_and_render("Out.patch(Moog.lp(Osc.saw(110), 1000, 0.7))", &mut out);
