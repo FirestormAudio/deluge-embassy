@@ -8,7 +8,7 @@ use crate::Input;
 use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
     drive::{Drive, Shape},
-    env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, math,
+    env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
 };
@@ -66,6 +66,7 @@ pub enum Kind {
     Plate,
     Drive,
     Eq,
+    Lfo,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -91,6 +92,7 @@ enum State {
     Plate(Dattorro),
     Drive(Drive),
     Eq(Eq),
+    Lfo(Lfo),
     Stateless,
 }
 
@@ -144,6 +146,7 @@ impl Node {
             Kind::Plate => State::Plate(Dattorro::new()),
             Kind::Drive => State::Drive(Drive::new(Shape::Soft)),
             Kind::Eq => State::Eq(Eq::new(EqType::Peak)),
+            Kind::Lfo => State::Lfo(Lfo::new()),
         };
         Node {
             kind,
@@ -166,14 +169,18 @@ impl Node {
     }
 
     pub fn gate(&mut self, on: bool) {
-        if let State::Ar(a) = &mut self.state {
-            a.gate(on);
+        match &mut self.state {
+            State::Ar(a) => a.gate(on),
+            State::Lfo(l) if on => l.retrigger(),
+            _ => {}
         }
     }
 
     pub fn trigger(&mut self) {
-        if let State::Ar(a) = &mut self.state {
-            a.trigger();
+        match &mut self.state {
+            State::Ar(a) => a.trigger(),
+            State::Lfo(l) => l.retrigger(),
+            _ => {}
         }
     }
 
@@ -242,6 +249,11 @@ impl Node {
                 1 => e.set_gain(value),
                 2 => e.set_q(value),
                 3 => e.set_type(value as u8),
+                _ => {}
+            },
+            State::Lfo(l) => match param {
+                0 => l.set_shape(value as u8),
+                1 => l.set_phase(value),
                 _ => {}
             },
             _ => {}
@@ -544,6 +556,11 @@ impl Node {
             Kind::Eq => {
                 if let State::Eq(e) = &mut self.state {
                     e.process(ins[0], dt, outs.port(0));
+                }
+            }
+            Kind::Lfo => {
+                if let State::Lfo(l) = &mut self.state {
+                    l.process(ins[0], dt, outs.port(0));
                 }
             }
         }
@@ -1076,5 +1093,43 @@ mod tests {
         }
         // After settling, a DC input through a 0 dB EQ ≈ input.
         assert!((buf[31] - 0.4).abs() < 1e-3, "0 dB should pass through: {}", buf[31]);
+    }
+
+    #[test]
+    fn lfo_node_renders_mono_bounded() {
+        let mut n = Node::new(Kind::Lfo, 0);
+        assert_eq!(Node::out_width(Kind::Lfo), 1);
+        n.set_param(0, 2.0); // saw
+        let rate = [4000.0f32; 64]; // fast so it varies over the block
+        let ins = [In::A(&rate), In::A(&[0.0; 64]), In::A(&[0.0; 64])];
+        let mut buf = [0.0f32; 64];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 1.0001));
+        assert!(buf.iter().any(|&s| s != buf[0]), "should vary");
+    }
+
+    #[test]
+    fn lfo_trigger_resets_phase() {
+        let mut n = Node::new(Kind::Lfo, 0);
+        n.set_param(0, 2.0); // saw, phase_offset 0
+        let rate = [5.0f32; 500];
+        let ins = [In::A(&rate), In::A(&[0.0; 500]), In::A(&[0.0; 500])];
+        let mut buf = [0.0f32; 500];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        n.trigger();
+        let rate1 = [5.0f32; 1];
+        let ins1 = [In::A(&rate1), In::A(&[0.0; 1]), In::A(&[0.0; 1])];
+        let mut one = [0.0f32; 1];
+        {
+            let mut outs = OutView::single(&mut one);
+            n.process_resolved(&ins1, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(one[0] < -0.99, "trigger resets saw to ~−1: {}", one[0]);
     }
 }
