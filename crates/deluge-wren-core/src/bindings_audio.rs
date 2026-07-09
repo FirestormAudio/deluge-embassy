@@ -717,6 +717,9 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
     method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
     method("main", "Node", false, "res=(_)", node_set_res_impl::<S>);
+    // Resonator freq/damping aliases (ports 1/2) — see bindings.rs note.
+    method("main", "Node", false, "pitch=(_)", node_set_cutoff_impl::<S>);
+    method("main", "Node", false, "damping=(_)", node_set_res_impl::<S>);
     method("main", "Node", false, "pm=(_)", node_set_pm_impl::<S>);
     method("main", "Node", false, "width=(_)", node_set_width_impl::<S>);
     method("main", "Node", false, "position=(_)", node_set_position_impl::<S>);

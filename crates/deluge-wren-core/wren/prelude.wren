@@ -129,6 +129,8 @@ foreign class Node {
   foreign freq=(v)
   foreign cutoff=(v)
   foreign res=(v)
+  foreign pitch=(v)     // Resonator freq (port 1) — do not use freq= (port 0 = exciter)
+  foreign damping=(v)   // Resonator damping (port 2)
   foreign pm=(v)
   foreign width=(v)
   foreign position=(v)
@@ -244,11 +246,13 @@ class Ms20 {
 }
 
 // Modal resonator — a struck/plucked bank of tuned modes (strings, bells, plates).
-// Excite it with an input; ring it with freq/damping; shape it with structure/brightness/strike:
+// Excite it with an input; ring it with pitch/damping; shape it with structure/brightness/strike:
 //   var body = Resonator.new(Noise.pink() * Env.ar(0.0, 0.02), 220, 0.4)
 //   body.structure = 0.3    // toward inharmonic
 //   body.brightness = 0.8
 //   body.strike = 0.2       // strike position (comb)
+//   body.pitch = 330        // retune (NOT freq= — that targets the exciter input)
+//   body.damping = 0.6      // shorter ring
 class Resonator {
   static new(input, freq, damping) { Node.modal_(input, freq, damping) }
 }

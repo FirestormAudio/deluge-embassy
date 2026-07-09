@@ -280,6 +280,17 @@ fn osc_pm_emits_setinput_port1() {
 }
 
 #[test]
+fn resonator_pitch_and_damping_set_ports_1_and_2() {
+    // pitch= → port 1 (freq), damping= → port 2 — the Resonator's exciter is port 0,
+    // so these (not the inherited freq=, which targets port 0) are how you retune it.
+    let cmds = run_and_capture_cmds(
+        "var r = Resonator.new(Osc.saw(110), 220, 0.3)\nr.pitch = 330\nr.damping = 0.6",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 1, src: Input::Const(v), .. } if (*v - 330.0).abs() < 1e-3)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 2, src: Input::Const(v), .. } if (*v - 0.6).abs() < 1e-3)));
+}
+
+#[test]
 fn osc_feedback_emits_setparam() {
     let cmds = run_and_capture_cmds("var s = Osc.sine(440)\ns.feedback = 0.8");
     assert!(cmds.iter().any(|c| *c == Cmd::SetParam {

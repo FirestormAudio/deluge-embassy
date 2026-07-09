@@ -890,6 +890,11 @@ pub static METHODS: &[MethodEntry] = &[
     method("Node", "freq=(_)", bindings_audio::node_set_freq),
     method("Node", "cutoff=(_)", bindings_audio::node_set_cutoff),
     method("Node", "res=(_)", bindings_audio::node_set_res),
+    // Resonator (Kind::Modal) freq/damping = ports 1/2 — well-named aliases of the
+    // port-1/port-2 setters (its port 0 is the exciter input, so the inherited `freq=`,
+    // which targets port 0, must NOT be used to retune a Resonator).
+    method("Node", "pitch=(_)", bindings_audio::node_set_cutoff),
+    method("Node", "damping=(_)", bindings_audio::node_set_res),
     method("Node", "pm=(_)", bindings_audio::node_set_pm),
     method("Node", "width=(_)", bindings_audio::node_set_width),
     method("Node", "position=(_)", bindings_audio::node_set_position),
