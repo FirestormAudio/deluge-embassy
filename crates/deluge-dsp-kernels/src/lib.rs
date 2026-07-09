@@ -13,6 +13,7 @@ pub mod filter;
 pub mod math;
 pub mod noise;
 pub mod osc;
+pub mod reverb;
 pub mod wavetable;
 mod wavetables_generated;
 
