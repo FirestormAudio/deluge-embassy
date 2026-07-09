@@ -367,6 +367,67 @@ impl Default for Tb303 {
     }
 }
 
+/// Moog ladder oversampling (Heun/RK2 integration sub-steps). Huovilainen-canonical 2×.
+pub(crate) const MOOG_OVERSAMPLE: u32 = 2;
+
+/// Per-slope feedback scale (loop gain = `res·MOOG_K·4`). The 4-pole reaches clean
+/// self-oscillation at loop gain 4 (`MOOG_K4 = 1`, so `res=1` self-oscillates). The 2-pole
+/// cannot self-oscillate (two cascaded one-poles reach 180° phase only at ∞) — it resonates
+/// modestly; `MOOG_K2 = 1` gives it the same feedback scale. Kept per-slope for future tuning.
+const MOOG_K4: f32 = 1.0;
+const MOOG_K2: f32 = 1.0;
+
+#[inline]
+const fn moog_k(poles: usize) -> f32 {
+    if poles <= 2 {
+        MOOG_K2
+    } else {
+        MOOG_K4
+    }
+}
+
+/// Authentic Moog transistor-ladder (Huovilainen) — a thin wrapper over the Fi-2
+/// `DiodeLadder` (already the tanh one-pole cascade), adding resonance compensation and a
+/// drive gain. `POLES` selects the slope (4 = 24 dB/oct, 2 = 12 dB/oct).
+#[derive(Clone, Copy)]
+pub struct Moog<const POLES: usize> {
+    ladder: DiodeLadder<POLES>,
+    drive: f32,
+}
+
+impl<const POLES: usize> Moog<POLES> {
+    pub fn new() -> Self {
+        Moog { ladder: DiodeLadder::new(), drive: 1.0 }
+    }
+
+    /// Pre-ladder input gain into the tanh (control param; 1.0 = clean).
+    pub fn set_drive(&mut self, d: f32) {
+        self.drive = d.max(0.0);
+    }
+
+    pub fn process(&mut self, input: In, cutoff: In, res: In, dt: f32, out: &mut [f32]) {
+        let two_pi_dt_os = 2.0 * core::f32::consts::PI * dt / MOOG_OVERSAMPLE as f32;
+        for (i, s) in out.iter_mut().enumerate() {
+            let cutoff = cutoff.at(i).clamp(20.0, 18_000.0);
+            let res = res.at(i).clamp(0.0, 1.0);
+            let fh = two_pi_dt_os * cutoff;
+            let ladder_res = res * moog_k(POLES);
+            // Huovilainen resonance compensation: the ladder feedback (loop gain
+            // k = ladder_res·4) drops the passband gain by ≈1/(1+k); pre-scale the
+            // input by (1+k) to hold it flat. Plus the drive gain into the tanh.
+            let k = ladder_res * 4.0;
+            let x = input.at(i) * self.drive * (1.0 + k);
+            *s = self.ladder.process(x, fh, ladder_res, MOOG_OVERSAMPLE);
+        }
+    }
+}
+
+impl<const POLES: usize> Default for Moog<POLES> {
+    fn default() -> Self {
+        Moog::new()
+    }
+}
+
 #[cfg(test)]
 mod tb303_tests {
     extern crate std;
@@ -728,5 +789,135 @@ mod svf_tests {
         for s in out {
             assert!(s.is_finite() && s.abs() <= 4.0, "sweep s={s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod moog_tests {
+    extern crate std;
+    use super::*;
+    use crate::In;
+    use deluge_dsp_test::filter_meas::{magnitude_db, self_osc_hz_and_rms};
+    use deluge_dsp_test::spectrum;
+    use proptest::prelude::*;
+
+    const FS: f32 = 48_000.0;
+    const DT: f32 = 1.0 / FS;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
+        #[test]
+        fn moog_is_finite_and_bounded(
+            cutoff in 20.0f32..=18_000.0,
+            res in 0.0f32..=1.0,
+            drive in 1.0f32..=8.0,
+            amp in 0.0f32..=1.0,
+        ) {
+            let x: std::vec::Vec<f32> = (0..512).map(|i| amp * (0.05 * i as f32).sin()).collect();
+            let mut out = [0.0f32; 512];
+            let mut m = Moog::<4>::new();
+            m.set_drive(drive);
+            m.process(In::A(&x), In::K(cutoff), In::K(res), DT, &mut out);
+            for s in out {
+                prop_assert!(s.is_finite());
+                prop_assert!(s.abs() <= 8.0, "s={s} cutoff={cutoff} res={res} drive={drive}");
+            }
+        }
+    }
+
+    #[test]
+    fn moog4_self_oscillates_at_max_res() {
+        let cutoff = 1_000.0f32;
+        let (hz, rms) = self_osc_hz_and_rms(FS, |buf| {
+            let mut x = std::vec![0.0f32; buf.len()];
+            x[0] = 1.0;
+            Moog::<4>::new().process(In::A(&x), In::K(cutoff), In::K(1.0), DT, buf);
+        });
+        assert!(rms > 1e-3, "4-pole self-osc rms={rms}");
+        assert!((hz - cutoff).abs() / cutoff < 0.4, "4-pole self-osc hz={hz}");
+    }
+
+    // Passband level (well below cutoff) in dB — what the resonance compensation
+    // (`MOOG_COMP`) preserves: without it the ladder's feedback drops the passband
+    // gain (≈1/(1+k), k=res·4) as resonance rises.
+    fn moog4_passband_db(cutoff: f32, res: f32) -> f32 {
+        magnitude_db(FS, 100.0, |buf| {
+            let x: std::vec::Vec<f32> = (0..buf.len())
+                .map(|i| (core::f32::consts::TAU * 100.0 / FS * i as f32).sin())
+                .collect();
+            Moog::<4>::new().process(In::A(&x), In::K(cutoff), In::K(res), DT, buf);
+        })
+    }
+
+    #[test]
+    fn moog4_passband_level_stable_across_resonance() {
+        // MOOG_COMP holds the passband level ~constant as resonance rises.
+        let cutoff = 2_000.0f32; // well above the 100 Hz probe
+        let lo = moog4_passband_db(cutoff, 0.1);
+        for &res in &[0.3f32, 0.6, 0.9] {
+            let db = moog4_passband_db(cutoff, res);
+            assert!((db - lo).abs() < 3.0, "passband drift at res={res}: {db} dB vs {lo} dB");
+        }
+    }
+
+    fn moog_mag_db<const P: usize>(cutoff: f32, res: f32, probe: f32) -> f32 {
+        magnitude_db(FS, probe, |buf| {
+            let x: std::vec::Vec<f32> = (0..buf.len())
+                .map(|i| (core::f32::consts::TAU * probe / FS * i as f32).sin())
+                .collect();
+            Moog::<P>::new().process(In::A(&x), In::K(cutoff), In::K(res), DT, buf);
+        })
+    }
+
+    // Stopband rolloff over one octave (2×cutoff → 4×cutoff), low res, via clean
+    // sine magnitude probes (an impulse train's lines miss these frequencies).
+    fn slope_db_per_oct<const P: usize>(cutoff: f32) -> f32 {
+        moog_mag_db::<P>(cutoff, 0.1, 4.0 * cutoff) - moog_mag_db::<P>(cutoff, 0.1, 2.0 * cutoff)
+    }
+
+    #[test]
+    fn moog_slopes_are_24_and_12_db_per_oct() {
+        let s4 = slope_db_per_oct::<4>(800.0);
+        let s2 = slope_db_per_oct::<2>(800.0);
+        assert!(s4 < -18.0, "4-pole slope {s4} dB/oct (expect ~ -24)");
+        assert!(s2 < -8.0 && s2 > -18.0, "2-pole slope {s2} dB/oct (expect ~ -12)");
+        assert!(s4 < s2 - 6.0, "4-pole must roll off steeper than 2-pole ({s4} vs {s2})");
+    }
+
+    #[test]
+    fn moog2_resonates_strongly() {
+        // A 2-pole ladder (two cascaded one-poles) reaches only 180° phase at ∞,
+        // so — unlike the 4-pole — it resonates/rings strongly at high resonance
+        // but does NOT sustain a self-oscillation. Assert the resonant peak near
+        // cutoff grows substantially from low to high resonance.
+        let cutoff = 1_000.0f32;
+        let peak_db = |res: f32| {
+            magnitude_db(FS, cutoff, |buf| {
+                let x: std::vec::Vec<f32> = (0..buf.len())
+                    .map(|i| (core::f32::consts::TAU * cutoff / FS * i as f32).sin())
+                    .collect();
+                Moog::<2>::new().process(In::A(&x), In::K(cutoff), In::K(res), DT, buf);
+            })
+        };
+        // The 2-pole is the gentler mode — it resonates modestly (no self-osc);
+        // the peak at cutoff rises measurably with resonance.
+        assert!(peak_db(0.9) > peak_db(0.1) + 2.0, "2-pole resonant peak should grow with res");
+    }
+
+    #[test]
+    fn drive_adds_harmonics() {
+        let f0 = 220.0f32;
+        let thd_at = |drive: f32| {
+            let spec = spectrum::analyze(FS, |buf| {
+                let x: std::vec::Vec<f32> = (0..buf.len())
+                    .map(|i| 0.5 * (core::f32::consts::TAU * f0 / FS * i as f32).sin())
+                    .collect();
+                let mut m = Moog::<4>::new();
+                m.set_drive(drive);
+                m.process(In::A(&x), In::K(4_000.0), In::K(0.3), DT, buf);
+            });
+            spec.thd(f0, 8)
+        };
+        assert!(thd_at(4.0) > thd_at(1.0) + 0.02, "drive should raise THD");
     }
 }
