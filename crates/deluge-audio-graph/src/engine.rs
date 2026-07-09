@@ -37,7 +37,7 @@ pub struct Engine<
     pub(crate) root: Option<BusId>,
     // Pending bus writes, re-applied every `render` (P0: no persistent routing
     // table yet — see spec §3.5 / bus.rs).
-    writes: [Option<(Input, BusId)>; NODES],
+    writes: [Option<(Input, BusId, f32, f32)>; NODES],
     writes_len: usize,
     pool: crate::pool::Pool<PCAP, PCHUNK>,
 }
@@ -131,6 +131,7 @@ impl<
                 }
             }
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
+            Cmd::BusWriteGains { src, bus, gl, gr } => self.bus_write_gains(src, bus, gl, gr),
             Cmd::SetRoot { bus } => self.set_root(bus),
             Cmd::Free { node } => {
                 // Free a pooled table region (if bound) BEFORE reclaiming the
@@ -233,11 +234,16 @@ impl<
         &arr[base + port as usize][..]
     }
 
-    /// Record that `src` should be summed into `bus` on every subsequent
-    /// `render` (P0: center pan, L=R; re-applied each block, see bus.rs).
+    /// Record a center (L = R) bus write — unchanged mono behavior.
     pub fn bus_write(&mut self, src: Input, bus: BusId) {
+        self.bus_write_gains(src, bus, 1.0, 1.0);
+    }
+
+    /// Record a bus write with per-side gains (`gl` → L, `gr` → R). A stereo
+    /// source routes as two of these: `(port0, 1, 0)` and `(port1, 0, 1)`.
+    pub fn bus_write_gains(&mut self, src: Input, bus: BusId, gl: f32, gr: f32) {
         if self.writes_len < self.writes.len() {
-            self.writes[self.writes_len] = Some((src, bus));
+            self.writes[self.writes_len] = Some((src, bus, gl, gr));
             self.writes_len += 1;
         }
     }
@@ -257,10 +263,10 @@ impl<
         }
         // Evaluate nodes.
         self.render_block();
-        // Apply bus writes (center pan → L=R).
+        // Apply bus writes (per-side gains; mono center = (1,1)).
         let arr = unsafe { &*self.outs.get() };
         for w in 0..self.writes_len {
-            if let Some((src, bus)) = self.writes[w] {
+            if let Some((src, bus, gl, gr)) = self.writes[w] {
                 let b = bus.0 as usize;
                 for i in 0..BLOCK {
                     let v = match src {
@@ -271,8 +277,8 @@ impl<
                         },
                         Input::Bus(_) => 0.0, // bus→bus not in P0
                     };
-                    self.bus_l[b][i] += v;
-                    self.bus_r[b][i] += v;
+                    self.bus_l[b][i] += v * gl;
+                    self.bus_r[b][i] += v * gr;
                 }
             }
         }
@@ -608,6 +614,34 @@ mod tests {
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn per_side_write_gains_route_l_and_r_separately() {
+        // node0 = const 0.5 (Add of const+0). Two gained writes: (1,0)→L only,
+        // (0,1)→R only. Plus a plain center write from a second source to
+        // prove (1,1) is unchanged.
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.apply(Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 1.0, gr: 0.0 });
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        e.render(&mut out);
+        assert!((out[0].l - 0.5).abs() < 1e-6, "L got the (1,0) write");
+        assert!(out[0].r.abs() < 1e-6, "R silent for a (1,0) write");
+
+        // A (0,1) write lands only on R.
+        let mut e2 = E::new(16.0);
+        e2.create(NodeId(0), Kind::Add);
+        *e2.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e2.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e2.apply(Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 0.0, gr: 1.0 });
+        e2.set_root(BusId(0));
+        let mut out2 = [StereoFrame::default(); 16];
+        e2.render(&mut out2);
+        assert!(out2[0].l.abs() < 1e-6 && (out2[0].r - 0.5).abs() < 1e-6);
     }
 
     #[test]
