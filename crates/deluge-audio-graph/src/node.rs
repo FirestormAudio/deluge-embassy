@@ -54,6 +54,7 @@ pub enum Kind {
     Add,
     Sub,
     Split2, // width-2 test node: input → both ports
+    Pan,    // mono→stereo: port0 = L, port1 = R (constant-power)
     Wavetable,
     Delay,
 }
@@ -117,7 +118,7 @@ impl Node {
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
-            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
+            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
             Kind::Delay => State::Delay(Delay::new()),
         };
@@ -132,7 +133,7 @@ impl Node {
 
     pub fn out_width(kind: Kind) -> usize {
         match kind {
-            Kind::Split2 => 2,
+            Kind::Split2 | Kind::Pan => 2,
             _ => 1,
         }
     }
@@ -287,6 +288,18 @@ impl Node {
                     for i in 0..port.len() {
                         port[i] = ins[0].at(i);
                     }
+                }
+            }
+            Kind::Pan => {
+                // Mono→stereo constant-power pan. ins[0] = input, ins[1] =
+                // position (∈[-1,1], modulatable). port0 = L, port1 = R.
+                // Compute both ports' lengths up front, then borrow each.
+                let n = outs.port(0).len();
+                for i in 0..n {
+                    let (gl, gr) = math::pan_gains(ins[1].at(i));
+                    let x = ins[0].at(i);
+                    outs.port(0)[i] = x * gl;
+                    outs.port(1)[i] = x * gr;
                 }
             }
             Kind::Wavetable => {
@@ -605,5 +618,55 @@ mod tests {
         }
         // No buffer bound → dry passthrough (out == input), never panic.
         assert!(buf.iter().all(|&s| (s - 0.6).abs() < 1e-6), "expected dry: {buf:?}");
+    }
+
+    #[test]
+    fn pan_node_writes_l_r_constant_power() {
+        let mut n = Node::new(Kind::Pan, 0);
+        assert_eq!(Node::out_width(Kind::Pan), 2);
+        let x = [0.8f32; 8];
+        // hard left
+        let posl = [-1.0f32; 8];
+        let ins = [In::A(&x), In::A(&posl), In::A(&[0.0; 8])];
+        let mut p0 = [0.0f32; 8];
+        let mut p1 = [0.0f32; 8];
+        {
+            let mut outs = OutView::pair(&mut p0, &mut p1);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!((p0[0] - 0.8).abs() < 1e-5, "L port = input at hard-left: {}", p0[0]);
+        assert!(p1[0].abs() < 1e-5, "R port silent at hard-left: {}", p1[0]);
+
+        // center → both ≈ 0.8 * 0.7071, constant power
+        let posc = [0.0f32; 8];
+        let ins = [In::A(&x), In::A(&posc), In::A(&[0.0; 8])];
+        let mut p0 = [0.0f32; 8];
+        let mut p1 = [0.0f32; 8];
+        {
+            let mut outs = OutView::pair(&mut p0, &mut p1);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        let c = 0.8 * (0.5f32).sqrt();
+        assert!((p0[0] - c).abs() < 1e-5 && (p1[0] - c).abs() < 1e-5);
+        // total power preserved
+        assert!((p0[0] * p0[0] + p1[0] * p1[0] - 0.8 * 0.8).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pan_node_position_modulates() {
+        // A per-sample position sweep moves energy from L to R.
+        let mut n = Node::new(Kind::Pan, 0);
+        let x = [1.0f32; 4];
+        let pos = [-1.0f32, -0.3, 0.3, 1.0]; // sweep L→R
+        let ins = [In::A(&x), In::A(&pos), In::A(&[0.0; 4])];
+        let mut p0 = [0.0f32; 4];
+        let mut p1 = [0.0f32; 4];
+        {
+            let mut outs = OutView::pair(&mut p0, &mut p1);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        // L decreasing, R increasing across the block
+        assert!(p0[0] > p0[3], "L should fall L→R: {:?}", p0);
+        assert!(p1[0] < p1[3], "R should rise L→R: {:?}", p1);
     }
 }
