@@ -836,3 +836,42 @@ fn eq_renders_mono_bounded_on_engine_host() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0), "eq should be non-silent");
 }
+
+#[test]
+fn lfo_factories_emit_kind_lfo_with_shape() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    for (call, code) in [("sine", 0.0f32), ("tri", 1.0), ("saw", 2.0), ("square", 3.0), ("sampleHold", 4.0), ("random", 5.0)] {
+        let src = std::format!("var l = LFO.{}(2)", call);
+        let cmds = run_and_capture_cmds(&src);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Lfo, .. })), "{call}: {cmds:?}");
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - code).abs() < 1e-4)), "{call} shape {code}: {cmds:?}");
+    }
+}
+
+#[test]
+fn lfo_to_builds_scaling_graph() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    // `.to(200, 2000)` = this*900 + 1100 → a Mul then an Add node.
+    let cmds = run_and_capture_cmds("var m = LFO.sine(1).to(200, 2000)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mul, .. })), "to→mul: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Add, .. })), "to→add: {cmds:?}");
+}
+
+#[test]
+fn lfo_phase_setter_maps_to_param_1() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds("var l = LFO.saw(1)\nl.phase = 0.25");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })), "phase=→1: {cmds:?}");
+}
+
+#[test]
+fn lfo_renders_bounded_on_engine_host() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(LFO.tri(1000))", &mut out); // fast LFO so it moves
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+}

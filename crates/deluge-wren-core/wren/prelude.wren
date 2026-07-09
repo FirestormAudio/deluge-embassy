@@ -142,6 +142,8 @@ foreign class Node {
   foreign hz=(v)       // EQ centre/corner frequency (NOT freq= — that's the Osc's)
   foreign gain=(v)     // EQ band gain in dB
   foreign q=(v)        // EQ Q / bandwidth
+  foreign static lfo_(rate, shape)
+  foreign phase=(v)    // LFO start/retrigger phase [0,1)
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
@@ -167,6 +169,7 @@ foreign class Node {
   +(o) { Node.binop_(1, this, o) }
   -(o) { Node.binop_(2, this, o) }
   lpf(cutoff) { Node.lpf_(this, cutoff) }
+  to(lo, hi) { this * ((hi - lo) / 2) + ((hi + lo) / 2) }
 }
 
 // A multi-output port: `node.out(p)` returns a handle to output port `p` of
@@ -177,6 +180,7 @@ foreign class Port {
   +(o) { Node.binop_(1, this, o) }
   -(o) { Node.binop_(2, this, o) }
   lpf(cutoff) { Node.lpf_(this, cutoff) }
+  to(lo, hi) { this * ((hi - lo) / 2) + ((hi + lo) / 2) }
 }
 
 // A user-supplied dynamic wavetable, uploaded from a Wren list of samples
@@ -225,6 +229,21 @@ class Osc {
   }
   static pink() { Node.pink_() }
   static brown() { Node.brown_() }
+}
+
+// Low-frequency modulator. Bipolar [-1,1]; scale with `.to(min, max)`:
+//   var lfo = LFO.tri(0.5)
+//   filter.cutoff = lfo.to(200, 2000)
+//   var o = Osc.saw(110); o.width = LFO.sine(4).to(0.1, 0.9)   // PWM
+//   lfo.freq = 2      // rate is port 0
+//   lfo.trigger()     // retrigger (sync to a note)
+class LFO {
+  static sine(rate)       { Node.lfo_(rate, 0) }
+  static tri(rate)        { Node.lfo_(rate, 1) }
+  static saw(rate)        { Node.lfo_(rate, 2) }
+  static square(rate)     { Node.lfo_(rate, 3) }
+  static sampleHold(rate) { Node.lfo_(rate, 4) }
+  static random(rate)     { Node.lfo_(rate, 5) }
 }
 
 // State-variable filter: LP/HP/BP/notch from one topology, resonant and

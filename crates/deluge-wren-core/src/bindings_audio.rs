@@ -805,6 +805,32 @@ pub(crate) unsafe extern "C" fn node_set_q(raw: *mut WrenVM) {
     node_set_q_impl(&vm);
 }
 
+/// `Node.lfo_(rate, shape)` — an LFO modulation source. `Kind::Lfo`, rate on
+/// port 0, shape set as param 0. Mono, no buffer.
+pub(crate) fn node_lfo_impl<S: SlotApi>(vm: &S) {
+    let rate = arg_input(vm, 1);
+    let shape = vm.get_f(2) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Lfo, [rate, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, shape);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_lfo(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_lfo_impl(&vm);
+}
+
+pub(crate) fn node_set_phase_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param 1 = phase offset (Kind::Lfo)
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_phase(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_phase_impl(&vm);
+}
+
 pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let id = audio::alloc_node_id();
@@ -1090,6 +1116,8 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "hz=(_)", node_set_hz_impl::<S>);
     method("main", "Node", false, "gain=(_)", node_set_gain_impl::<S>);
     method("main", "Node", false, "q=(_)", node_set_q_impl::<S>);
+    method("main", "Node", true, "lfo_(_,_)", node_lfo_impl::<S>);
+    method("main", "Node", false, "phase=(_)", node_set_phase_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);

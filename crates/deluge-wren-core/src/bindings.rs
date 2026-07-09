@@ -903,6 +903,8 @@ pub static METHODS: &[MethodEntry] = &[
     method("Node", "hz=(_)", bindings_audio::node_set_hz),
     method("Node", "gain=(_)", bindings_audio::node_set_gain),
     method("Node", "q=(_)", bindings_audio::node_set_q),
+    static_method("Node", "lfo_(_,_)", bindings_audio::node_lfo),
+    method("Node", "phase=(_)", bindings_audio::node_set_phase),
     method("Node", "size=(_)", bindings_audio::node_set_size),
     method("Node", "spread=(_)", bindings_audio::node_set_spread),
     method("Node", "rate=(_)", bindings_audio::node_set_rate),
