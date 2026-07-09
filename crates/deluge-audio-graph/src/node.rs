@@ -6,8 +6,8 @@
 
 use crate::Input;
 use deluge_dsp_kernels::{
-    env::Ar, filter::OnePole, filter::{Moog, Svf, SvfResp, Tb303}, math, noise::Noise,
-    noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
+    env::Ar, filter::OnePole, filter::{Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303}, math,
+    noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
 };
 use deluge_dsp_kernels::wavetable::{
     level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
@@ -46,6 +46,8 @@ pub enum Kind {
     Tb303,
     MoogLp4,
     MoogLp2,
+    Ms20Lp,
+    Ms20Hp,
     Mul,
     Add,
     Sub,
@@ -65,6 +67,7 @@ enum State {
     Tb303(Tb303),
     Moog4(Moog<4>),
     Moog2(Moog<2>),
+    Ms20(Ms20),
     Wt(WtOsc),
     Stateless,
 }
@@ -107,6 +110,7 @@ impl Node {
             Kind::Tb303 => State::Tb303(Tb303::new()),
             Kind::MoogLp4 => State::Moog4(Moog::<4>::new()),
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
+            Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
         };
@@ -148,6 +152,7 @@ impl Node {
             State::Osc(o) if param == 0 => o.set_feedback(value),
             State::Moog4(m) if param == 0 => m.set_drive(value),
             State::Moog2(m) if param == 0 => m.set_drive(value),
+            State::Ms20(m) if param == 0 => m.set_drive(value),
             _ => {}
         }
     }
@@ -241,6 +246,12 @@ impl Node {
             Kind::MoogLp2 => {
                 if let State::Moog2(m) = &mut self.state {
                     m.process(ins[0], ins[1], ins[2], dt, outs.port(0));
+                }
+            }
+            Kind::Ms20Lp | Kind::Ms20Hp => {
+                let resp = if matches!(self.kind, Kind::Ms20Hp) { Ms20Resp::Hp } else { Ms20Resp::Lp };
+                if let State::Ms20(f) = &mut self.state {
+                    f.process(ins[0], ins[1], ins[2], resp, dt, outs.port(0));
                 }
             }
             Kind::Mul => math::mul(ins[0], ins[1], outs.port(0)),
@@ -413,6 +424,25 @@ mod tests {
     #[test]
     fn moog_nodes_render_bounded_nonsilent() {
         for kind in [Kind::MoogLp4, Kind::MoogLp2] {
+            let mut n = Node::new(kind, 0);
+            assert_eq!(Node::out_width(kind), 1);
+            let input = [0.6f32; 16];
+            let cutoff = [1_000.0f32; 16];
+            let res = [0.7f32; 16];
+            let ins = [In::A(&input), In::A(&cutoff), In::A(&res)];
+            let mut buf = [0.0f32; 16];
+            {
+                let mut outs = OutView::single(&mut buf);
+                n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+            }
+            assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 8.0), "kind={kind:?}");
+            assert!(buf.iter().any(|&s| s != 0.0), "kind={kind:?}");
+        }
+    }
+
+    #[test]
+    fn ms20_nodes_render_bounded_nonsilent() {
+        for kind in [Kind::Ms20Lp, Kind::Ms20Hp] {
             let mut n = Node::new(kind, 0);
             assert_eq!(Node::out_width(kind), 1);
             let input = [0.6f32; 16];
