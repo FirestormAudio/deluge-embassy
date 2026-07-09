@@ -633,7 +633,14 @@ impl<const N: usize> Modal<N> {
             let x = input.at(j);
             let mut y = 0.0f32;
             for i in 0..N {
-                if gain[i] == 0.0 {
+                // Nyquist-muted modes (fi >= nyq) were `continue`'d in the coeff loop
+                // above, leaving a1[i]==0.0 — their recurrence is invalid, so skip
+                // entirely. Comb-nulled modes (gain[i]==0.0 from position/brightness)
+                // have valid coefficients and must still tick so their (ic1eq,ic2eq)
+                // state decays; only their output contribution (gain[i]*v1 = 0) is
+                // silent. Otherwise a later control-rate change that un-nulls the mode
+                // would resume from stale frozen state (a pop).
+                if a1[i] == 0.0 {
                     continue;
                 }
                 let (ic1, ic2) = self.modes[i];
@@ -643,7 +650,11 @@ impl<const N: usize> Modal<N> {
                 self.modes[i] = (2.0 * v1 - ic1, 2.0 * v2 - ic2);
                 y += gain[i] * v1;
             }
-            *s = y * norm;
+            // Output soft-saturator: transparent at normal levels (|y·norm| ≲ 4), soft-clips a
+            // driven-into-resonance-catastrophe signal instead of running away, and bounds the
+            // output to (−8, 8) by construction (pade_tanh ∈ [−1,1]). A driven resonator saturating
+            // is physically realistic.
+            *s = 8.0 * pade_tanh(y * norm / 8.0);
         }
     }
 }
@@ -1420,5 +1431,22 @@ mod modal_tests {
         let dull = strike_spec(0.0, 0.2, 0.3, f0, 0.1).level_at(4.0 * f0);
         let bright = strike_spec(0.0, 0.95, 0.3, f0, 0.1).level_at(4.0 * f0);
         assert!(bright > dull * 2.0, "brightness should raise high partials: dull={dull} bright={bright}");
+    }
+
+    #[test]
+    fn modal_bounded_under_sustained_on_resonance_drive() {
+        // Drive continuously at the fundamental with damping=0 (k floored) — the worst
+        // case for resonant buildup. Must stay bounded (the output saturator handles it).
+        let mut m = Modal::<MODAL_MODES>::new();
+        m.set_brightness(0.9);
+        let freq = 220.0f32;
+        let x: std::vec::Vec<f32> = (0..48_000)
+            .map(|i| (core::f32::consts::TAU * freq / FS * i as f32).sin())
+            .collect();
+        let mut out = [0.0f32; 48_000];
+        m.process(In::A(&x), In::K(freq), In::K(0.0), DT, &mut out);
+        for s in out {
+            assert!(s.is_finite() && s.abs() <= 8.0, "sustained drive unbounded: s={s}");
+        }
     }
 }
