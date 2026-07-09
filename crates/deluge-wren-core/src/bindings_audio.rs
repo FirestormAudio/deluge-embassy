@@ -560,6 +560,28 @@ pub(crate) unsafe extern "C" fn node_pan(raw: *mut WrenVM) {
     node_pan_impl(&vm);
 }
 
+/// Route a source argument (at `slot`) to `bus`, honoring stereo width. A
+/// width-2 `Node` (e.g. `Pan`, `Chorus`) emits TWO per-side writes — port0→L
+/// `(1,0)`, port1→R `(0,1)`. Everything else (mono `Node`, `Port`, number,
+/// `Bus`) emits one center write `(1,1)` — unchanged behavior.
+fn write_source_to_bus<S: SlotApi>(vm: &S, slot: i32, bus: u16) {
+    if vm.slot_type(slot) == WrenType::Foreign {
+        // SAFETY: reads the leading tag byte, then (for TAG_NODE) the 4-byte
+        // NodeObj — same access discipline as `arg_input`.
+        let tag = unsafe { *vm.foreign_mut::<u8>(slot) };
+        if tag == TAG_NODE {
+            let n = unsafe { vm.foreign_mut::<NodeObj>(slot) };
+            if n.width == 2 {
+                let id = n.id;
+                audio::bus_write_gains(Input::Node { node: NodeId(id), port: 0 }, bus, 1.0, 0.0);
+                audio::bus_write_gains(Input::Node { node: NodeId(id), port: 1 }, bus, 0.0, 1.0);
+                return;
+            }
+        }
+    }
+    audio::bus_write(arg_input(vm, slot), bus); // mono center (1,1)
+}
+
 // ── Bus (factory + instance write) ───────────────────────────────────────────
 
 pub(crate) fn bus_new_impl<S: SlotApi>(vm: &S) {
@@ -574,8 +596,7 @@ pub(crate) unsafe extern "C" fn bus_new(raw: *mut WrenVM) {
 
 pub(crate) fn bus_write_impl<S: SlotApi>(vm: &S) {
     let id = unsafe { vm.foreign_mut::<BusObj>(0) }.id;
-    let src = arg_input(vm, 1);
-    audio::bus_write(src, id);
+    write_source_to_bus(vm, 1, id);
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn bus_write(raw: *mut WrenVM) {
@@ -587,15 +608,13 @@ pub(crate) unsafe extern "C" fn bus_write(raw: *mut WrenVM) {
 
 pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
     // `Out.patch(arg)` → if `arg` is a Bus, set it as root directly; otherwise
-    // write the Node/Port into the master bus and set the master as root.
-    // SAFETY: the patch argument is one of our tagged foreign objects.
+    // route the source (stereo-aware) into the master bus and set it as root.
     let tag = unsafe { *vm.foreign_mut::<u8>(1) };
     if tag == TAG_BUS {
         let bus = unsafe { vm.foreign_mut::<BusObj>(1) }.id;
         audio::set_root(bus);
     } else {
-        let src = arg_input(vm, 1);
-        audio::bus_write(src, audio::MASTER_BUS);
+        write_source_to_bus(vm, 1, audio::MASTER_BUS);
         audio::set_root(audio::MASTER_BUS);
     }
 }

@@ -551,3 +551,46 @@ fn pan_new_emits_kind_pan_node() {
         "expected a NewNode(Pan): {cmds:?}"
     );
 }
+
+#[test]
+fn patch_stereo_node_emits_two_side_writes() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    // Out.patch of a width-2 Pan → two BusWriteGains: (1,0) and (0,1) to master.
+    let cmds = run_and_capture_cmds("Out.patch(Pan.new(Osc.saw(110), 0.0))");
+    let gains: std::vec::Vec<(f32, f32)> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+            _ => None,
+        })
+        .collect();
+    assert!(gains.contains(&(1.0, 0.0)), "missing L-side write: {gains:?}");
+    assert!(gains.contains(&(0.0, 1.0)), "missing R-side write: {gains:?}");
+}
+
+#[test]
+fn patch_mono_node_still_emits_single_center_write() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    // A mono node patched → exactly one plain center BusWrite, no gained writes.
+    let cmds = run_and_capture_cmds("Out.patch(Osc.saw(110))");
+    let center = cmds.iter().filter(|c| matches!(c, Cmd::BusWrite { .. })).count();
+    let gained = cmds.iter().filter(|c| matches!(c, Cmd::BusWriteGains { .. })).count();
+    assert_eq!(center, 1, "mono patch should emit one center write: {cmds:?}");
+    assert_eq!(gained, 0, "mono patch should emit no gained writes: {cmds:?}");
+}
+
+#[test]
+fn stereo_pan_renders_distinct_l_and_r() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    // Hard-left pan → L carries signal, R ≈ silent.
+    run_and_render("Out.patch(Pan.new(Osc.saw(110), -1.0))", &mut out);
+    let suml: f32 = out.iter().map(|f| f.l.abs()).sum();
+    let sumr: f32 = out.iter().map(|f| f.r.abs()).sum();
+    assert!(suml > 0.01, "L should carry the hard-left pan: {suml}");
+    assert!(sumr < 1e-3, "R should be ~silent at hard-left: {sumr}");
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
+}
