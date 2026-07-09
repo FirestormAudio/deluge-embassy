@@ -760,3 +760,42 @@ fn plate_renders_stereo_bounded_on_engine_host() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "plate should be non-silent");
 }
+
+#[test]
+fn drive_factories_emit_kind_drive_with_shape() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::{Cmd, Kind};
+    for (call, shape) in [("soft", 0.0f32), ("hard", 1.0), ("fold", 2.0), ("tube", 3.0)] {
+        let src = std::format!("var d = Drive.{}(Osc.saw(110), 0.7, 0.5, 0.8)", call);
+        let cmds = run_and_capture_cmds(&src);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Drive, .. })), "{call}: {cmds:?}");
+        // shape → SetParam(3, code)
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, value, .. } if (*value - shape).abs() < 1e-4)), "{call} shape {shape}: {cmds:?}");
+        // drive/tone/mix → params 0/1/2
+        for p in [0u8, 1, 2] {
+            assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "{call} missing SetParam {p}");
+        }
+    }
+}
+
+#[test]
+fn drive_setters_map_to_params() {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    use deluge_audio_graph::Cmd;
+    let cmds = run_and_capture_cmds(
+        "var d = Drive.soft(Osc.saw(110), 0.5, 0.5, 0.5)\nd.drive = 0.9\nd.tone = 0.3\nd.wet = 0.7",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })), "drive=→0: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })), "tone=→1: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, .. })), "wet=→2: {cmds:?}");
+}
+
+#[test]
+fn drive_renders_mono_bounded_on_engine_host() {
+    use deluge_wren_core::test_support::run_and_render;
+    use deluge_audio_graph::StereoFrame;
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Drive.hard(Osc.saw(110), 0.9, 0.6, 1.0))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+    assert!(out.iter().any(|f| f.l != 0.0), "drive should be non-silent");
+}

@@ -135,6 +135,9 @@ foreign class Node {
   foreign static room_(input, roomsize, damp, mix)
   foreign static hall_(input, size, damp, mix)
   foreign static plate_(input, size, damp, mix)
+  foreign static drive_(input, drive, tone, mix, shape)
+  foreign tone=(v)
+  foreign wet=(v)      // Drive dry/wet (NOT mix= — that's set_param 0, = drive here)
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
@@ -336,6 +339,17 @@ class Hall {
 //   var p = Plate.new(pad, 0.9, 0.3, 0.5); p.size = 0.95; p.spread = 0.8
 class Plate {
   static new(input, size, damp, mix) { Node.plate_(input, size, damp, mix) }
+}
+
+// Waveshaper / distortion. `drive` [0,1] amount, `tone` [0,1] brightness, `mix`
+// dry/wet. Four characters; 4× oversampled:
+//   Out.patch(Drive.hard(Osc.saw(110), 0.8, 0.6, 1.0))
+//   var d = Drive.tube(pad, 0.6, 0.7, 0.5); d.drive = 0.9; d.tone = 0.4; d.wet = 0.8
+class Drive {
+  static soft(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 0) }
+  static hard(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 1) }
+  static fold(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 2) }
+  static tube(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 3) }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order
