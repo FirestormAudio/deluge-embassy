@@ -204,7 +204,10 @@ impl Node {
         matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum)
     }
 
-    /// True if the node consumes a poly input tile on port 0.
+    /// True if the node consumes a poly input tile on port 0. Port 0 must
+    /// reference a `VOICES`-wide poly source (its `port` field is ignored — the
+    /// engine reads the source's whole `VOICES`-row tile); wiring a mono source
+    /// here reads neighbouring rows as voices (bounded garbage, never UB).
     pub fn has_poly_in(kind: Kind) -> bool {
         matches!(kind, Kind::PolyOsc | Kind::VoiceSum)
     }

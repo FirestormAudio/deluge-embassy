@@ -76,7 +76,7 @@ pub fn fast_sin_x8(p: core::simd::f32x8) -> core::simd::f32x8 {
     use core::simd::prelude::*;
     let pi = f32x8::splat(PI);
     let two_pi = f32x8::splat(2.0 * PI);
-    let mut x = f32x8::splat(2.0 * PI) * p;
+    let mut x = two_pi * p;
     x = x.simd_gt(pi).select(x - two_pi, x); // if x > π { x -= 2π }
     let b = f32x8::splat(4.0 / PI);
     let c = f32x8::splat(-4.0 / (PI * PI));

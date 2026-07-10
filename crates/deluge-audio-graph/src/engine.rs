@@ -757,4 +757,42 @@ mod tests {
         let out = e.node_output(NodeId(2), 0);
         assert!(out.iter().all(|&s| s == 0.0), "dangling poly edge → silence, no panic");
     }
+
+    #[test]
+    fn poly_chain_matches_independent_reference_sum() {
+        // Distinct per-voice frequencies: the VoiceSum output must EXACTLY equal
+        // an independently-computed sum of 8 per-voice reference sines. This pins
+        // the full arena↔poly_scratch interleave round-trip end-to-end — a
+        // transpose would deliver the wrong frequency to each lane and fail here
+        // (unlike the bulk-property tests above, which survive a permutation).
+        // Runs in both feature configs, so it also null-tests the f32x8 PolyOsc.
+        type PE = Engine<64, 8, 32, 4, 45056, 2048>;
+        let sr = 48_000.0f32;
+        let dt = 1.0 / sr;
+        let freqs: [f32; VOICES] = core::array::from_fn(|v| (v as f32 + 1.0) * 137.0);
+        let mut e = PE::new(sr);
+        e.create(NodeId(0), Kind::PolyCtrl);
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: freqs[v] });
+        }
+        e.create(NodeId(1), Kind::PolyOsc);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.create(NodeId(2), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        e.render_block();
+        let out = e.node_output(NodeId(2), 0);
+        // Reference: per-voice phase accumulator (phase stays positive, so
+        // `fract()` matches the kernel's floorf-based wrap). Advance-then-output,
+        // matching the kernel's order.
+        let mut ph = [0.0f32; VOICES];
+        for (i, &got) in out.iter().enumerate() {
+            let mut want = 0.0f32;
+            for v in 0..VOICES {
+                ph[v] += freqs[v] * dt;
+                ph[v] -= ph[v].floor();
+                want += deluge_dsp_kernels::fast_sin(ph[v]);
+            }
+            assert!((got - want).abs() < 1e-3, "sample {i}: got {got}, want {want}");
+        }
+    }
 }
