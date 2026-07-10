@@ -16,6 +16,8 @@ pub enum Cmd {
     BindTable { node: NodeId, src: crate::node::TableSrc },
     Gate { node: NodeId, on: bool },
     Trigger { node: NodeId },
+    GateVoice { node: NodeId, voice: u8, on: bool },
+    TriggerVoice { node: NodeId, voice: u8 },
     BusWrite { src: Input, bus: BusId },
     BusWriteGains { src: Input, bus: BusId, gl: f32, gr: f32 },
     SetRoot { bus: BusId },

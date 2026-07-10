@@ -131,6 +131,12 @@ impl<
                     n.trigger();
                 }
             }
+            Cmd::GateVoice { node, voice, on } => {
+                if let Some(n) = self.arena.node_mut(node) { n.gate_voice(voice as usize, on); }
+            }
+            Cmd::TriggerVoice { node, voice } => {
+                if let Some(n) = self.arena.node_mut(node) { n.trigger_voice(voice as usize); }
+            }
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
             Cmd::BusWriteGains { src, bus, gl, gr } => self.bus_write_gains(src, bus, gl, gr),
             Cmd::SetRoot { bus } => self.set_root(bus),
@@ -172,7 +178,7 @@ impl<
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
             let mut scratch = [[0.0f32; BLOCK]; MAX_INPUTS];
-            let mut poly_scratch = [[0.0f32; BLOCK]; VOICES];
+            let mut poly_scratch = [[[0.0f32; BLOCK]; VOICES]; 2];
             {
                 // SAFETY: read-only view of the output arena; no writer is live.
                 let arr = unsafe { &*self.outs.get() };
@@ -194,28 +200,17 @@ impl<
                     }
                 }
 
-                if Node::has_poly_in(kind) {
-                    // Port 0 references the poly source; copy its VOICES rows
-                    // (which store the interleaved tile) verbatim — row-wise copy
-                    // preserves the flat interleaved layout. Dangling/short → silence.
-                    match inputs[0] {
+                for j in 0..Node::poly_in_count(kind) {
+                    // Ports 0..k are poly edges; copy each source's VOICES rows
+                    // verbatim (row-copy preserves the interleaved layout).
+                    match inputs[j] {
                         Input::Node { node, .. } => match self.arena.out_base(node) {
                             Some(sbase) if sbase + VOICES <= OUTS => {
-                                for v in 0..VOICES {
-                                    poly_scratch[v] = arr[sbase + v];
-                                }
+                                for v in 0..VOICES { poly_scratch[j][v] = arr[sbase + v]; }
                             }
-                            _ => {
-                                for v in 0..VOICES {
-                                    poly_scratch[v] = [0.0; BLOCK];
-                                }
-                            }
+                            _ => { for v in 0..VOICES { poly_scratch[j][v] = [0.0; BLOCK]; } }
                         },
-                        _ => {
-                            for v in 0..VOICES {
-                                poly_scratch[v] = [0.0; BLOCK];
-                            }
-                        }
+                        _ => { for v in 0..VOICES { poly_scratch[j][v] = [0.0; BLOCK]; } }
                     }
                 }
             }
@@ -238,11 +233,14 @@ impl<
             let arr = unsafe { &mut *self.outs.get() };
             if Node::is_poly(kind) {
                 // Poly path: voice-interleaved tile in/out, isolated dispatch.
-                let poly_in: Option<&[f32]> =
-                    if Node::has_poly_in(kind) { Some(poly_scratch.as_flattened()) } else { None };
+                let count = Node::poly_in_count(kind);
+                let poly_in: [Option<&[f32]>; 2] = [
+                    if count > 0 { Some(poly_scratch[0].as_flattened()) } else { None },
+                    if count > 1 { Some(poly_scratch[1].as_flattened()) } else { None },
+                ];
                 let out = arr[base..base + width].as_flattened_mut(); // width*BLOCK
                 if let Some(n) = self.arena.node_mut(id) {
-                    n.poly_process(poly_in, self.dt, out);
+                    n.poly_process(&ins, poly_in, self.dt, out);
                 }
             } else {
                 let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
@@ -794,5 +792,46 @@ mod tests {
             }
             assert!((got - want).abs() < 1e-3, "sample {i}: got {got}, want {want}");
         }
+    }
+
+    #[test]
+    fn poly_mul_node_multiplies_two_poly_sources() {
+        // Two PolyCtrl sources → PolyMul → VoiceSum. Sum == Σ_v (a_v * b_v).
+        type PE = Engine<64, 8, 40, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        e.create(NodeId(0), Kind::PolyCtrl);
+        e.create(NodeId(1), Kind::PolyCtrl);
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v + 1) as f32 }); // 1..=8
+            e.apply(Cmd::SetParam { node: NodeId(1), param: v as u8, value: 2.0 });
+        }
+        e.create(NodeId(2), Kind::PolyMul);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        e.create(NodeId(3), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+        e.render_block();
+        let out = e.node_output(NodeId(3), 0);
+        let want: f32 = (1..=VOICES).map(|x| x as f32 * 2.0).sum(); // Σ 2·(1..8) = 72
+        assert!(out.iter().all(|&s| (s - want).abs() < 1e-3), "sum of a·b == {want}");
+    }
+
+    #[test]
+    fn gate_voice_reaches_only_addressed_lane() {
+        // A PolyAr gated on voice 3 only → after some samples, VoiceSum > 0 comes
+        // solely from lane 3 (all others idle at 0).
+        type PE = Engine<64, 8, 40, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        e.create(NodeId(0), Kind::PolyAr);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.0005); // fast attack
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.05);
+        e.create(NodeId(1), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.apply(Cmd::GateVoice { node: NodeId(0), voice: 3, on: true });
+        e.render_block();
+        let out = e.node_output(NodeId(1), 0);
+        // Exactly one voice ramping ⇒ sum rises toward ~1 (not 0, not ~8).
+        let peak = out.iter().cloned().fold(0.0f32, |m, s| m.max(s));
+        assert!(peak > 0.1 && peak < 1.5, "one gated voice: peak {peak}");
     }
 }
