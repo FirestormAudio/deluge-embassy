@@ -287,7 +287,7 @@ mod tests {
         let mut mono_out = std::vec![0.0f32; n];
         Svf::new().process(In::A(&mono_in), In::A(&cutoff), In::A(&res), SvfResp::Lp, dt, &mut mono_out);
         for i in 0..n {
-            assert!((poly_out[i * VOICES] - mono_out[i]).abs() < 2e-3, "sample {i}");
+            assert!((poly_out[i * VOICES] - mono_out[i]).abs() < 1e-4, "sample {i}");
         }
     }
 
@@ -442,5 +442,23 @@ mod tests {
         let mut out2 = std::vec![0.0f32; VOICES * n];
         env.process(In::A(&atk), In::A(&rel), dt, &mut out2);
         assert!(out2[(n - 1) * VOICES].abs() < 1e-3, "released to 0");
+    }
+
+    #[test]
+    fn polyar_trigger_voice_is_one_shot() {
+        // trigger_voice → attack then release with no sustain, on the addressed
+        // lane only. Voice 2 rises to ~1 then decays back to 0; others stay 0.
+        let dt = 1.0 / 48_000.0;
+        let mut env = PolyAr::new();
+        env.trigger_voice(2);
+        let n = 2000;
+        let atk: std::vec::Vec<f32> = (0..n).map(|_| 0.002).collect(); // 2 ms
+        let rel: std::vec::Vec<f32> = (0..n).map(|_| 0.005).collect(); // 5 ms
+        let mut out = std::vec![0.0f32; VOICES * n];
+        env.process(In::A(&atk), In::A(&rel), dt, &mut out);
+        let peak = (0..n).map(|i| out[i * VOICES + 2]).fold(0.0f32, f32::max);
+        assert!(peak > 0.99, "one-shot reaches peak: {peak}");
+        assert!(out[(n - 1) * VOICES + 2] < 0.05, "one-shot decays after: {}", out[(n - 1) * VOICES + 2]);
+        assert!(out[(n - 1) * VOICES].abs() < 1e-9, "untriggered voice 0 silent");
     }
 }

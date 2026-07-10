@@ -131,4 +131,16 @@ mod tests {
         assert!(out[5] > 0.0); // attacked
         assert!(out[299] < 1e-3); // released back to zero without a gate-off
     }
+
+    #[test]
+    fn ar_tick_matches_expected_steps() {
+        // Direct per-sample tick: attack adds dt/atk, release subtracts dt/rel.
+        let dt = 0.001;
+        let mut a = Ar::new();
+        a.gate(true); // Attack
+        assert!((a.tick(0.01, 0.05, dt) - 0.1).abs() < 1e-6); // +dt/atk = 0.1
+        assert!((a.tick(0.01, 0.05, dt) - 0.2).abs() < 1e-6); // → 0.2
+        a.gate(false); // Release
+        assert!((a.tick(0.01, 0.05, dt) - 0.18).abs() < 1e-6); // -dt/rel = -0.02 → 0.18
+    }
 }
