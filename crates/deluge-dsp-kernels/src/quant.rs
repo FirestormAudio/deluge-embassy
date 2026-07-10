@@ -165,6 +165,17 @@ mod tests {
     }
 
     #[test]
+    fn qpitch_empty_mask_is_chromatic() {
+        // An all-zero mask is guarded to chromatic (identity to nearest semitone),
+        // not an infinite/failed search.
+        let mut q = QuantPitch::new();
+        q.set_mask(0);
+        let mut out = std::vec![0.0f32; 3];
+        q.process(In::A(&[5.2, -3.4, 7.5]), &mut out);
+        assert_eq!(out, std::vec![5.0, -3.0, 8.0]);
+    }
+
+    #[test]
     fn qpitch_minor_snaps_known() {
         let mut q = QuantPitch::new();
         q.set_mask(MINOR); // {0,2,3,5,7,8,10}

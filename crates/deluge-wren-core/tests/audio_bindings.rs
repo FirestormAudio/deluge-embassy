@@ -951,3 +951,17 @@ fn curve_sugar_renders_bounded() {
     run_and_render("Out.patch(Osc.saw(110) * Env.ar(0.0, 0.1).curve(0.6))", &mut out);
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
 }
+
+#[test]
+fn scaling_sugar_builds_arithmetic() {
+    // The scale/offset sugar is thin wrappers over the * / + binops; confirm each
+    // wraps into the arithmetic graph it claims (Mul for scale-like, Add for offset).
+    let atten = run_and_capture_cmds("var a = LFO.sine(2).atten(0.5)");
+    assert!(atten.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mul, .. })), "atten → Mul");
+    let offset = run_and_capture_cmds("var a = LFO.sine(2).offset(0.25)");
+    assert!(offset.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Add, .. })), "offset → Add");
+    // unipolar = this * 0.5 + 0.5 → both a Mul and an Add.
+    let uni = run_and_capture_cmds("var a = LFO.sine(2).unipolar()");
+    assert!(uni.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mul, .. })), "unipolar has Mul");
+    assert!(uni.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Add, .. })), "unipolar has Add");
+}
