@@ -145,7 +145,7 @@ impl Default for Svf {
 /// equivalence test (fc 110 Hz–9 kHz, res 0–0.95) the measured max output delta
 /// vs. the exact-tanf const path is ~1.2e-3, comfortably under the 2e-3 gate.
 #[inline]
-fn svf_tan_prewarp(theta: f32) -> f32 {
+pub(crate) fn svf_tan_prewarp(theta: f32) -> f32 {
     // theta in (0, ~1.54). Rational approx of tan: t·(a + b·t²)/(1 - c·t²).
     let t = theta;
     let t2 = t * t;

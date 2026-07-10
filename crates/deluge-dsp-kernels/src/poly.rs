@@ -6,10 +6,25 @@
 #[cfg(not(feature = "simd"))]
 use crate::{fast_sin, floorf};
 use crate::env::Ar;
+#[cfg(not(feature = "simd"))]
+use crate::filter::{Svf, SvfResp};
+use crate::filter::{svf_coeffs, svf_k_from_res, svf_tan_prewarp};
 use crate::In;
+use core::f32::consts::PI;
 
 /// Voices processed in parallel per poly node. Fixed at compile time.
 pub const VOICES: usize = 8;
+
+/// Scalar SVF coefficients for a shared (mono) cutoff/res. Returns (k, a1, a2, a3).
+/// Uses the polynomial prewarp (matches scalar `Svf`'s audio-rate path).
+#[inline]
+fn poly_svf_coeffs(fc: f32, res: f32, dt: f32) -> (f32, f32, f32, f32) {
+    let theta = (PI * fc.max(1.0) * dt).min(0.49 * PI);
+    let g = svf_tan_prewarp(theta);
+    let k = svf_k_from_res(res);
+    let (a1, a2, a3) = svf_coeffs(g, k);
+    (k, a1, a2, a3)
+}
 
 /// A per-voice settable scalar source: lane `v` outputs `values[v]`. No input.
 /// The allocator's write-target (Sy-3). Output tile is voice-interleaved.
@@ -146,11 +161,146 @@ pub fn voice_sum(tile: &[f32], out: &mut [f32]) {
     }
 }
 
+/// Poly SVF lowpass. Poly audio in → 8 filtered lanes; shared mono cutoff/res.
+/// Scalar path holds `[Svf; VOICES]` and reuses the audited `Svf::tick`; the
+/// SIMD path keeps SoA `f32x8` state register-resident. Both use identical
+/// scalar coeffs, so they agree.
+#[cfg(feature = "simd")]
+const _: () = assert!(VOICES == 8);
+
+#[derive(Clone, Copy)]
+pub struct PolySvf {
+    #[cfg(not(feature = "simd"))]
+    voices: [Svf; VOICES],
+    #[cfg(feature = "simd")]
+    ic1: [f32; VOICES],
+    #[cfg(feature = "simd")]
+    ic2: [f32; VOICES],
+}
+impl PolySvf {
+    #[cfg(not(feature = "simd"))]
+    pub fn new() -> PolySvf {
+        PolySvf { voices: [Svf::new(); VOICES] }
+    }
+    #[cfg(feature = "simd")]
+    pub fn new() -> PolySvf {
+        PolySvf { ic1: [0.0; VOICES], ic2: [0.0; VOICES] }
+    }
+
+    /// `audio` = voice-interleaved poly input; cutoff/res mono; LP output tile.
+    pub fn process(&mut self, audio: &[f32], cutoff: In, res: In, dt: f32, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        #[cfg(feature = "simd")]
+        {
+            use core::simd::prelude::*;
+            let two = f32x8::splat(2.0);
+            let mut ic1 = f32x8::from_array(self.ic1);
+            let mut ic2 = f32x8::from_array(self.ic2);
+            for i in 0..n {
+                let (_k, a1, a2, a3) = poly_svf_coeffs(cutoff.at(i), res.at(i), dt);
+                let (a1v, a2v, a3v) = (f32x8::splat(a1), f32x8::splat(a2), f32x8::splat(a3));
+                let v0 = f32x8::from_slice(&audio[i * VOICES..]);
+                let v3 = v0 - ic2;
+                let v1 = a1v * ic1 + a2v * v3;
+                let v2 = ic2 + a2v * ic1 + a3v * v3;
+                ic1 = two * v1 - ic1;
+                ic2 = two * v2 - ic2;
+                v2.copy_to_slice(&mut out[i * VOICES..]); // LP = v2
+            }
+            self.ic1 = ic1.to_array();
+            self.ic2 = ic2.to_array();
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            for i in 0..n {
+                let (k, a1, a2, a3) = poly_svf_coeffs(cutoff.at(i), res.at(i), dt);
+                for v in 0..VOICES {
+                    out[i * VOICES + v] =
+                        self.voices[v].tick(audio[i * VOICES + v], k, a1, a2, a3, SvfResp::Lp);
+                }
+            }
+        }
+    }
+}
+impl Default for PolySvf {
+    fn default() -> Self { Self::new() }
+}
+
+/// Poly × poly, lanewise: `out[j] = a[j] * b[j]`. The VCA. Auto-vectorizes.
+pub fn poly_mul(a: &[f32], b: &[f32], out: &mut [f32]) {
+    for j in 0..out.len() {
+        out[j] = a[j] * b[j];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
     use crate::{fast_sin, floorf}; // explicit so tests build under `--features simd` too
+
+    fn make_sine_tile(freq: f32, n: usize, dt: f32) -> std::vec::Vec<f32> {
+        let mut t = std::vec![0.0f32; VOICES * n];
+        let mut ph = 0.0f32;
+        for i in 0..n {
+            ph += freq * dt;
+            ph -= floorf(ph);
+            let s = fast_sin(ph);
+            for v in 0..VOICES {
+                t[i * VOICES + v] = s;
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn polysvf_attenuates_above_cutoff() {
+        // A high-frequency input (18 kHz) fed to a low cutoff (300 Hz) comes out
+        // much smaller; a low tone (100 Hz) passes ~unchanged.
+        let dt = 1.0 / 48_000.0;
+        let n = 4800;
+        let hi = make_sine_tile(18_000.0, n, dt);
+        let lo = make_sine_tile(100.0, n, dt);
+        let cutoff: std::vec::Vec<f32> = (0..n).map(|_| 300.0).collect();
+        let res: std::vec::Vec<f32> = (0..n).map(|_| 0.0).collect();
+        let mut out_hi = std::vec![0.0f32; VOICES * n];
+        let mut out_lo = std::vec![0.0f32; VOICES * n];
+        PolySvf::new().process(&hi, In::A(&cutoff), In::A(&res), dt, &mut out_hi);
+        PolySvf::new().process(&lo, In::A(&cutoff), In::A(&res), dt, &mut out_lo);
+        let peak = |t: &[f32]| t[VOICES * n / 2..].iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!(peak(&out_hi) < 0.3, "18 kHz attenuated: {}", peak(&out_hi));
+        assert!(peak(&out_lo) > 0.7, "100 Hz passes: {}", peak(&out_lo));
+    }
+
+    #[test]
+    fn polysvf_matches_scalar_svf_single_voice() {
+        // Cross-check: PolySvf voice 0 ≈ a scalar Svf on the same signal.
+        use crate::filter::{Svf, SvfResp};
+        let dt = 1.0 / 48_000.0;
+        let n = 2000;
+        let sig = make_sine_tile(1000.0, n, dt); // all 8 voices identical here
+        let cutoff: std::vec::Vec<f32> = (0..n).map(|i| 500.0 + i as f32).collect(); // audio-rate → both use prewarp
+        let res: std::vec::Vec<f32> = (0..n).map(|_| 0.3).collect();
+        let mut poly_out = std::vec![0.0f32; VOICES * n];
+        PolySvf::new().process(&sig, In::A(&cutoff), In::A(&res), dt, &mut poly_out);
+        let mono_in: std::vec::Vec<f32> = (0..n).map(|i| sig[i * VOICES]).collect();
+        let mut mono_out = std::vec![0.0f32; n];
+        Svf::new().process(In::A(&mono_in), In::A(&cutoff), In::A(&res), SvfResp::Lp, dt, &mut mono_out);
+        for i in 0..n {
+            assert!((poly_out[i * VOICES] - mono_out[i]).abs() < 2e-3, "sample {i}");
+        }
+    }
+
+    #[test]
+    fn poly_mul_lanewise() {
+        let a: [f32; VOICES * 2] = core::array::from_fn(|j| j as f32);
+        let b: [f32; VOICES * 2] = core::array::from_fn(|_| 2.0);
+        let mut out = [0.0f32; VOICES * 2];
+        poly_mul(&a, &b, &mut out);
+        for j in 0..VOICES * 2 {
+            assert_eq!(out[j], j as f32 * 2.0);
+        }
+    }
 
     #[test]
     fn polyctrl_fills_interleaved_lanes() {
