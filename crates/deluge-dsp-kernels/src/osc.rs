@@ -80,7 +80,7 @@ pub enum Wave {
 /// Extracted verbatim from `Osc::process`'s `match wave` block so `Osc`'s
 /// output is bit-identical; also used by `SyncOsc` for the slave's
 /// natural-wrap band-limiting.
-fn wave_sample(wave: Wave, ph: f32, dtp: f32, width: f32) -> f32 {
+pub(crate) fn wave_sample(wave: Wave, ph: f32, dtp: f32, width: f32) -> f32 {
     match wave {
         Wave::Sine => fast_sin(ph),
         Wave::Saw => (2.0 * ph - 1.0) - poly_blep(ph, dtp),
@@ -98,6 +98,89 @@ fn wave_sample(wave: Wave, ph: f32, dtp: f32, width: f32) -> f32 {
             let mut p2 = ph + 0.5;
             p2 -= floorf(p2);
             naive + 8.0 * dtp * (poly_blamp(ph, dtp) - poly_blamp(p2, dtp))
+        }
+    }
+}
+
+#[cfg(feature = "simd")]
+use core::simd::prelude::*;
+
+/// SIMD trunc-floor matching scalar `floorf` (handles negatives).
+// `#[allow(dead_code)]` on this and the helpers below: not yet called outside
+// `#[cfg(test)]` — `PolyOsc` (Sy-2b Task 2) is the production consumer of
+// `wave_sample_x8`. Same forward-declared-plumbing pattern as
+// `deluge-fft/src/twiddle.rs`.
+#[cfg(feature = "simd")]
+#[allow(dead_code)]
+#[inline]
+fn floor_x8(x: f32x8) -> f32x8 {
+    let t: f32x8 = x.cast::<i32>().cast::<f32>();
+    t.simd_gt(x).select(t - f32x8::splat(1.0), t)
+}
+
+/// f32x8 counterpart of `blep_right` (two quartic pieces via select).
+#[cfg(feature = "simd")]
+#[allow(dead_code)]
+#[inline]
+fn blep_right_x8(x: f32x8) -> f32x8 {
+    let lo = x * (x * x * (x * f32x8::splat(0.25) - f32x8::splat(2.0 / 3.0)) + f32x8::splat(4.0 / 3.0)) - f32x8::splat(1.0);
+    let hi = x * (x * (x * (x * f32x8::splat(-1.0 / 12.0) + f32x8::splat(2.0 / 3.0)) - f32x8::splat(2.0)) + f32x8::splat(8.0 / 3.0)) - f32x8::splat(4.0 / 3.0);
+    x.simd_lt(f32x8::splat(1.0)).select(lo, hi)
+}
+
+/// f32x8 counterpart of `poly_blep` (left/right/zero via select; left wins,
+/// matching the scalar `if/else if`).
+#[cfg(feature = "simd")]
+#[allow(dead_code)]
+#[inline]
+fn poly_blep_x8(t: f32x8, dtp: f32x8) -> f32x8 {
+    let one = f32x8::splat(1.0);
+    let w = f32x8::splat(2.0) * dtp;
+    let left = blep_right_x8(t / dtp);
+    let right = -blep_right_x8(-(t - one) / dtp);
+    let lm = t.simd_lt(w);
+    let rm = t.simd_gt(one - w);
+    lm.select(left, rm.select(right, f32x8::splat(0.0)))
+}
+
+/// f32x8 counterpart of `poly_blamp` (two cubic pieces via select).
+#[cfg(feature = "simd")]
+#[allow(dead_code)]
+#[inline]
+fn poly_blamp_x8(t: f32x8, dtp: f32x8) -> f32x8 {
+    let one = f32x8::splat(1.0);
+    let xa = t / dtp - one;
+    let a = f32x8::splat(-1.0 / 3.0) * xa * xa * xa;
+    let xb = (t - one) / dtp + one;
+    let b = f32x8::splat(1.0 / 3.0) * xb * xb * xb;
+    let am = t.simd_lt(dtp);
+    let bm = t.simd_gt(one - dtp);
+    am.select(a, bm.select(b, f32x8::splat(0.0)))
+}
+
+/// f32x8 band-limited waveform (Square PWM fixed 0.5). Matches scalar
+/// `wave_sample(..., 0.5)` lane-for-lane.
+#[cfg(feature = "simd")]
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn wave_sample_x8(wave: Wave, ph: f32x8, dtp: f32x8) -> f32x8 {
+    let one = f32x8::splat(1.0);
+    match wave {
+        Wave::Sine => crate::fast_sin_x8(ph),
+        Wave::Saw => (f32x8::splat(2.0) * ph - one) - poly_blep_x8(ph, dtp),
+        Wave::Square => {
+            let half = f32x8::splat(0.5);
+            let naive = ph.simd_lt(half).select(one, -one);
+            let mut pw = ph - half;
+            pw -= floor_x8(pw);
+            naive + poly_blep_x8(ph, dtp) - poly_blep_x8(pw, dtp)
+        }
+        Wave::Tri => {
+            let half = f32x8::splat(0.5);
+            let naive = one - f32x8::splat(4.0) * (ph - half).abs();
+            let mut p2 = ph + half;
+            p2 -= floor_x8(p2);
+            naive + f32x8::splat(8.0) * dtp * (poly_blamp_x8(ph, dtp) - poly_blamp_x8(p2, dtp))
         }
     }
 }
@@ -263,6 +346,25 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::eprintln;
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn wave_sample_x8_matches_scalar() {
+        use core::simd::f32x8;
+        let dt = 1.0 / 48_000.0;
+        for (wi, &shape) in [Wave::Sine, Wave::Saw, Wave::Square, Wave::Tri].iter().enumerate() {
+            for fk in 0..40 {
+                let freq = 55.0 + fk as f32 * 200.0; // 55 Hz .. ~8 kHz
+                let dtp = freq * dt;
+                for pk in 0..97 {
+                    let ph = pk as f32 / 97.0; // sweep [0,1)
+                    let s = wave_sample(shape, ph, dtp, 0.5);
+                    let v = wave_sample_x8(shape, f32x8::splat(ph), f32x8::splat(dtp)).to_array()[0];
+                    assert!((v - s).abs() < 1e-4, "shape idx {wi} f {freq} ph {ph}: {v} vs {s}");
+                }
+            }
+        }
+    }
 
     proptest! {
         /// P0 gate (spec §8): for any wave/freq in the audio range, every
