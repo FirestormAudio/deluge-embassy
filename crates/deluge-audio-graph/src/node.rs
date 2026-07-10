@@ -11,7 +11,7 @@ use deluge_dsp_kernels::{
     env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
-    poly::{poly_add, poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMtof, PolyNoise, PolyOsc, PolySvf, VOICES},
+    poly::{poly_add, poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySvf, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -88,6 +88,10 @@ pub enum Kind {
     PolyMtof,
     PolyAdd,
     PolyNoise,
+    PolyMoogLp4,
+    PolyMoogLp2,
+    PolyMs20Lp,
+    PolyMs20Hp,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -127,6 +131,9 @@ enum State {
     PolySvf(PolySvf),
     PolyMtof(PolyMtof),
     PolyNoise(PolyNoise),
+    PolyMoog4(PolyMoog<4>),
+    PolyMoog2(PolyMoog<2>),
+    PolyMs20(PolyMs20),
     Stateless,
 }
 
@@ -194,6 +201,9 @@ impl Node {
             Kind::PolySvf => State::PolySvf(PolySvf::new()),
             Kind::PolyMtof => State::PolyMtof(PolyMtof::new()),
             Kind::PolyNoise => State::PolyNoise(PolyNoise::new()),
+            Kind::PolyMoogLp4 => State::PolyMoog4(PolyMoog::<4>::new()),
+            Kind::PolyMoogLp2 => State::PolyMoog2(PolyMoog::<2>::new()),
+            Kind::PolyMs20Lp | Kind::PolyMs20Hp => State::PolyMs20(PolyMs20::new()),
         };
         Node {
             kind,
@@ -207,7 +217,9 @@ impl Node {
     pub fn out_width(kind: Kind) -> usize {
         match kind {
             Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise => VOICES,
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul
+                | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise
+                | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => VOICES,
             _ => 1,
         }
     }
@@ -215,14 +227,16 @@ impl Node {
     /// A poly node carries `VOICES` voice-lanes and is dispatched via
     /// `poly_process`, not `process_resolved`.
     pub fn is_poly(kind: Kind) -> bool {
-        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise)
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise
+            | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp)
     }
 
     /// Number of leading input ports that are poly edges (the rest are mono
     /// controls). Generalizes the Sy-1 single-poly-input model.
     pub fn poly_in_count(kind: Kind) -> usize {
         match kind {
-            Kind::PolyOsc | Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof => 1,
+            Kind::PolyOsc | Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof
+                | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => 1,
             Kind::PolyMul | Kind::PolyAdd => 2,
             _ => 0, // PolyCtrl, PolyAr, PolyNoise, and all mono kinds
         }
@@ -700,7 +714,8 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise => {
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise
+                | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => {
                 // Poly kinds are dispatched via `poly_process`, not this path.
             }
         }
@@ -757,6 +772,22 @@ impl Node {
             Kind::PolyNoise => {
                 if let State::PolyNoise(nz) = &mut self.state {
                     nz.process(out);
+                }
+            }
+            Kind::PolyMoogLp4 => {
+                if let (State::PolyMoog4(m), Some(audio)) = (&mut self.state, poly_in[0]) {
+                    m.process(audio, ins[1], ins[2], dt, out);
+                }
+            }
+            Kind::PolyMoogLp2 => {
+                if let (State::PolyMoog2(m), Some(audio)) = (&mut self.state, poly_in[0]) {
+                    m.process(audio, ins[1], ins[2], dt, out);
+                }
+            }
+            Kind::PolyMs20Lp | Kind::PolyMs20Hp => {
+                let resp = if matches!(self.kind, Kind::PolyMs20Hp) { Ms20Resp::Hp } else { Ms20Resp::Lp };
+                if let (State::PolyMs20(m), Some(audio)) = (&mut self.state, poly_in[0]) {
+                    m.process(audio, ins[1], ins[2], resp, dt, out);
                 }
             }
             _ => {}
@@ -1542,5 +1573,48 @@ mod tests {
         let mut out = [0.0f32; VOICES * 4];
         n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out);
         assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0) && out.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn poly_moog_and_ms20_voice_render_sound() {
+        // Mirrors the PolySvf graph test (crate::engine::tests::full_voice_gated_per_voice):
+        // PolyCtrl → PolyOsc → <filter> → PolyMul(·, PolyAr) → VoiceSum, one voice
+        // gated via Cmd::GateVoice. Parametrized over the four new poly filter kinds.
+        use crate::cmd::Cmd;
+        use crate::engine::Engine;
+        use crate::ids::NodeId;
+
+        for fkind in [Kind::PolyMoogLp4, Kind::PolyMoogLp2, Kind::PolyMs20Lp, Kind::PolyMs20Hp] {
+            type PE = Engine<64, 8, 48, 4, 45056, 2048>;
+            let mut e = PE::new(48_000.0);
+            // pitch source
+            e.create(NodeId(0), Kind::PolyCtrl);
+            for v in 0..VOICES {
+                e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+            }
+            // osc → filter
+            e.create(NodeId(1), Kind::PolyOsc);
+            *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+            e.create(NodeId(2), fkind);
+            *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+            *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(1200.0); // cutoff
+            *e.node_input_mut(NodeId(2), 2).unwrap() = Input::Const(0.2);    // res
+            // envelope + VCA
+            e.create(NodeId(3), Kind::PolyAr);
+            *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Const(0.0005); // attack
+            *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(0.05);   // release
+            e.create(NodeId(4), Kind::PolyMul);
+            *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+            *e.node_input_mut(NodeId(4), 1).unwrap() = Input::Node { node: NodeId(3), port: 0 };
+            // sum → out
+            e.create(NodeId(5), Kind::VoiceSum);
+            *e.node_input_mut(NodeId(5), 0).unwrap() = Input::Node { node: NodeId(4), port: 0 };
+
+            e.apply(Cmd::GateVoice { node: NodeId(3), voice: 0, on: true });
+            e.render_block();
+            let out = e.node_output(NodeId(5), 0);
+            assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 8.1), "kind={fkind:?} bounded: {out:?}");
+            assert!(out.iter().any(|&s| s.abs() > 1e-4), "kind={fkind:?} gated voice sounds");
+        }
     }
 }
