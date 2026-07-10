@@ -88,6 +88,8 @@ pub enum Kind {
     PolyMtof,
     PolyAdd,
     PolyNoise,
+    PolyPink,
+    PolyBrown,
     PolyMoogLp4,
     PolyMoogLp2,
     PolyMs20Lp,
@@ -201,6 +203,8 @@ impl Node {
             Kind::PolySvf => State::PolySvf(PolySvf::new()),
             Kind::PolyMtof => State::PolyMtof(PolyMtof::new()),
             Kind::PolyNoise => State::PolyNoise(PolyNoise::new()),
+            Kind::PolyPink => State::PolyNoise(PolyNoise::new_color(NoiseColor::Pink)),
+            Kind::PolyBrown => State::PolyNoise(PolyNoise::new_color(NoiseColor::Brown)),
             Kind::PolyMoogLp4 => State::PolyMoog4(PolyMoog::<4>::new()),
             Kind::PolyMoogLp2 => State::PolyMoog2(PolyMoog::<2>::new()),
             Kind::PolyMs20Lp | Kind::PolyMs20Hp => State::PolyMs20(PolyMs20::new()),
@@ -218,7 +222,7 @@ impl Node {
         match kind {
             Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
             Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul
-                | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise
+                | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => VOICES,
             _ => 1,
         }
@@ -227,7 +231,7 @@ impl Node {
     /// A poly node carries `VOICES` voice-lanes and is dispatched via
     /// `poly_process`, not `process_resolved`.
     pub fn is_poly(kind: Kind) -> bool {
-        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
             | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp)
     }
 
@@ -238,7 +242,7 @@ impl Node {
             Kind::PolyOsc | Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => 1,
             Kind::PolyMul | Kind::PolyAdd => 2,
-            _ => 0, // PolyCtrl, PolyAr, PolyNoise, and all mono kinds
+            _ => 0, // PolyCtrl, PolyAr, PolyNoise/PolyPink/PolyBrown, and all mono kinds
         }
     }
 
@@ -714,7 +718,7 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => {
                 // Poly kinds are dispatched via `poly_process`, not this path.
             }
@@ -769,7 +773,7 @@ impl Node {
                     poly_add(a, b, out);
                 }
             }
-            Kind::PolyNoise => {
+            Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown => {
                 if let State::PolyNoise(nz) = &mut self.state {
                     nz.process(out);
                 }
@@ -1573,6 +1577,24 @@ mod tests {
         let mut out = [0.0f32; VOICES * 4];
         n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out);
         assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0) && out.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn poly_pink_and_brown_noise_nodes_render_bounded() {
+        // Mirrors poly_noise_node_renders_bounded: PolyPink/PolyBrown are pure
+        // poly sources (poly_in_count 0, out_width VOICES) that construct
+        // State::PolyNoise with the matching color.
+        for kind in [Kind::PolyPink, Kind::PolyBrown] {
+            assert_eq!(Node::poly_in_count(kind), 0);
+            assert_eq!(Node::out_width(kind), VOICES);
+            assert!(Node::is_poly(kind));
+            let mut n = Node::new(kind, 0);
+            let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
+            let mut out = [0.0f32; VOICES * 4];
+            n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out);
+            assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0), "kind={kind:?} bounded");
+            assert!(out.iter().any(|&s| s != 0.0), "kind={kind:?} non-silent");
+        }
     }
 
     #[test]

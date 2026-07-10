@@ -1,7 +1,7 @@
 //! White/pink/brown noise via xorshift32 → colored filters. Serial recurrence → scalar.
 
 /// Which noise color a [`Noise`] generator produces.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum NoiseColor {
     /// Flat magnitude spectrum (xorshift32 direct).
     White,
@@ -63,36 +63,39 @@ impl Noise {
         }
     }
 
+    /// One noise sample (advances rng + color state). Shared by `process` and `PolyNoise`.
+    #[inline]
+    pub(crate) fn tick(&mut self) -> f32 {
+        let mut r = self.rng;
+        r ^= r << 13;
+        r ^= r >> 17;
+        r ^= r << 5;
+        self.rng = r;
+        let white = (r as i32 as f32) / (i32::MAX as f32);
+        match self.color {
+            NoiseColor::White => white,
+            NoiseColor::Pink => {
+                let b = &mut self.pink;
+                b[0] = 0.99886 * b[0] + white * 0.0555179;
+                b[1] = 0.99332 * b[1] + white * 0.0750759;
+                b[2] = 0.96900 * b[2] + white * 0.153852;
+                b[3] = 0.86650 * b[3] + white * 0.3104856;
+                b[4] = 0.55000 * b[4] + white * 0.5329522;
+                b[5] = -0.7616 * b[5] - white * 0.016898;
+                let pink = (b[0]+b[1]+b[2]+b[3]+b[4]+b[5]+b[6] + white*0.5362) * PINK_GAIN;
+                b[6] = white * 0.115926;
+                pink
+            }
+            NoiseColor::Brown => {
+                self.brown = (self.brown + white * BROWN_RATE) * BROWN_LEAK;
+                (self.brown * BROWN_GAIN).clamp(-1.0, 1.0)
+            }
+        }
+    }
+
     pub fn process(&mut self, out: &mut [f32]) {
         for s in out.iter_mut() {
-            let mut r = self.rng;
-            r ^= r << 13;
-            r ^= r >> 17;
-            r ^= r << 5;
-            self.rng = r;
-            let white = (r as i32 as f32) / (i32::MAX as f32);
-
-            *s = match self.color {
-                NoiseColor::White => white,
-                NoiseColor::Pink => {
-                    let b = &mut self.pink;
-                    b[0] = 0.99886 * b[0] + white * 0.0555179;
-                    b[1] = 0.99332 * b[1] + white * 0.0750759;
-                    b[2] = 0.96900 * b[2] + white * 0.153852;
-                    b[3] = 0.86650 * b[3] + white * 0.3104856;
-                    b[4] = 0.55000 * b[4] + white * 0.5329522;
-                    b[5] = -0.7616 * b[5] - white * 0.016898;
-                    let pink =
-                        (b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + white * 0.5362)
-                            * PINK_GAIN;
-                    b[6] = white * 0.115926;
-                    pink
-                }
-                NoiseColor::Brown => {
-                    self.brown = (self.brown + white * BROWN_RATE) * BROWN_LEAK;
-                    (self.brown * BROWN_GAIN).clamp(-1.0, 1.0)
-                }
-            };
+            *s = self.tick();
         }
     }
 }

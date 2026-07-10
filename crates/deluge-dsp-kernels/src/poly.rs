@@ -8,6 +8,7 @@ use crate::floorf;
 use crate::env::Ar;
 #[cfg(not(feature = "simd"))]
 use crate::filter::{DiodeLadder, Ms20, Svf, SvfResp};
+use crate::noise::{Noise, NoiseColor};
 use crate::filter::{
     moog_coeffs, ms20_coeffs, svf_coeffs, svf_k_from_res, svf_tan_prewarp, Ms20Resp, MOOG_OVERSAMPLE,
 };
@@ -485,32 +486,30 @@ pub fn poly_add(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
-/// 8 independent xorshift white-noise lanes with decorrelated per-voice
-/// seeds. A poly source (no input). Scalar (noise is cheap, non-band-limited).
+/// Poly noise: 8 independent colored generators (white/pink/brown), each a mono
+/// `Noise` with a decorrelated seed. Scalar (serial IIR recurrences). White lanes
+/// remain bit-identical to the Sy-2b `PolyNoise`.
 #[derive(Clone, Copy)]
 pub struct PolyNoise {
-    rng: [u32; VOICES],
+    voices: [Noise; VOICES],
 }
 impl PolyNoise {
     pub fn new() -> PolyNoise {
-        let mut rng = [0u32; VOICES];
-        for (v, r) in rng.iter_mut().enumerate() {
-            let s = 0x2545_F491u32 ^ 0x9E37_79B9u32.wrapping_mul(v as u32 + 1);
-            *r = if s == 0 { 0x2545_F491 } else { s }; // xorshift must be nonzero
-        }
-        PolyNoise { rng }
+        PolyNoise::new_color(NoiseColor::White)
     }
-    /// `out` is voice-interleaved, length `VOICES * n_samples`.
+    pub fn new_color(color: NoiseColor) -> PolyNoise {
+        let voices = core::array::from_fn(|v| {
+            let seed = 0x2545_F491u32 ^ 0x9E37_79B9u32.wrapping_mul((v as u32) + 1);
+            Noise::seeded_color(seed, color)
+        });
+        PolyNoise { voices }
+    }
+    /// Voice-interleaved output tile, length `VOICES * n_samples`.
     pub fn process(&mut self, out: &mut [f32]) {
         let n = out.len() / VOICES;
         for i in 0..n {
             for v in 0..VOICES {
-                let mut r = self.rng[v];
-                r ^= r << 13;
-                r ^= r >> 17;
-                r ^= r << 5;
-                self.rng[v] = r;
-                out[i * VOICES + v] = (r as i32 as f32) / (i32::MAX as f32); // matches noise.rs white
+                out[i * VOICES + v] = self.voices[v].tick();
             }
         }
     }
@@ -648,6 +647,26 @@ mod tests {
             assert!((out[i * VOICES] - mref[i + 1]).abs() < 1e-4, "sample {i}: {} vs {}", out[i * VOICES], mref[i + 1]);
         }
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+    }
+
+    #[test]
+    fn polynoise_colors_match_mono_per_lane() {
+        use crate::noise::{Noise, NoiseColor}; // match poly.rs test import convention (crate::, per existing `use crate::{fast_sin, floorf};`)
+        let n = 256usize;
+        for color in [NoiseColor::White, NoiseColor::Pink, NoiseColor::Brown] {
+            let mut poly = PolyNoise::new_color(color);
+            let mut out = std::vec![0.0f32; n * VOICES];
+            poly.process(&mut out);
+            // Each lane must equal a mono Noise seeded with that lane's seed + color.
+            for v in 0..VOICES {
+                let seed = 0x2545_F491u32 ^ 0x9E37_79B9u32.wrapping_mul((v as u32) + 1);
+                let mut refn = Noise::seeded_color(seed, color);
+                for i in 0..n {
+                    let want = refn.tick();
+                    assert_eq!(out[i * VOICES + v], want, "color {color:?} lane {v} sample {i}");
+                }
+            }
+        }
     }
 
     #[test]
