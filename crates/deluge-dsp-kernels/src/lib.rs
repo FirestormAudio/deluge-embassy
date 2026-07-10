@@ -18,6 +18,7 @@ pub mod modutil;
 pub mod noise;
 pub mod osc;
 pub mod reverb;
+pub mod shape;
 pub mod wavetable;
 mod wavetables_generated;
 
