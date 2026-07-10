@@ -14,6 +14,7 @@
 
 use core::cell::UnsafeCell;
 
+use deluge_dsp_kernels::poly::VOICES;
 use deluge_dsp_kernels::In;
 
 use crate::arena::Arena;
@@ -164,13 +165,14 @@ impl<
 
         for k in 0..live {
             let id = NodeId(order[k]);
-            let (base, width, inputs, table_src) = {
+            let (base, kind, width, inputs, table_src) = {
                 let n = self.arena.node(id).expect("eval-order node exists");
-                (n.out_base as usize, Node::out_width(n.kind), n.inputs_snapshot(), n.table_src())
+                (n.out_base as usize, n.kind, Node::out_width(n.kind), n.inputs_snapshot(), n.table_src())
             };
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
             let mut scratch = [[0.0f32; BLOCK]; MAX_INPUTS];
+            let mut poly_scratch = [[0.0f32; BLOCK]; VOICES];
             {
                 // SAFETY: read-only view of the output arena; no writer is live.
                 let arr = unsafe { &*self.outs.get() };
@@ -187,6 +189,31 @@ impl<
                             let b = bus.0 as usize;
                             for i in 0..BLOCK {
                                 row[i] = self.bus_l[b][i] + self.bus_r[b][i];
+                            }
+                        }
+                    }
+                }
+
+                if Node::has_poly_in(kind) {
+                    // Port 0 references the poly source; copy its VOICES rows
+                    // (which store the interleaved tile) verbatim — row-wise copy
+                    // preserves the flat interleaved layout. Dangling/short → silence.
+                    match inputs[0] {
+                        Input::Node { node, .. } => match self.arena.out_base(node) {
+                            Some(sbase) if sbase + VOICES <= OUTS => {
+                                for v in 0..VOICES {
+                                    poly_scratch[v] = arr[sbase + v];
+                                }
+                            }
+                            _ => {
+                                for v in 0..VOICES {
+                                    poly_scratch[v] = [0.0; BLOCK];
+                                }
+                            }
+                        },
+                        _ => {
+                            for v in 0..VOICES {
+                                poly_scratch[v] = [0.0; BLOCK];
                             }
                         }
                     }
@@ -209,19 +236,29 @@ impl<
             // following `self.arena.node_mut(id)` call (a borrow of the
             // disjoint `arena` field) to coexist with `arr`.
             let arr = unsafe { &mut *self.outs.get() };
-            let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
-            // Resolve a pooled node's region MUTABLY (delay lines write it;
-            // wavetables reborrow it immutably in `process_resolved`) BEFORE
-            // the node's `&mut` borrow below — `self.pool` and `self.arena` are
-            // separate fields of `Engine`, so the borrow checker tracks them
-            // independently as long as each is accessed as a direct field
-            // projection (not through a whole-`&mut self` helper method).
-            let pool_region: Option<&mut [f32]> = match table_src {
-                Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice_mut(h)),
-                _ => None,
-            };
-            if let Some(n) = self.arena.node_mut(id) {
-                n.process_resolved(&ins, self.dt, &mut view, pool_region);
+            if Node::is_poly(kind) {
+                // Poly path: voice-interleaved tile in/out, isolated dispatch.
+                let poly_in: Option<&[f32]> =
+                    if Node::has_poly_in(kind) { Some(poly_scratch.as_flattened()) } else { None };
+                let out = arr[base..base + width].as_flattened_mut(); // width*BLOCK
+                if let Some(n) = self.arena.node_mut(id) {
+                    n.poly_process(poly_in, self.dt, out);
+                }
+            } else {
+                let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
+                // Resolve a pooled node's region MUTABLY (delay lines write it;
+                // wavetables reborrow it immutably in `process_resolved`) BEFORE
+                // the node's `&mut` borrow below — `self.pool` and `self.arena` are
+                // separate fields of `Engine`, so the borrow checker tracks them
+                // independently as long as each is accessed as a direct field
+                // projection (not through a whole-`&mut self` helper method).
+                let pool_region: Option<&mut [f32]> = match table_src {
+                    Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice_mut(h)),
+                    _ => None,
+                };
+                if let Some(n) = self.arena.node_mut(id) {
+                    n.process_resolved(&ins, self.dt, &mut view, pool_region);
+                }
             }
         }
     }
@@ -665,5 +702,59 @@ mod tests {
         // Free → pool region reclaimed (same handle reallocates).
         e.apply(Cmd::Free { node: NodeId(0) });
         assert_eq!(e.pool_alloc(4096), Some(ring));
+    }
+
+    #[test]
+    fn poly_chain_sums_eight_voices_in_phase() {
+        // PolyCtrl(all voices = same freq) → PolyOsc → VoiceSum.
+        // All 8 lanes are identical (phase starts 0), so the sum peaks near 8×.
+        type PE = Engine<64, 8, 32, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        e.create(NodeId(0), Kind::PolyCtrl);
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: 440.0 });
+        }
+        e.create(NodeId(1), Kind::PolyOsc);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.create(NodeId(2), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        e.render_block();
+        let out = e.node_output(NodeId(2), 0);
+        let peak = out.iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(out.iter().all(|s| s.is_finite()), "finite");
+        assert!(peak > 7.0 && peak <= 8.001, "8 in-phase voices sum near 8×: peak {peak}");
+    }
+
+    #[test]
+    fn poly_distinct_voices_partially_cancel() {
+        // Distinct per-voice frequencies → lanes drift out of phase → the sum's
+        // peak stays well below 8× (proving voices are independent, not cloned).
+        type PE = Engine<64, 8, 32, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        e.create(NodeId(0), Kind::PolyCtrl);
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 300.0 });
+        }
+        e.create(NodeId(1), Kind::PolyOsc);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.create(NodeId(2), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        e.render_block();
+        let out = e.node_output(NodeId(2), 0);
+        let peak = out.iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 8.001));
+        assert!(peak < 7.0, "distinct voices don't all align: peak {peak}");
+    }
+
+    #[test]
+    fn poly_dangling_input_is_silent() {
+        // A VoiceSum whose poly input references a non-existent node → silence.
+        type PE = Engine<64, 8, 32, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        e.create(NodeId(2), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(5), port: 0 };
+        e.render_block();
+        let out = e.node_output(NodeId(2), 0);
+        assert!(out.iter().all(|&s| s == 0.0), "dangling poly edge → silence, no panic");
     }
 }
