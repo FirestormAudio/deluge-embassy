@@ -17,6 +17,7 @@ pub mod math;
 pub mod modutil;
 pub mod noise;
 pub mod osc;
+pub mod poly;
 pub mod quant;
 pub mod reverb;
 pub mod shape;
