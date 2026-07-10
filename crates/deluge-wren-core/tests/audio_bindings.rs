@@ -1139,6 +1139,13 @@ fn non_poly_classes_abort_inside_synth() {
         "Synth.new { |p| Resonator.new(Osc.saw(p), 220, 0.4) * Env.ar(0.01, 0.3) }",
         "Synth.new { |p| Svf.lp(Osc.saw(p), 1200, 0.6) * Env.ar(0.01, 0.3) }",
         "Synth.new { |p| Delay.new(Osc.saw(p), 0.2, 0.4) * Env.ar(0.01, 0.3) }",
+        // I-1: signal-input control/shaping classes missed by Sy-2c.
+        "Synth.new { |p| Slew.new(Osc.saw(p), 0.01) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| Osc.saw(p).curve(0.5) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| SampleHold.new(Osc.saw(p), Osc.square(p)) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| Split.new(Osc.saw(p)) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| Curve.new(Osc.saw(p), 0.5) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| Osc.saw(p).hz(69) * Env.ar(0.01, 0.3) }",
     ] {
         assert!(!run_script_ok(src), "expected abort for: {src}");
     }

@@ -215,10 +215,22 @@ foreign class Node {
   unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
   bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
   scale(m, a)    { this * m + a }
-  curve(k)       { Node.curve_(this, k) }
-  steps(n)       { Node.qstep_(this, n) }
-  quantize(s, r) { Node.qpitch_(this, s, r) }
-  hz(ref)        { Node.mtof_(this, ref) }
+  curve(k) {
+    if (Node.polyMode_ == 1) Fiber.abort("curve not usable in a Synth yet (Sy-2c)")
+    return Node.curve_(this, k)
+  }
+  steps(n) {
+    if (Node.polyMode_ == 1) Fiber.abort("steps not usable in a Synth yet (Sy-2c)")
+    return Node.qstep_(this, n)
+  }
+  quantize(s, r) {
+    if (Node.polyMode_ == 1) Fiber.abort("quantize not usable in a Synth yet (Sy-2c)")
+    return Node.qpitch_(this, s, r)
+  }
+  hz(ref) {
+    if (Node.polyMode_ == 1) Fiber.abort("hz not usable in a Synth yet (Sy-2c)")
+    return Node.mtof_(this, ref)
+  }
 }
 
 // A polyphonic instrument. Build a voice once with a `{ |pitch| … }` closure;
@@ -277,10 +289,22 @@ foreign class Port {
   unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
   bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
   scale(m, a)    { this * m + a }
-  curve(k)       { Node.curve_(this, k) }
-  steps(n)       { Node.qstep_(this, n) }
-  quantize(s, r) { Node.qpitch_(this, s, r) }
-  hz(ref)        { Node.mtof_(this, ref) }
+  curve(k) {
+    if (Node.polyMode_ == 1) Fiber.abort("curve not usable in a Synth yet (Sy-2c)")
+    return Node.curve_(this, k)
+  }
+  steps(n) {
+    if (Node.polyMode_ == 1) Fiber.abort("steps not usable in a Synth yet (Sy-2c)")
+    return Node.qstep_(this, n)
+  }
+  quantize(s, r) {
+    if (Node.polyMode_ == 1) Fiber.abort("quantize not usable in a Synth yet (Sy-2c)")
+    return Node.qpitch_(this, s, r)
+  }
+  hz(ref) {
+    if (Node.polyMode_ == 1) Fiber.abort("hz not usable in a Synth yet (Sy-2c)")
+    return Node.mtof_(this, ref)
+  }
 }
 
 // A user-supplied dynamic wavetable, uploaded from a Wren list of samples
@@ -373,13 +397,19 @@ class LFO {
 // LFO, a square, a metro):
 //   var rnd = SampleHold.new(Noise.pink(), Osc.square(4))   // stepped random
 class SampleHold {
-  static new(input, clock) { Node.sh_(input, clock) }
+  static new(input, clock) {
+    if (Node.polyMode_ == 1) Fiber.abort("SampleHold not usable in a Synth yet (Sy-2c)")
+    return Node.sh_(input, clock)
+  }
 }
 
 // Slew / glide: one-pole lag over `time` seconds. Smooths steps / portamento:
 //   osc.freq = Slew.new(pitchSeq, 0.02)
 class Slew {
-  static new(input, time) { Node.slew_(input, time) }
+  static new(input, time) {
+    if (Node.polyMode_ == 1) Fiber.abort("Slew not usable in a Synth yet (Sy-2c)")
+    return Node.slew_(input, time)
+  }
 }
 
 // Step sequencer: cycles a list of values, one per rising `clock` edge (up to 16
@@ -387,16 +417,28 @@ class Slew {
 //   var seq = Steps.new([0, 7, 5, 12], Osc.square(2))
 //   osc.freq = seq.to(110, 880)
 class Steps {
-  static new(values, clock) { Node.steps_(values, clock) }
+  static new(values, clock) {
+    if (Node.polyMode_ == 1) Fiber.abort("Steps not usable in a Synth yet (Sy-2c)")
+    return Node.steps_(values, clock)
+  }
 }
 
 // Non-linear response curve (Schlick bias), odd-symmetric on [-1,1].
 //   var shaped = env.curve(0.6)          // ease-in
 //   Out.patch(Osc.saw(110) * env.curve(-0.4))
 class Curve {
-  static new(sig, k) { Node.curve_(sig, k) }
-  static exp(sig)    { Node.curve_(sig, 0.6) }
-  static log(sig)    { Node.curve_(sig, -0.6) }
+  static new(sig, k) {
+    if (Node.polyMode_ == 1) Fiber.abort("Curve not usable in a Synth yet (Sy-2c)")
+    return Node.curve_(sig, k)
+  }
+  static exp(sig) {
+    if (Node.polyMode_ == 1) Fiber.abort("Curve not usable in a Synth yet (Sy-2c)")
+    return Node.curve_(sig, 0.6)
+  }
+  static log(sig) {
+    if (Node.polyMode_ == 1) Fiber.abort("Curve not usable in a Synth yet (Sy-2c)")
+    return Node.curve_(sig, -0.6)
+  }
 }
 
 // A macro control: one settable value that fans out to many destinations
@@ -682,7 +724,10 @@ class Noise {
 // A width-2 test node: routes its input to both output ports 0 and 1.
 //   var s = Split.new(osc); s.out(0); s.out(1)
 class Split {
-  static new(input) { Node.split_(input) }
+  static new(input) {
+    if (Node.polyMode_ == 1) Fiber.abort("Split not usable in a Synth yet (Sy-2c)")
+    return Node.split_(input)
+  }
 }
 
 class Out {
