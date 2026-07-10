@@ -4,11 +4,16 @@
 //! `v` at sample `i`, so the voice loop vectorizes to `f32x8` on NEON.
 
 #[cfg(not(feature = "simd"))]
-use crate::{fast_sin, floorf};
+use crate::floorf;
 use crate::env::Ar;
 #[cfg(not(feature = "simd"))]
 use crate::filter::{Svf, SvfResp};
 use crate::filter::{svf_coeffs, svf_k_from_res, svf_tan_prewarp};
+#[cfg(not(feature = "simd"))]
+use crate::osc::wave_sample;
+use crate::osc::Wave;
+#[cfg(feature = "simd")]
+use crate::osc::wave_sample_x8;
 use crate::quant::semitones_to_hz;
 use crate::In;
 use core::f32::consts::PI;
@@ -65,14 +70,26 @@ const _: () = assert!(VOICES == 8);
 
 /// A poly oscillator. `pitch` is a voice-interleaved tile of per-voice Hz;
 /// writes a voice-interleaved audio tile. SoA phase; voice loop is the inner
-/// (vectorizable) dimension. Raw sine shape (band-limiting is a later concern).
+/// (vectorizable) dimension. Shape-aware: routes through `wave_sample` /
+/// `wave_sample_x8` (Sy-1's band-limited waveshapes), so Sine output is
+/// bit-identical to the prior raw-`fast_sin` PolyOsc.
 #[derive(Clone, Copy)]
 pub struct PolyOsc {
     phase: [f32; VOICES], // [0,1) per voice
+    shape: Wave,
 }
 impl PolyOsc {
     pub fn new() -> PolyOsc {
-        PolyOsc { phase: [0.0; VOICES] }
+        PolyOsc { phase: [0.0; VOICES], shape: Wave::Sine }
+    }
+    /// `code`: 0=Sine, 1=Saw, 2=Square, 3=Tri (default Sine).
+    pub fn set_shape(&mut self, code: u8) {
+        self.shape = match code {
+            1 => Wave::Saw,
+            2 => Wave::Square,
+            3 => Wave::Tri,
+            _ => Wave::Sine,
+        };
     }
     /// `pitch` and `out` are voice-interleaved, length `VOICES * n_samples`.
     pub fn process(&mut self, pitch: &[f32], dt: f32, out: &mut [f32]) {
@@ -85,13 +102,14 @@ impl PolyOsc {
             let mut ph = f32x8::from_array(self.phase);
             for i in 0..n {
                 let f = f32x8::from_slice(&pitch[i * VOICES..]);
-                let mut p = ph + f * dtv;
+                let dtp = f * dtv;
+                let mut p = ph + dtp;
                 // wrap: p -= trunc-floor(p), matching scalar `floorf`
                 let t: f32x8 = p.cast::<i32>().cast::<f32>();
                 let fl = t.simd_gt(p).select(t - one, t);
                 p -= fl;
                 ph = p;
-                crate::fast_sin_x8(p).copy_to_slice(&mut out[i * VOICES..]);
+                wave_sample_x8(self.shape, p, dtp).copy_to_slice(&mut out[i * VOICES..]);
             }
             self.phase = ph.to_array();
         }
@@ -101,10 +119,11 @@ impl PolyOsc {
             for i in 0..n {
                 for v in 0..VOICES {
                     let f = pitch[i * VOICES + v];
-                    let mut p = self.phase[v] + f * dt;
+                    let dtp = f * dt;
+                    let mut p = self.phase[v] + dtp;
                     p -= floorf(p); // wrap [0,1)
                     self.phase[v] = p;
-                    out[i * VOICES + v] = fast_sin(p);
+                    out[i * VOICES + v] = wave_sample(self.shape, p, dtp, 0.5);
                 }
             }
         }
@@ -234,6 +253,50 @@ pub fn poly_mul(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
+/// Poly + poly, lanewise: `out[j] = a[j] + b[j]`. Two poly inputs. Stateless
+/// (auto-vectorizes).
+pub fn poly_add(a: &[f32], b: &[f32], out: &mut [f32]) {
+    for j in 0..out.len() {
+        out[j] = a[j] + b[j];
+    }
+}
+
+/// 8 independent xorshift white-noise lanes with decorrelated per-voice
+/// seeds. A poly source (no input). Scalar (noise is cheap, non-band-limited).
+#[derive(Clone, Copy)]
+pub struct PolyNoise {
+    rng: [u32; VOICES],
+}
+impl PolyNoise {
+    pub fn new() -> PolyNoise {
+        let mut rng = [0u32; VOICES];
+        for (v, r) in rng.iter_mut().enumerate() {
+            let s = 0x2545_F491u32 ^ 0x9E37_79B9u32.wrapping_mul(v as u32 + 1);
+            *r = if s == 0 { 0x2545_F491 } else { s }; // xorshift must be nonzero
+        }
+        PolyNoise { rng }
+    }
+    /// `out` is voice-interleaved, length `VOICES * n_samples`.
+    pub fn process(&mut self, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        for i in 0..n {
+            for v in 0..VOICES {
+                let mut r = self.rng[v];
+                r ^= r << 13;
+                r ^= r >> 17;
+                r ^= r << 5;
+                self.rng[v] = r;
+                out[i * VOICES + v] = (r as i32 as f32) / (i32::MAX as f32); // matches noise.rs white
+            }
+        }
+    }
+}
+impl Default for PolyNoise {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Poly semitone→Hz: `out[v] = ref_hz · 2^(semitone[v]/12)`. Poly-in note-offset
 /// lanes → Hz lanes. Scalar (pitch is control-rate, not a recurrent kernel).
 #[derive(Clone, Copy)]
@@ -326,6 +389,53 @@ mod tests {
         for j in 0..VOICES * 2 {
             assert_eq!(out[j], j as f32 * 2.0);
         }
+    }
+
+    #[test]
+    fn poly_add_lanewise() {
+        let a: [f32; VOICES * 2] = core::array::from_fn(|j| j as f32);
+        let b: [f32; VOICES * 2] = core::array::from_fn(|_| 10.0);
+        let mut out = [0.0f32; VOICES * 2];
+        poly_add(&a, &b, &mut out);
+        for j in 0..VOICES * 2 {
+            assert_eq!(out[j], j as f32 + 10.0);
+        }
+    }
+
+    #[test]
+    fn polyosc_saw_matches_mono_osc() {
+        // A PolyOsc saw voice equals the mono Osc saw on the same frequency
+        // (both go through wave_sample) — proves band-limiting is reused.
+        use crate::osc::{Osc, Wave};
+        let dt = 1.0 / 48_000.0;
+        let n = 400;
+        let freq = 220.0;
+        let mut po = PolyOsc::new();
+        po.set_shape(1); // Saw
+        let mut out = std::vec![0.0f32; VOICES * n];
+        po.process(&std::vec![freq; VOICES * n], dt, &mut out);
+        // Mono reference: Osc::process(wave, freq, pmod, width, dt, out).
+        // PolyOsc advances phase THEN outputs (Sy-1 convention); mono Osc outputs
+        // THEN advances — PolyOsc is one sample ahead: poly[i] == mono[i+1].
+        let mut mono = Osc::new();
+        let mut mref = std::vec![0.0f32; n + 1];
+        mono.process(Wave::Saw, In::K(freq), In::K(0.0), In::K(0.0), dt, &mut mref);
+        for i in 0..n {
+            assert!((out[i * VOICES] - mref[i + 1]).abs() < 1e-4, "sample {i}: {} vs {}", out[i * VOICES], mref[i + 1]);
+        }
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+    }
+
+    #[test]
+    fn polynoise_lanes_independent_and_bounded() {
+        let mut nz = PolyNoise::new();
+        let n = 64;
+        let mut out = std::vec![0.0f32; VOICES * n];
+        nz.process(&mut out);
+        assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0), "bounded");
+        assert!(out.iter().any(|&s| s != 0.0), "non-silent");
+        // Decorrelated: lane 0 and lane 1 differ.
+        assert!((0..n).any(|i| out[i * VOICES] != out[i * VOICES + 1]), "lanes decorrelated");
     }
 
     #[test]
