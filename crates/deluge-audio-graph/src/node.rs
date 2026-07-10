@@ -11,7 +11,7 @@ use deluge_dsp_kernels::{
     env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
-    poly::{poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMtof, PolyOsc, PolySvf, VOICES},
+    poly::{poly_add, poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMtof, PolyNoise, PolyOsc, PolySvf, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -86,6 +86,8 @@ pub enum Kind {
     PolySvf,
     PolyMul,
     PolyMtof,
+    PolyAdd,
+    PolyNoise,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -124,6 +126,7 @@ enum State {
     PolyAr(PolyAr),
     PolySvf(PolySvf),
     PolyMtof(PolyMtof),
+    PolyNoise(PolyNoise),
     Stateless,
 }
 
@@ -167,7 +170,7 @@ impl Node {
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
-            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve | Kind::VoiceSum | Kind::PolyMul => State::Stateless,
+            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve | Kind::VoiceSum | Kind::PolyMul | Kind::PolyAdd => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
             Kind::Delay => State::Delay(Delay::new()),
             Kind::Chorus => State::Chorus(ModDelay::<3>::new(0.020)),
@@ -190,6 +193,7 @@ impl Node {
             Kind::PolyAr => State::PolyAr(PolyAr::new()),
             Kind::PolySvf => State::PolySvf(PolySvf::new()),
             Kind::PolyMtof => State::PolyMtof(PolyMtof::new()),
+            Kind::PolyNoise => State::PolyNoise(PolyNoise::new()),
         };
         Node {
             kind,
@@ -203,7 +207,7 @@ impl Node {
     pub fn out_width(kind: Kind) -> usize {
         match kind {
             Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof => VOICES,
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise => VOICES,
             _ => 1,
         }
     }
@@ -211,7 +215,7 @@ impl Node {
     /// A poly node carries `VOICES` voice-lanes and is dispatched via
     /// `poly_process`, not `process_resolved`.
     pub fn is_poly(kind: Kind) -> bool {
-        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof)
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise)
     }
 
     /// Number of leading input ports that are poly edges (the rest are mono
@@ -219,8 +223,8 @@ impl Node {
     pub fn poly_in_count(kind: Kind) -> usize {
         match kind {
             Kind::PolyOsc | Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof => 1,
-            Kind::PolyMul => 2,
-            _ => 0, // PolyCtrl, PolyAr, and all mono kinds
+            Kind::PolyMul | Kind::PolyAdd => 2,
+            _ => 0, // PolyCtrl, PolyAr, PolyNoise, and all mono kinds
         }
     }
 
@@ -345,6 +349,10 @@ impl Node {
                 _ => {}
             },
             State::PolyCtrl(c) => c.set_voice(param as usize, value),
+            State::PolyOsc(o) => match param {
+                0 => o.set_shape(value as u8),
+                _ => {}
+            },
             State::PolyMtof(m) => match param {
                 0 => m.set_ref(value),
                 _ => {}
@@ -692,7 +700,7 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof => {
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise => {
                 // Poly kinds are dispatched via `poly_process`, not this path.
             }
         }
@@ -739,6 +747,16 @@ impl Node {
             Kind::PolyMtof => {
                 if let (State::PolyMtof(m), Some(pin)) = (&mut self.state, poly_in[0]) {
                     m.process(pin, out);
+                }
+            }
+            Kind::PolyAdd => {
+                if let (Some(a), Some(b)) = (poly_in[0], poly_in[1]) {
+                    poly_add(a, b, out);
+                }
+            }
+            Kind::PolyNoise => {
+                if let State::PolyNoise(nz) = &mut self.state {
+                    nz.process(out);
                 }
             }
             _ => {}
@@ -1497,5 +1515,32 @@ mod tests {
         let mut out = [0.0f32; VOICES * 2];
         n.poly_process(&dummy, [Some(&semis), None], 1.0 / 48_000.0, &mut out);
         assert!((out[0] - 440.0).abs() < 1e-2 && (out[1] - 880.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn polyosc_shape_and_new_kinds() {
+        assert_eq!(Node::poly_in_count(Kind::PolyAdd), 2);
+        assert_eq!(Node::poly_in_count(Kind::PolyNoise), 0);
+        assert_eq!(Node::out_width(Kind::PolyAdd), VOICES);
+        assert_eq!(Node::out_width(Kind::PolyNoise), VOICES);
+        // PolyOsc set_param(0, code) selects the shape (a saw is band-limited,
+        // so a mid-phase sample differs from the sine at the same phase).
+        let mut n = Node::new(Kind::PolyOsc, 0);
+        n.set_param(0, 1.0); // Saw
+        let pitch = [220.0f32; VOICES * 4];
+        let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
+        let mut out = [0.0f32; VOICES * 4];
+        n.poly_process(&ins, [Some(&pitch), None], 1.0 / 48_000.0, &mut out);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out.iter().any(|&s| s != 0.0), "saw renders");
+    }
+
+    #[test]
+    fn poly_noise_node_renders_bounded() {
+        let mut n = Node::new(Kind::PolyNoise, 0);
+        let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
+        let mut out = [0.0f32; VOICES * 4];
+        n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out);
+        assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0) && out.iter().any(|&s| s != 0.0));
     }
 }
