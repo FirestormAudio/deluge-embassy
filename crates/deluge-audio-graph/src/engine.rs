@@ -834,4 +834,54 @@ mod tests {
         let peak = out.iter().cloned().fold(0.0f32, |m, s| m.max(s));
         assert!(peak > 0.1 && peak < 1.5, "one gated voice: peak {peak}");
     }
+
+    #[test]
+    fn full_voice_gated_per_voice() {
+        // A complete voice: gate voices 0 & 1 on, 2..7 off. The mix is non-silent
+        // and comes only from the gated voices; with no gates it is silent; the
+        // filter keeps the output bounded. Runs in both feature configs.
+        type PE = Engine<64, 8, 48, 4, 45056, 2048>;
+        let build = |gates: &[usize]| -> [f32; 64] {
+            let mut e = PE::new(48_000.0);
+            // pitch source
+            e.create(NodeId(0), Kind::PolyCtrl);
+            for v in 0..VOICES {
+                e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+            }
+            // osc → filter
+            e.create(NodeId(1), Kind::PolyOsc);
+            *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+            e.create(NodeId(2), Kind::PolySvf);
+            *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+            *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(1200.0); // cutoff
+            *e.node_input_mut(NodeId(2), 2).unwrap() = Input::Const(0.2);    // res
+            // envelope + VCA
+            e.create(NodeId(3), Kind::PolyAr);
+            *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Const(0.0005); // attack
+            *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(0.05);   // release
+            e.create(NodeId(4), Kind::PolyMul);
+            *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+            *e.node_input_mut(NodeId(4), 1).unwrap() = Input::Node { node: NodeId(3), port: 0 };
+            // sum → out
+            e.create(NodeId(5), Kind::VoiceSum);
+            *e.node_input_mut(NodeId(5), 0).unwrap() = Input::Node { node: NodeId(4), port: 0 };
+            for &g in gates {
+                e.apply(Cmd::GateVoice { node: NodeId(3), voice: g as u8, on: true });
+            }
+            e.render_block();
+            let mono = e.node_output(NodeId(5), 0);
+            let mut out = [0.0f32; 64];
+            out.copy_from_slice(&mono[..64]);
+            out
+        };
+
+        // No gates → silence.
+        let silent = build(&[]);
+        assert!(silent.iter().all(|&s| s.abs() < 1e-6), "no gates → silent");
+
+        // Gate voices 0 & 1 → non-silent, bounded/finite.
+        let voiced = build(&[0, 1]);
+        assert!(voiced.iter().all(|&s| s.is_finite() && s.abs() <= 8.0), "bounded");
+        assert!(voiced.iter().any(|&s| s.abs() > 1e-4), "gated voices sound");
+    }
 }
