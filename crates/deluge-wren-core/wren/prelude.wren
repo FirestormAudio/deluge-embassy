@@ -228,6 +228,7 @@ foreign class Synth {
     Midi.onNoteOff = Fn.new { |ch, note, vel| this.noteOff(note) }
   }
   static new(builder) {
+    if (Node.polyMode_ == 1) Fiber.abort("nested Synth not supported")
     var pitch = Node.polyBegin_()
     var out = builder.call(pitch)
     if (Node.polyGateCount_ == 0) Fiber.abort("a Synth voice needs an Env.ar (the amp gate)")

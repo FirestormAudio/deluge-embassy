@@ -1030,6 +1030,11 @@ fn synth_error_cases_abort() {
     assert!(!run_script_ok("Synth.new { |p| Osc.saw(p) * Env.ar(0.01,0.3) }"), "Osc.saw aborts");
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) }"), "no Env.ar aborts");
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar aborts");
+    assert!(!run_script_ok("Synth.new { |p| Noise.new() * Env.ar(0.01,0.3) }"), "Noise aborts");
+    assert!(!run_script_ok("Synth.new { |p| (Osc.sine(p) + Osc.sine(p)) * Env.ar(0.01,0.3) }"), "poly + aborts");
+    assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * 0.5 }"), "poly * scalar aborts");
+    // Nested Synth aborts (the inner polyBegin sees poly_mode already set).
+    assert!(!run_script_ok("Synth.new { |p| Synth.new { |q| Osc.sine(q) * Env.ar(0.01,0.3) } }"), "nested Synth aborts");
     // Sanity: a valid Synth interprets fine.
     assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"), "valid Synth ok");
 }
