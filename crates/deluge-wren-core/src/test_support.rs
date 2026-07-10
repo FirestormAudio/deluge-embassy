@@ -280,6 +280,49 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
     }
 }
 
+/// Interpret `setup`, feed one DIN-MIDI message, capture the `Cmd`s it emits.
+///
+/// Mirrors [`run_and_capture_cmds`], but after `setup` interprets it clears
+/// the captured (build-time) `Cmd`s, fires one MIDI event via
+/// [`crate::midi_rx_impl`] (the same backend-agnostic body the `wren-sys`
+/// extern wrapper calls — see `bindings.rs`'s `midi_rx`), and returns only the
+/// `Cmd`s that event emits.
+pub fn run_midi_capture_cmds(setup: &str, status: u8, d1: u8, d2: u8) -> Vec<crate::Cmd> {
+    let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: serialized single-threaded test helper; VM freed before return.
+    unsafe {
+        let h = &mut *core::ptr::addr_of_mut!(CAP_HOST);
+        h.cmds.clear();
+        crate::set_host(&mut *core::ptr::addr_of_mut!(CAP_HOST));
+        let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
+        assert!(!vm.is_null(), "VM boot failed");
+        assert_eq!(
+            wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr()),
+            wren_sys::WREN_RESULT_SUCCESS,
+            "prelude failed"
+        );
+        let mut buf = [0u8; 8192];
+        let n = setup.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&setup.as_bytes()[..n]);
+        buf[n] = 0;
+        assert_eq!(
+            wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char),
+            wren_sys::WREN_RESULT_SUCCESS,
+            "setup failed"
+        );
+        (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clear(); // ignore build-time cmds; capture only the MIDI event's
+        // `midi_rx_impl` fires the bound `Midi.onNoteOn`/`onNoteOff` closure
+        // with (ch, note, vel). Construct the `Vm` wrapper the same way the
+        // `wren-sys-backend` extern wrappers (and `run_and_read_cv`'s `tick`
+        // call above) do.
+        crate::midi_rx_impl(&wren_sys::Vm(vm), status, d1, d2);
+        let out = (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clone();
+        wren_sys::wrenFreeVM(vm);
+        crate::reset();
+        out
+    }
+}
+
 /// Interpret `src`; return true iff it ran without a compile/runtime error.
 pub fn run_script_ok(src: &str) -> bool {
     let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());

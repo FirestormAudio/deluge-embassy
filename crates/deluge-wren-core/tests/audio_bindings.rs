@@ -2,7 +2,9 @@
 use deluge_audio_graph::StereoFrame;
 use deluge_audio_graph::node::TableSrc;
 use deluge_wren_core::Host as _;
-use deluge_wren_core::test_support::{EngineHost, run_and_capture_cmds, run_and_render, run_script_ok};
+use deluge_wren_core::test_support::{
+    EngineHost, run_and_capture_cmds, run_and_render, run_midi_capture_cmds, run_script_ok,
+};
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
 fn saw(freq: f32) -> Cmd {
@@ -1030,4 +1032,29 @@ fn synth_error_cases_abort() {
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar aborts");
     // Sanity: a valid Synth interprets fine.
     assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"), "valid Synth ok");
+}
+
+#[test]
+fn synth_note_on_renders_sound() {
+    // Build a Synth, route it, play a note in-script, then render.
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var bass = Synth.new { |p| Osc.sine(p).lpf(2000) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.noteOn(69, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds");
+}
+
+#[test]
+fn synth_plays_from_midi() {
+    // `bindMidi()` wires `Midi.onNoteOn`/`onNoteOff` to `synth.noteOn`/`noteOff`
+    // (see prelude.wren). A DIN note-on fed via `midi_rx_impl` should fire that
+    // closure and drive the allocator: SetParam (pitch) + GateVoice (gate on).
+    let cmds = run_midi_capture_cmds(
+        "var bass = Synth.new { |p| Osc.sine(p).lpf(2000) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.bindMidi()",
+        0x90, 69, 100, // note-on A4 vel 100
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::GateVoice { on: true, .. })), "MIDI note-on gates a voice");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { .. })), "MIDI note-on sets pitch");
 }
