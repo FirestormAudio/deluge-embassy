@@ -3,6 +3,7 @@
 //! buffers are voice-interleaved (sample-major): `tile[i * VOICES + v]` is voice
 //! `v` at sample `i`, so the voice loop vectorizes to `f32x8` on NEON.
 
+#[cfg(not(feature = "simd"))]
 use crate::{fast_sin, floorf};
 
 /// Voices processed in parallel per poly node. Fixed at compile time.
@@ -42,6 +43,11 @@ impl Default for PolyCtrl {
 /// A poly oscillator. `pitch` is a voice-interleaved tile of per-voice Hz;
 /// writes a voice-interleaved audio tile. SoA phase; voice loop is the inner
 /// (vectorizable) dimension. Raw sine shape (band-limiting is a later concern).
+// The f32x8 poly path assumes exactly 8 voices. Changing VOICES requires
+// revisiting the SIMD width (e.g. f32x16 or 2× f32x8).
+#[cfg(feature = "simd")]
+const _: () = assert!(VOICES == 8);
+
 #[derive(Clone, Copy)]
 pub struct PolyOsc {
     phase: [f32; VOICES], // [0,1) per voice
@@ -52,14 +58,36 @@ impl PolyOsc {
     }
     /// `pitch` and `out` are voice-interleaved, length `VOICES * n_samples`.
     pub fn process(&mut self, pitch: &[f32], dt: f32, out: &mut [f32]) {
-        let n = out.len() / VOICES;
-        for i in 0..n {
-            for v in 0..VOICES {
-                let f = pitch[i * VOICES + v];
-                let mut p = self.phase[v] + f * dt;
-                p -= floorf(p); // wrap [0,1)
-                self.phase[v] = p;
-                out[i * VOICES + v] = fast_sin(p);
+        #[cfg(feature = "simd")]
+        {
+            use core::simd::prelude::*;
+            let n = out.len() / VOICES;
+            let one = f32x8::splat(1.0);
+            let dtv = f32x8::splat(dt);
+            let mut ph = f32x8::from_array(self.phase);
+            for i in 0..n {
+                let f = f32x8::from_slice(&pitch[i * VOICES..]);
+                let mut p = ph + f * dtv;
+                // wrap: p -= trunc-floor(p), matching scalar `floorf`
+                let t: f32x8 = p.cast::<i32>().cast::<f32>();
+                let fl = t.simd_gt(p).select(t - one, t);
+                p -= fl;
+                ph = p;
+                crate::fast_sin_x8(p).copy_to_slice(&mut out[i * VOICES..]);
+            }
+            self.phase = ph.to_array();
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            let n = out.len() / VOICES;
+            for i in 0..n {
+                for v in 0..VOICES {
+                    let f = pitch[i * VOICES + v];
+                    let mut p = self.phase[v] + f * dt;
+                    p -= floorf(p); // wrap [0,1)
+                    self.phase[v] = p;
+                    out[i * VOICES + v] = fast_sin(p);
+                }
             }
         }
     }
@@ -140,6 +168,20 @@ mod tests {
             }
         }
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0001));
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn fast_sin_x8_matches_scalar() {
+        use core::simd::f32x8;
+        // Sweep phases across two full cycles; every lane must match scalar fast_sin.
+        for base in 0..250 {
+            let ps: [f32; 8] = core::array::from_fn(|k| (base as f32 * 8.0 + k as f32) / 1000.0);
+            let v = crate::fast_sin_x8(f32x8::from_array(ps)).to_array();
+            for k in 0..8 {
+                assert!((v[k] - crate::fast_sin(ps[k])).abs() < 1e-6, "phase {} lane {k}", ps[k]);
+            }
+        }
     }
 
     #[test]

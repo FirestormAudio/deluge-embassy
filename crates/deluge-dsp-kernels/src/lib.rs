@@ -66,6 +66,24 @@ pub fn fast_sin(p: f32) -> f32 {
     0.225 * (y * y.abs() - y) + y
 }
 
+/// SIMD counterpart of [`fast_sin`]: 8 phases at once, branchless (the `x > π`
+/// wrap becomes a lanewise `select`). Matches `fast_sin` to f32 rounding.
+/// On NEON this is 2× `float32x4_t`.
+#[cfg(feature = "simd")]
+#[inline]
+pub fn fast_sin_x8(p: core::simd::f32x8) -> core::simd::f32x8 {
+    use core::f32::consts::PI;
+    use core::simd::prelude::*;
+    let pi = f32x8::splat(PI);
+    let two_pi = f32x8::splat(2.0 * PI);
+    let mut x = f32x8::splat(2.0 * PI) * p;
+    x = x.simd_gt(pi).select(x - two_pi, x); // if x > π { x -= 2π }
+    let b = f32x8::splat(4.0 / PI);
+    let c = f32x8::splat(-4.0 / (PI * PI));
+    let y = b * x + c * x * x.abs();
+    f32x8::splat(0.225) * (y * y.abs() - y) + y
+}
+
 /// `floorf` without libm (phase is small + finite here). Matches the prototype.
 #[inline]
 pub(crate) fn floorf(x: f32) -> f32 {
