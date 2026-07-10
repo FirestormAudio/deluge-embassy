@@ -11,6 +11,7 @@ use deluge_dsp_kernels::{
     env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
+    poly::{voice_sum, PolyCtrl, PolyOsc, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -78,6 +79,9 @@ pub enum Kind {
     QuantPitch,
     Mtof,
     Ctrl,
+    PolyCtrl,
+    PolyOsc,
+    VoiceSum,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -111,6 +115,8 @@ enum State {
     QuantPitch(QuantPitch),
     Mtof(Mtof),
     Ctrl(Ctrl),
+    PolyCtrl(PolyCtrl),
+    PolyOsc(PolyOsc),
     Stateless,
 }
 
@@ -154,7 +160,7 @@ impl Node {
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
-            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve => State::Stateless,
+            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve | Kind::VoiceSum => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
             Kind::Delay => State::Delay(Delay::new()),
             Kind::Chorus => State::Chorus(ModDelay::<3>::new(0.020)),
@@ -172,6 +178,8 @@ impl Node {
             Kind::QuantPitch => State::QuantPitch(QuantPitch::new()),
             Kind::Mtof => State::Mtof(Mtof::new()),
             Kind::Ctrl => State::Ctrl(Ctrl::new()),
+            Kind::PolyCtrl => State::PolyCtrl(PolyCtrl::new()),
+            Kind::PolyOsc => State::PolyOsc(PolyOsc::new()),
         };
         Node {
             kind,
@@ -185,8 +193,20 @@ impl Node {
     pub fn out_width(kind: Kind) -> usize {
         match kind {
             Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
+            Kind::PolyCtrl | Kind::PolyOsc => VOICES,
             _ => 1,
         }
+    }
+
+    /// A poly node carries `VOICES` voice-lanes and is dispatched via
+    /// `poly_process`, not `process_resolved`.
+    pub fn is_poly(kind: Kind) -> bool {
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum)
+    }
+
+    /// True if the node consumes a poly input tile on port 0.
+    pub fn has_poly_in(kind: Kind) -> bool {
+        matches!(kind, Kind::PolyOsc | Kind::VoiceSum)
     }
 
     pub fn input_mut(&mut self, port: u8) -> Option<&mut Input> {
@@ -302,6 +322,7 @@ impl Node {
                 0 => c.set_value(value),
                 _ => {}
             },
+            State::PolyCtrl(c) => c.set_voice(param as usize, value),
             _ => {}
         }
     }
@@ -645,6 +666,33 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum => {
+                // Poly kinds are dispatched via `poly_process`, not this path.
+            }
+        }
+    }
+
+    /// Dispatch a poly node. `poly_in` is the voice-interleaved input tile
+    /// (`Some` when `has_poly_in`), `out` is the writable region: a
+    /// `VOICES * BLOCK` tile for poly-output kinds, or `BLOCK` for `VoiceSum`.
+    pub fn poly_process(&mut self, poly_in: Option<&[f32]>, dt: f32, out: &mut [f32]) {
+        match self.kind {
+            Kind::PolyCtrl => {
+                if let State::PolyCtrl(c) = &mut self.state {
+                    c.process(out);
+                }
+            }
+            Kind::PolyOsc => {
+                if let (State::PolyOsc(o), Some(pin)) = (&mut self.state, poly_in) {
+                    o.process(pin, dt, out);
+                }
+            }
+            Kind::VoiceSum => {
+                if let Some(pin) = poly_in {
+                    voice_sum(pin, out);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1346,5 +1394,38 @@ mod tests {
             n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
         }
         assert!((buf[0] - 440.0).abs() < 1e-2 && (buf[1] - 880.0).abs() < 1e-2 && (buf[2] - 220.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn poly_widths_and_predicates() {
+        assert_eq!(Node::out_width(Kind::PolyCtrl), VOICES);
+        assert_eq!(Node::out_width(Kind::PolyOsc), VOICES);
+        assert_eq!(Node::out_width(Kind::VoiceSum), 1);
+        assert!(Node::is_poly(Kind::PolyCtrl) && Node::is_poly(Kind::PolyOsc) && Node::is_poly(Kind::VoiceSum));
+        assert!(!Node::is_poly(Kind::Saw));
+        assert!(Node::has_poly_in(Kind::PolyOsc) && Node::has_poly_in(Kind::VoiceSum));
+        assert!(!Node::has_poly_in(Kind::PolyCtrl));
+    }
+
+    #[test]
+    fn polyctrl_node_fills_and_voicesum_collapses() {
+        // PolyCtrl(set voices) → tile → VoiceSum → mono sum.
+        let n = 4;
+        let mut ctrl = Node::new(Kind::PolyCtrl, 0);
+        for v in 0..VOICES {
+            ctrl.set_param(v as u8, (v + 1) as f32); // 1..=8
+        }
+        let mut tile = [0.0f32; VOICES * 4];
+        ctrl.poly_process(None, 1.0 / 48_000.0, &mut tile);
+        for i in 0..n {
+            for v in 0..VOICES {
+                assert_eq!(tile[i * VOICES + v], (v + 1) as f32);
+            }
+        }
+        let mut sum = Node::new(Kind::VoiceSum, 0);
+        let mut mono = [0.0f32; 4];
+        sum.poly_process(Some(&tile), 1.0 / 48_000.0, &mut mono);
+        let want: f32 = (1..=VOICES).map(|x| x as f32).sum(); // 36
+        assert!(mono.iter().all(|&s| (s - want).abs() < 1e-4), "each sample sums to {want}");
     }
 }

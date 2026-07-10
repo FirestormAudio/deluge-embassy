@@ -22,3 +22,4 @@ pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId};
 pub use node::{In, Kind, Node};
 pub use pool::{Pool, PoolHandle};
+pub use deluge_dsp_kernels::poly::VOICES;
