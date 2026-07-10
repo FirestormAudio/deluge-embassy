@@ -208,13 +208,11 @@ impl<
                     // copying VOICES rows from a width-1 producer would read
                     // adjacent-node garbage/silence past its one live slot.
                     match inputs[j] {
-                        Input::Node { node, .. } => match self.arena.out_base(node) {
-                            Some(sbase) if Node::out_width(self.arena.kind_of(node).expect(
-                                "out_base returned Some ⇒ node is live ⇒ kind_of is Some"
-                            )) == 1 && sbase < OUTS => {
+                        Input::Node { node, .. } => match self.arena.out_base_and_kind(node) {
+                            Some((sbase, src_kind)) if Node::out_width(src_kind) == 1 && sbase < OUTS => {
                                 for v in 0..VOICES { poly_scratch[j][v] = arr[sbase]; }
                             }
-                            Some(sbase) if sbase + VOICES <= OUTS => {
+                            Some((sbase, _)) if sbase + VOICES <= OUTS => {
                                 for v in 0..VOICES { poly_scratch[j][v] = arr[sbase + v]; }
                             }
                             _ => { for v in 0..VOICES { poly_scratch[j][v] = [0.0; BLOCK]; } }

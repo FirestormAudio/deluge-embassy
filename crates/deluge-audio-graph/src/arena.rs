@@ -107,6 +107,13 @@ impl<const NODES: usize, const OUTS: usize> Arena<NODES, OUTS> {
         self.node(id).map(|n| n.kind)
     }
 
+    /// Read-only accessor for a node's `(out_base, kind)` in one lookup — lets a
+    /// consumer branch on a source's `out_width` (via `kind`) and its base row
+    /// without a second table lookup or an infallible-relookup `expect`.
+    pub fn out_base_and_kind(&self, id: NodeId) -> Option<(usize, Kind)> {
+        self.node(id).map(|n| (n.out_base as usize, n.kind))
+    }
+
     pub fn eval_order(&self) -> &[u16] {
         &self.order[..self.order_len]
     }
