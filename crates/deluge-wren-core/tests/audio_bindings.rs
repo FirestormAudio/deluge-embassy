@@ -2,7 +2,7 @@
 use deluge_audio_graph::StereoFrame;
 use deluge_audio_graph::node::TableSrc;
 use deluge_wren_core::Host as _;
-use deluge_wren_core::test_support::{EngineHost, run_and_capture_cmds, run_and_render};
+use deluge_wren_core::test_support::{EngineHost, run_and_capture_cmds, run_and_render, run_script_ok};
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
 fn saw(freq: f32) -> Cmd {
@@ -999,4 +999,35 @@ fn synth_note_on_emits_pitch_and_gate() {
     // note_on → SetParam(pitch lane 0 = note-69 = 0) + GateVoice(gate, 0, true).
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if value.abs() < 1e-6)), "pitch");
     assert!(cmds.iter().any(|c| matches!(c, Cmd::GateVoice { voice: 0, on: true, .. })), "gate on");
+}
+
+#[test]
+fn synth_builds_the_poly_graph() {
+    let cmds = run_and_capture_cmds(
+        "var bass = Synth.new { |p| Osc.sine(p).lpf(1200) * Env.ar(0.01, 0.3) }",
+    );
+    for k in [Kind::PolyCtrl, Kind::PolyMtof, Kind::PolyOsc, Kind::PolySvf, Kind::PolyAr, Kind::PolyMul, Kind::VoiceSum] {
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind, .. } if *kind == k)), "missing {:?}", k);
+    }
+    // No mono Osc/Svf leaked in.
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Saw | Kind::Sine, .. })), "no mono osc");
+}
+
+#[test]
+fn poly_mode_is_scoped_after_synth() {
+    // After Synth.new returns, poly mode is cleared → Osc.saw builds mono Saw.
+    let cmds = run_and_capture_cmds(
+        "var b = Synth.new { |p| Osc.sine(p) * Env.ar(0.01, 0.3) }\nOut.patch(Osc.saw(110))",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Saw, .. })), "mono Saw after Synth");
+}
+
+#[test]
+fn synth_error_cases_abort() {
+    // Osc.saw inside a Synth aborts; a no-env voice aborts; two envs abort.
+    assert!(!run_script_ok("Synth.new { |p| Osc.saw(p) * Env.ar(0.01,0.3) }"), "Osc.saw aborts");
+    assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) }"), "no Env.ar aborts");
+    assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar aborts");
+    // Sanity: a valid Synth interprets fine.
+    assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"), "valid Synth ok");
 }

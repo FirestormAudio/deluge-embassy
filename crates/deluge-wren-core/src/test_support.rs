@@ -280,6 +280,27 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
     }
 }
 
+/// Interpret `src`; return true iff it ran without a compile/runtime error.
+pub fn run_script_ok(src: &str) -> bool {
+    let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: serialized single-threaded test helper; VM freed before return.
+    unsafe {
+        crate::set_host(&mut *core::ptr::addr_of_mut!(CAP_HOST));
+        let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
+        assert!(!vm.is_null(), "VM boot failed");
+        let r0 = wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr());
+        assert_eq!(r0, wren_sys::WREN_RESULT_SUCCESS, "prelude failed");
+        let mut buf = [0u8; 8192];
+        let n = src.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&src.as_bytes()[..n]);
+        buf[n] = 0;
+        let r = wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char);
+        wren_sys::wrenFreeVM(vm);
+        crate::reset();
+        r == wren_sys::WREN_RESULT_SUCCESS
+    }
+}
+
 /// Block size / node / output-port / bus capacities for [`run_and_render`]'s
 /// engine — generous enough for the small golden scripts this helper runs.
 type TestEng = Engine<32, 64, 128, 8, 90112, 2048>;

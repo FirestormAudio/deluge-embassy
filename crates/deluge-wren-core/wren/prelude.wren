@@ -182,10 +182,25 @@ foreign class Node {
   foreign trigger()
   foreign out(p)
   foreign free()
-  *(o) { Node.binop_(0, this, o) }
-  +(o) { Node.binop_(1, this, o) }
-  -(o) { Node.binop_(2, this, o) }
-  lpf(cutoff) { Node.lpf_(this, cutoff) }
+  *(o) {
+    if (Node.polyMode_ == 1) {
+      if (o is Num) Fiber.abort("multiply by a constant inside a Synth isn't supported yet — the amp comes from Env.ar")
+      return Node.polymul_(this, o)
+    }
+    return Node.binop_(0, this, o)
+  }
+  +(o) {
+    if (Node.polyMode_ == 1) Fiber.abort("`+` inside a Synth isn't supported yet (Sy-2b PolyAdd)")
+    return Node.binop_(1, this, o)
+  }
+  -(o) {
+    if (Node.polyMode_ == 1) Fiber.abort("`-` inside a Synth isn't supported yet")
+    return Node.binop_(2, this, o)
+  }
+  lpf(cutoff) {
+    if (Node.polyMode_ == 1) return Node.polysvf_(this, cutoff, 0.2)
+    return Node.lpf_(this, cutoff)
+  }
   to(lo, hi) { this * ((hi - lo) / 2) + ((hi + lo) / 2) }
   atten(k)       { this * k }
   offset(c)      { this + c }
@@ -199,24 +214,51 @@ foreign class Node {
   hz(ref)        { Node.mtof_(this, ref) }
 }
 
-// A polyphonic instrument, built between `Node.polyBegin_()`/`Node.polyEnd_(out)`
-// and driven by MIDI-style note events. The full `Synth` class (`new`/`bindMidi`
-// build DSL) lands in Sy-4 Task 3 — this is just the foreign declarations so the
-// instance methods bind.
+// A polyphonic instrument. Build a voice once with a `{ |pitch| … }` closure;
+// the plain factories emit poly nodes inside it. Route `.out` and play it:
+//   var bass = Synth.new { |pitch| Osc.sine(pitch).lpf(1200) * Env.ar(0.01, 0.3) }
+//   Out.patch(bass.out)
+//   bass.bindMidi()
 foreign class Synth {
   foreign noteOn(note, vel)
   foreign noteOff(note)
   foreign out
+  bindMidi() {
+    Midi.onNoteOn = Fn.new { |ch, note, vel| this.noteOn(note, vel) }
+    Midi.onNoteOff = Fn.new { |ch, note, vel| this.noteOff(note) }
+  }
+  static new(builder) {
+    var pitch = Node.polyBegin_()
+    var out = builder.call(pitch)
+    if (Node.polyGateCount_ == 0) Fiber.abort("a Synth voice needs an Env.ar (the amp gate)")
+    if (Node.polyGateCount_ > 1) Fiber.abort("multiple Env.ar in a Synth isn't supported yet")
+    return Node.polyEnd_(out)
+  }
 }
 
 // A multi-output port: `node.out(p)` returns a handle to output port `p` of
 // a multi-output node (e.g. `Split`), usable anywhere a Node/number is
 // (including as the left operand of the arithmetic operators below).
 foreign class Port {
-  *(o) { Node.binop_(0, this, o) }
-  +(o) { Node.binop_(1, this, o) }
-  -(o) { Node.binop_(2, this, o) }
-  lpf(cutoff) { Node.lpf_(this, cutoff) }
+  *(o) {
+    if (Node.polyMode_ == 1) {
+      if (o is Num) Fiber.abort("multiply by a constant inside a Synth isn't supported yet — the amp comes from Env.ar")
+      return Node.polymul_(this, o)
+    }
+    return Node.binop_(0, this, o)
+  }
+  +(o) {
+    if (Node.polyMode_ == 1) Fiber.abort("`+` inside a Synth isn't supported yet (Sy-2b PolyAdd)")
+    return Node.binop_(1, this, o)
+  }
+  -(o) {
+    if (Node.polyMode_ == 1) Fiber.abort("`-` inside a Synth isn't supported yet")
+    return Node.binop_(2, this, o)
+  }
+  lpf(cutoff) {
+    if (Node.polyMode_ == 1) return Node.polysvf_(this, cutoff, 0.2)
+    return Node.lpf_(this, cutoff)
+  }
   to(lo, hi) { this * ((hi - lo) / 2) + ((hi + lo) / 2) }
   atten(k)       { this * k }
   offset(c)      { this + c }
@@ -259,18 +301,43 @@ foreign class Wavetable {
 }
 
 class Osc {
-  static sine(f) { Node.src_(0, f) }
-  static saw(f) { Node.src_(1, f) }
-  static square(f) { Node.src_(2, f) }
-  static tri(f) { Node.src_(3, f) }
+  static sine(f) {
+    if (Node.polyMode_ == 1) return Node.polyosc_(f)
+    return Node.src_(0, f)
+  }
+  static saw(f) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.saw not usable in a Synth yet (Sy-2b poly breadth)")
+    return Node.src_(1, f)
+  }
+  static square(f) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.square not usable in a Synth yet (Sy-2b)")
+    return Node.src_(2, f)
+  }
+  static tri(f) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.tri not usable in a Synth yet (Sy-2b)")
+    return Node.src_(3, f)
+  }
   // Hard sync: `master` resets `slave`'s phase each cycle, locking the
   // slave's pitch to the master's (a classic sync-lead timbre). `slave`
   // is the audible waveform; `master` sets the fundamental.
-  static syncSine(master, slave) { Node.sync_(0, master, slave) }
-  static syncSaw(master, slave) { Node.sync_(1, master, slave) }
-  static syncSquare(master, slave) { Node.sync_(2, master, slave) }
-  static syncTri(master, slave) { Node.sync_(3, master, slave) }
+  static syncSine(master, slave) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncSine not usable in a Synth yet (Sy-2b)")
+    return Node.sync_(0, master, slave)
+  }
+  static syncSaw(master, slave) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncSaw not usable in a Synth yet (Sy-2b)")
+    return Node.sync_(1, master, slave)
+  }
+  static syncSquare(master, slave) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncSquare not usable in a Synth yet (Sy-2b)")
+    return Node.sync_(2, master, slave)
+  }
+  static syncTri(master, slave) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncTri not usable in a Synth yet (Sy-2b)")
+    return Node.sync_(3, master, slave)
+  }
   static wavetable(t, f) {
+    if (Node.polyMode_ == 1) Fiber.abort("Osc.wavetable not usable in a Synth yet (Sy-2b)")
     if (t is Wavetable) return Node.wavetable_pooled_(t, f)
     return Node.wavetable_(t, f) // WT.x numeric id (static table)
   }
@@ -508,13 +575,25 @@ class WT {
 }
 
 class Env {
-  static ar(attack, release) { Node.env_(attack, release) }
+  static ar(attack, release) {
+    if (Node.polyMode_ == 1) return Node.polyar_(attack, release)
+    return Node.env_(attack, release)
+  }
 }
 
 class Noise {
-  static new() { Node.noise_() }
-  static pink() { Node.pink_() }
-  static brown() { Node.brown_() }
+  static new() {
+    if (Node.polyMode_ == 1) Fiber.abort("Noise.new not usable in a Synth yet (Sy-2b)")
+    return Node.noise_()
+  }
+  static pink() {
+    if (Node.polyMode_ == 1) Fiber.abort("pink not usable in a Synth yet (Sy-2b)")
+    return Node.pink_()
+  }
+  static brown() {
+    if (Node.polyMode_ == 1) Fiber.abort("brown not usable in a Synth yet (Sy-2b)")
+    return Node.brown_()
+  }
 }
 
 // A width-2 test node: routes its input to both output ports 0 and 1.
