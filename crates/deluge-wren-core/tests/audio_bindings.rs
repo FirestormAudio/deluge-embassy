@@ -1107,3 +1107,39 @@ fn synth_plays_from_midi() {
     assert!(cmds.iter().any(|c| matches!(c, Cmd::GateVoice { on: true, .. })), "MIDI note-on gates a voice");
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { .. })), "MIDI note-on sets pitch");
 }
+
+#[test]
+fn synth_moog_and_ms20_render_sound() {
+    // Sy-2c: poly Moog/Ms20 voices render finite, bounded, non-silent audio
+    // end-to-end through the full Synth → VoiceSum path.
+    let mut moog = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Moog.lp(Osc.saw(p), 1200, 0.85) * Env.ar(0.01, 0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut moog,
+    );
+    assert!(moog.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "Moog.lp bounded");
+    assert!(moog.iter().any(|f| f.l.abs() > 1e-4), "Moog.lp voice sounds");
+
+    let mut ms20 = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Ms20.hp(Osc.saw(p), 1200, 0.9) * Env.ar(0.01, 0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut ms20,
+    );
+    assert!(ms20.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "Ms20.hp bounded");
+    assert!(ms20.iter().any(|f| f.l.abs() > 1e-4), "Ms20.hp voice sounds");
+}
+
+#[test]
+fn non_poly_classes_abort_inside_synth() {
+    // Sy-2c footgun close: classes not yet poly-ified (or that are post-voice
+    // effects) must Fiber.abort rather than silently building a mono/broken
+    // voice inside a Synth.
+    for src in [
+        "Synth.new { |p| Tb303.lp(Osc.saw(p), 400, 0.9) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| Resonator.new(Osc.saw(p), 220, 0.4) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| Svf.lp(Osc.saw(p), 1200, 0.6) * Env.ar(0.01, 0.3) }",
+        "Synth.new { |p| Delay.new(Osc.saw(p), 0.2, 0.4) * Env.ar(0.01, 0.3) }",
+    ] {
+        assert!(!run_script_ok(src), "expected abort for: {src}");
+    }
+}

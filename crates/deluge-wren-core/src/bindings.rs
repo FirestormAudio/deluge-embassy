@@ -918,6 +918,8 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "polyBegin_()", bindings_audio::node_poly_begin),
     static_method("Node", "polyosc_(_,_)", bindings_audio::node_polyosc),
     static_method("Node", "polysvf_(_,_,_)", bindings_audio::node_polysvf),
+    static_method("Node", "polymoog_(_,_,_,_)", bindings_audio::node_polymoog),
+    static_method("Node", "polyms20_(_,_,_,_)", bindings_audio::node_polyms20),
     static_method("Node", "polyar_(_,_)", bindings_audio::node_polyar),
     static_method("Node", "polymul_(_,_)", bindings_audio::node_polymul),
     static_method("Node", "polyadd_(_,_)", bindings_audio::node_polyadd),

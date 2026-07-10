@@ -157,6 +157,8 @@ foreign class Node {
   foreign static polyBegin_()
   foreign static polyosc_(pitch, shape)
   foreign static polysvf_(audio, cutoff, res)
+  foreign static polymoog_(audio, cutoff, res, poles)
+  foreign static polyms20_(audio, cutoff, res, resp)
   foreign static polyar_(attack, release)
   foreign static polymul_(a, b)
   foreign static polyadd_(a, b)
@@ -430,10 +432,22 @@ class Scale {
 //   f.cutoff = Osc.sine(3) * 400 + 1200   // wobble
 //   f.res = 0.9
 class Svf {
-  static lp(input, cutoff, res) { Node.svf_(input, cutoff, res, 0) }
-  static hp(input, cutoff, res) { Node.svf_(input, cutoff, res, 1) }
-  static bp(input, cutoff, res) { Node.svf_(input, cutoff, res, 2) }
-  static notch(input, cutoff, res) { Node.svf_(input, cutoff, res, 3) }
+  static lp(input, cutoff, res) {
+    if (Node.polyMode_ == 1) Fiber.abort("Svf inside a Synth isn't poly yet — use .lpf(cutoff) for a poly lowpass (Sy-2c)")
+    return Node.svf_(input, cutoff, res, 0)
+  }
+  static hp(input, cutoff, res) {
+    if (Node.polyMode_ == 1) Fiber.abort("Svf inside a Synth isn't poly yet — use .lpf(cutoff) for a poly lowpass (Sy-2c)")
+    return Node.svf_(input, cutoff, res, 1)
+  }
+  static bp(input, cutoff, res) {
+    if (Node.polyMode_ == 1) Fiber.abort("Svf inside a Synth isn't poly yet — use .lpf(cutoff) for a poly lowpass (Sy-2c)")
+    return Node.svf_(input, cutoff, res, 2)
+  }
+  static notch(input, cutoff, res) {
+    if (Node.polyMode_ == 1) Fiber.abort("Svf inside a Synth isn't poly yet — use .lpf(cutoff) for a poly lowpass (Sy-2c)")
+    return Node.svf_(input, cutoff, res, 3)
+  }
 }
 
 // TB-303 diode-ladder filter — the acid-bass lowpass. Resonant and
@@ -441,7 +455,10 @@ class Svf {
 //   var f = Tb303.lp(Osc.saw(55), 400, 0.9)
 //   f.cutoff = Env.ar(0.0, 0.3) * 1500 + 200
 class Tb303 {
-  static lp(input, cutoff, res) { Node.tb303_(input, cutoff, res) }
+  static lp(input, cutoff, res) {
+    if (Node.polyMode_ == 1) Fiber.abort("Tb303 not usable in a Synth yet (Sy-2c)")
+    return Node.tb303_(input, cutoff, res)
+  }
 }
 
 // Moog transistor-ladder — the warm, self-oscillating classic. 24 dB (lp) or 12 dB (lp2);
@@ -450,8 +467,14 @@ class Tb303 {
 //   f.cutoff = Env.ar(0.0, 0.4) * 4000 + 200
 //   f.drive = 3
 class Moog {
-  static lp(input, cutoff, res)  { Node.moog_(input, cutoff, res, 4) }
-  static lp2(input, cutoff, res) { Node.moog_(input, cutoff, res, 2) }
+  static lp(input, cutoff, res)  {
+    if (Node.polyMode_ == 1) return Node.polymoog_(input, cutoff, res, 4)
+    return Node.moog_(input, cutoff, res, 4)
+  }
+  static lp2(input, cutoff, res) {
+    if (Node.polyMode_ == 1) return Node.polymoog_(input, cutoff, res, 2)
+    return Node.moog_(input, cutoff, res, 2)
+  }
 }
 
 // Korg MS-20 (Korg35) Sallen-Key — the screaming, diode-clipped 2-pole. LP or HP;
@@ -459,8 +482,14 @@ class Moog {
 //   var f = Ms20.hp(Osc.saw(110), 1200, 0.9)
 //   f.drive = 4
 class Ms20 {
-  static lp(input, cutoff, res) { Node.ms20_(input, cutoff, res, 0) }
-  static hp(input, cutoff, res) { Node.ms20_(input, cutoff, res, 1) }
+  static lp(input, cutoff, res) {
+    if (Node.polyMode_ == 1) return Node.polyms20_(input, cutoff, res, 0)
+    return Node.ms20_(input, cutoff, res, 0)
+  }
+  static hp(input, cutoff, res) {
+    if (Node.polyMode_ == 1) return Node.polyms20_(input, cutoff, res, 1)
+    return Node.ms20_(input, cutoff, res, 1)
+  }
 }
 
 // Modal resonator — a struck/plucked bank of tuned modes (strings, bells, plates).
@@ -472,7 +501,10 @@ class Ms20 {
 //   body.pitch = 330        // retune (NOT freq= — that targets the exciter input)
 //   body.damping = 0.6      // shorter ring
 class Resonator {
-  static new(input, freq, damping) { Node.modal_(input, freq, damping) }
+  static new(input, freq, damping) {
+    if (Node.polyMode_ == 1) Fiber.abort("Resonator not usable in a Synth yet (Sy-2c)")
+    return Node.modal_(input, freq, damping)
+  }
 }
 
 // Constant-power stereo pan: a mono input placed in the stereo field.
@@ -484,7 +516,10 @@ class Resonator {
 // Pan is a stereo (width-2) node: Out.patch / a bus routes its L/R to the
 // stereo output.
 class Pan {
-  static new(input, position) { Node.pan_(input, position) }
+  static new(input, position) {
+    if (Node.polyMode_ == 1) Fiber.abort("Pan is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.pan_(input, position)
+  }
 }
 
 // Feedback delay — echoes with damped repeats. `time` in seconds (up to ~1 s),
@@ -497,7 +532,10 @@ class Pan {
 // released when the node is freed. `time`/`feedback` can be modulated (they are
 // ports); `mix`/`damp` are control params.
 class Delay {
-  static new(input, time, feedback) { Node.delay_(input, time, feedback) }
+  static new(input, time, feedback) {
+    if (Node.polyMode_ == 1) Fiber.abort("Delay is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.delay_(input, time, feedback)
+  }
 }
 
 // Chorus — a lush multi-voice stereo modulated delay. `rate` LFO Hz, `depth`
@@ -505,7 +543,10 @@ class Delay {
 //   Out.patch(Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5))
 //   var c = Chorus.new(pad, 0.3, 0.6, 0.5); c.rate = 0.8; c.depth = 0.7
 class Chorus {
-  static new(input, rate, depth, mix) { Node.chorus_(input, rate, depth, mix) }
+  static new(input, rate, depth, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Chorus is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.chorus_(input, rate, depth, mix)
+  }
 }
 
 // Flanger — a swept single-voice comb with feedback (`regen`). Short delay,
@@ -513,7 +554,10 @@ class Chorus {
 //   Out.patch(Flanger.new(Osc.saw(110), 0.3, 0.7, 0.6, 0.5))
 //   var f = Flanger.new(pad, 0.2, 0.8, 0.7, 0.5); f.regen = 0.8
 class Flanger {
-  static new(input, rate, depth, feedback, mix) { Node.flanger_(input, rate, depth, feedback, mix) }
+  static new(input, rate, depth, feedback, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Flanger is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.flanger_(input, rate, depth, feedback, mix)
+  }
 }
 
 // Room reverb (Schroeder-Moorer). `roomsize` [0,1] decay/size, `damp` [0,1]
@@ -521,7 +565,10 @@ class Flanger {
 //   Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.4))
 //   var r = Room.new(pad, 0.8, 0.3, 0.5); r.size = 0.9; r.damp = 0.6; r.spread = 0.8
 class Room {
-  static new(input, roomsize, damp, mix) { Node.room_(input, roomsize, damp, mix) }
+  static new(input, roomsize, damp, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Room is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.room_(input, roomsize, damp, mix)
+  }
 }
 
 // Hall reverb (8-line modulated FDN) — a dense, smooth, lush tail. `size` [0,1]
@@ -530,7 +577,10 @@ class Room {
 //   Out.patch(Hall.new(Osc.saw(110), 0.85, 0.4, 0.4))
 //   var h = Hall.new(pad, 0.9, 0.3, 0.5); h.size = 0.95; h.spread = 0.8
 class Hall {
-  static new(input, size, damp, mix) { Node.hall_(input, size, damp, mix) }
+  static new(input, size, damp, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Hall is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.hall_(input, size, damp, mix)
+  }
 }
 
 // Plate reverb (Dattorro) — a bright, dense, metallic-smooth plate. `size` [0,1]
@@ -539,7 +589,10 @@ class Hall {
 //   Out.patch(Plate.new(Osc.saw(110), 0.85, 0.4, 0.4))
 //   var p = Plate.new(pad, 0.9, 0.3, 0.5); p.size = 0.95; p.spread = 0.8
 class Plate {
-  static new(input, size, damp, mix) { Node.plate_(input, size, damp, mix) }
+  static new(input, size, damp, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Plate is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.plate_(input, size, damp, mix)
+  }
 }
 
 // Waveshaper / distortion. `drive` [0,1] amount, `tone` [0,1] brightness, `mix`
@@ -547,10 +600,22 @@ class Plate {
 //   Out.patch(Drive.hard(Osc.saw(110), 0.8, 0.6, 1.0))
 //   var d = Drive.tube(pad, 0.6, 0.7, 0.5); d.drive = 0.9; d.tone = 0.4; d.wet = 0.8
 class Drive {
-  static soft(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 0) }
-  static hard(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 1) }
-  static fold(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 2) }
-  static tube(input, drive, tone, mix) { Node.drive_(input, drive, tone, mix, 3) }
+  static soft(input, drive, tone, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Drive is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.drive_(input, drive, tone, mix, 0)
+  }
+  static hard(input, drive, tone, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Drive is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.drive_(input, drive, tone, mix, 1)
+  }
+  static fold(input, drive, tone, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Drive is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.drive_(input, drive, tone, mix, 2)
+  }
+  static tube(input, drive, tone, mix) {
+    if (Node.polyMode_ == 1) Fiber.abort("Drive is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.drive_(input, drive, tone, mix, 3)
+  }
 }
 
 // Parametric EQ band (RBJ). `freq` Hz, `gain` dB, `q` bandwidth. Three types:
@@ -558,9 +623,18 @@ class Drive {
 //   var e = EQ.lowShelf(pad, 200, -4, 0.707); e.hz = 250; e.gain = -6; e.q = 0.8
 // (LP/HP/BP/notch live on `Svf` — this adds the gain-shaping bands.)
 class EQ {
-  static peak(input, freq, gain, q)      { Node.eq_(input, freq, gain, q, 0) }
-  static lowShelf(input, freq, gain, q)  { Node.eq_(input, freq, gain, q, 1) }
-  static highShelf(input, freq, gain, q) { Node.eq_(input, freq, gain, q, 2) }
+  static peak(input, freq, gain, q) {
+    if (Node.polyMode_ == 1) Fiber.abort("EQ is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.eq_(input, freq, gain, q, 0)
+  }
+  static lowShelf(input, freq, gain, q) {
+    if (Node.polyMode_ == 1) Fiber.abort("EQ is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.eq_(input, freq, gain, q, 1)
+  }
+  static highShelf(input, freq, gain, q) {
+    if (Node.polyMode_ == 1) Fiber.abort("EQ is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.eq_(input, freq, gain, q, 2)
+  }
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order

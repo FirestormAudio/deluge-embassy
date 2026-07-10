@@ -1040,6 +1040,44 @@ pub(crate) unsafe extern "C" fn node_polysvf(raw: *mut WrenVM) {
     node_polysvf_impl(&vm);
 }
 
+/// `Node.polymoog_(audio, cutoff, res, poles)` — poly Moog ladder. Port 0 =
+/// audio (poly), ports 1/2 = cutoff/res (mono); `poles` (4 or 2) selects the
+/// Kind, mirroring `moog_kind`.
+pub(crate) fn node_polymoog_impl<S: SlotApi>(vm: &S) {
+    let audio_in = arg_input(vm, 1);
+    let cutoff = arg_input(vm, 2);
+    let res = arg_input(vm, 3);
+    let poles = vm.get_f(4) as u32; // 4 (24 dB) or 2 (12 dB)
+    let kind = if poles == 2 { Kind::PolyMoogLp2 } else { Kind::PolyMoogLp4 };
+    let id = audio::alloc_node_id();
+    audio::new_node(id, kind, [audio_in, cutoff, res]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polymoog(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polymoog_impl(&vm);
+}
+
+/// `Node.polyms20_(audio, cutoff, res, resp)` — poly MS-20 filter. Port 0 =
+/// audio (poly), ports 1/2 = cutoff/res (mono); `resp` (0=lp, 1=hp) selects
+/// the Kind, mirroring `ms20_kind`.
+pub(crate) fn node_polyms20_impl<S: SlotApi>(vm: &S) {
+    let audio_in = arg_input(vm, 1);
+    let cutoff = arg_input(vm, 2);
+    let res = arg_input(vm, 3);
+    let resp = vm.get_f(4) as u32; // 0=lp, 1=hp
+    let kind = if resp == 1 { Kind::PolyMs20Hp } else { Kind::PolyMs20Lp };
+    let id = audio::alloc_node_id();
+    audio::new_node(id, kind, [audio_in, cutoff, res]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polyms20(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polyms20_impl(&vm);
+}
+
 /// `Node.polyar_(attack, release)` — poly AR envelope (the amp gate). Ports
 /// 0/1 = attack/release (mono). Records itself as the voice's gate.
 pub(crate) fn node_polyar_impl<S: SlotApi>(vm: &S) {
@@ -1460,6 +1498,8 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polyBegin_()", node_poly_begin_impl::<S>);
     method("main", "Node", true, "polyosc_(_,_)", node_polyosc_impl::<S>);
     method("main", "Node", true, "polysvf_(_,_,_)", node_polysvf_impl::<S>);
+    method("main", "Node", true, "polymoog_(_,_,_,_)", node_polymoog_impl::<S>);
+    method("main", "Node", true, "polyms20_(_,_,_,_)", node_polyms20_impl::<S>);
     method("main", "Node", true, "polyar_(_,_)", node_polyar_impl::<S>);
     method("main", "Node", true, "polymul_(_,_)", node_polymul_impl::<S>);
     method("main", "Node", true, "polyadd_(_,_)", node_polyadd_impl::<S>);
