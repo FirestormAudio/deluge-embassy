@@ -7,8 +7,10 @@
 use crate::floorf;
 use crate::env::Ar;
 #[cfg(not(feature = "simd"))]
-use crate::filter::{DiodeLadder, Svf, SvfResp};
-use crate::filter::{moog_coeffs, svf_coeffs, svf_k_from_res, svf_tan_prewarp, MOOG_OVERSAMPLE};
+use crate::filter::{DiodeLadder, Ms20, Svf, SvfResp};
+use crate::filter::{
+    moog_coeffs, ms20_coeffs, svf_coeffs, svf_k_from_res, svf_tan_prewarp, Ms20Resp, MOOG_OVERSAMPLE,
+};
 #[cfg(not(feature = "simd"))]
 use crate::osc::wave_sample;
 use crate::osc::Wave;
@@ -351,6 +353,121 @@ impl<const POLES: usize> PolyMoog<POLES> {
 
 impl<const POLES: usize> Default for PolyMoog<POLES> {
     fn default() -> Self { Self::new() }
+}
+
+/// Poly MS-20 (Korg35) Sallen-Key. Poly audio in → 8 filtered lanes; shared
+/// mono cutoff/res. Scalar path holds `[Ms20; VOICES]` and reuses `Ms20::tick`;
+/// the SIMD path runs the ZDF two-integrator + `ms20_clip_x8` feedback + DC
+/// blocker + `pade_tanh_x8` limiter across `f32x8`. Both use `ms20_coeffs`.
+#[derive(Clone, Copy)]
+pub struct PolyMs20 {
+    drive: f32,
+    #[cfg(not(feature = "simd"))]
+    voices: [Ms20; VOICES],
+    #[cfg(feature = "simd")]
+    cached_dt: f32,
+    #[cfg(feature = "simd")]
+    ic1: core::simd::f32x8,
+    #[cfg(feature = "simd")]
+    ic2: core::simd::f32x8,
+    #[cfg(feature = "simd")]
+    dc_x: core::simd::f32x8,
+    #[cfg(feature = "simd")]
+    dc_y: core::simd::f32x8,
+    #[cfg(feature = "simd")]
+    dc_a: f32, // DC-blocker coeff (shared; depends only on dt)
+}
+
+impl PolyMs20 {
+    #[cfg(not(feature = "simd"))]
+    pub fn new() -> Self {
+        PolyMs20 { drive: 1.0, voices: [Ms20::new(); VOICES] }
+    }
+    #[cfg(feature = "simd")]
+    pub fn new() -> Self {
+        use core::simd::f32x8;
+        PolyMs20 {
+            drive: 1.0,
+            cached_dt: 0.0,
+            ic1: f32x8::splat(0.0),
+            ic2: f32x8::splat(0.0),
+            dc_x: f32x8::splat(0.0),
+            dc_y: f32x8::splat(0.0),
+            dc_a: 0.0,
+        }
+    }
+
+    pub fn set_drive(&mut self, d: f32) {
+        let d = d.max(0.0);
+        self.drive = d;
+        #[cfg(not(feature = "simd"))]
+        for v in &mut self.voices {
+            v.set_drive(d);
+        }
+    }
+
+    /// `audio` = voice-interleaved poly input; cutoff/res/resp shared mono; out tile.
+    pub fn process(&mut self, audio: &[f32], cutoff: In, res: In, resp: Ms20Resp, dt: f32, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        #[cfg(feature = "simd")]
+        {
+            use core::simd::prelude::*;
+            use crate::filter::{ms20_clip_x8, pade_tanh_x8, OnePoleHp, MS20_DC_HP_HZ, MS20_OVERSAMPLE};
+            if dt != self.cached_dt {
+                // Reuse the scalar OnePoleHp coeff computation for exact agreement.
+                let mut hp = OnePoleHp::default();
+                hp.set_coeff(MS20_DC_HP_HZ * 2.0 * core::f64::consts::PI / (1.0 / dt as f64));
+                self.dc_a = hp.coeff();
+                self.cached_dt = dt;
+            }
+            let drive = f32x8::splat(self.drive);
+            let a = f32x8::splat(self.dc_a);
+            let b = (f32x8::splat(1.0) + a) * f32x8::splat(0.5);
+            let two = f32x8::splat(2.0);
+            let eight = f32x8::splat(8.0);
+            for i in 0..n {
+                let (k, a1, a2, a3) = ms20_coeffs(cutoff.at(i), res.at(i), dt);
+                let (kv, a1v, a2v, a3v) =
+                    (f32x8::splat(k), f32x8::splat(a1), f32x8::splat(a2), f32x8::splat(a3));
+                let input = f32x8::from_slice(&audio[i * VOICES..]);
+                let mut y = f32x8::splat(0.0);
+                for _ in 0..MS20_OVERSAMPLE {
+                    let v0 = input * drive - kv * ms20_clip_x8(drive * self.ic1);
+                    let v3 = v0 - self.ic2;
+                    let v1 = a1v * self.ic1 + a2v * v3;
+                    let v2 = self.ic2 + a2v * self.ic1 + a3v * v3;
+                    self.ic1 = two * v1 - self.ic1;
+                    self.ic2 = two * v2 - self.ic2;
+                    y = match resp {
+                        Ms20Resp::Lp => v2,
+                        Ms20Resp::Hp => v0 - kv * v1 - v2,
+                    };
+                }
+                // DC blocker (OnePoleHp recurrence) then ±8 tanh limiter.
+                let dc = b * y - b * self.dc_x + a * self.dc_y;
+                self.dc_x = y;
+                self.dc_y = dc;
+                let s = eight * pade_tanh_x8(dc / eight);
+                s.copy_to_slice(&mut out[i * VOICES..]);
+            }
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            for i in 0..n {
+                let (k, a1, a2, a3) = ms20_coeffs(cutoff.at(i), res.at(i), dt);
+                for v in 0..VOICES {
+                    out[i * VOICES + v] =
+                        self.voices[v].tick_with_dt(audio[i * VOICES + v], k, a1, a2, a3, resp, dt);
+                }
+            }
+        }
+    }
+}
+
+impl Default for PolyMs20 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Poly × poly, lanewise: `out[j] = a[j] * b[j]`. The VCA. Auto-vectorizes.
@@ -774,5 +891,44 @@ mod tests {
         let mut out = std::vec![0.0f32; n * VOICES];
         poly.process(&audio, In::K(1000.0), In::K(1.0), dt, &mut out);
         for &s in &out { assert!(s.abs() <= 1.0001, "moog diverged: {s}"); }
+    }
+
+    #[test]
+    fn polyms20_matches_scalar_oracle_both_responses() {
+        use crate::filter::{Ms20, Ms20Resp};
+        let dt = 1.0 / 48_000.0;
+        let n = 200usize;
+        for resp in [Ms20Resp::Lp, Ms20Resp::Hp] {
+            let mut poly = PolyMs20::new();
+            let mut refs: [Ms20; VOICES] = core::array::from_fn(|_| Ms20::new());
+            // Voice v gets a saw-ish ramp scaled per voice.
+            let audio: std::vec::Vec<f32> = (0..n * VOICES)
+                .map(|j| { let i = j / VOICES; let v = j % VOICES; ((i as f32 * 0.021 + v as f32 * 0.04) % 1.0) * 2.0 - 1.0 })
+                .collect();
+            let mut out = std::vec![0.0f32; n * VOICES];
+            poly.process(&audio, In::K(1500.0), In::K(0.8), resp, dt, &mut out);
+            for v in 0..VOICES {
+                let vin: std::vec::Vec<f32> = (0..n).map(|i| audio[i * VOICES + v]).collect();
+                let mut vout = std::vec![0.0f32; n];
+                refs[v].process(In::A(&vin), In::K(1500.0), In::K(0.8), resp, dt, &mut vout);
+                for i in 0..n {
+                    assert!((out[i * VOICES + v] - vout[i]).abs() <= 1e-4,
+                        "{resp:?} voice {v} sample {i}: {} vs {}", out[i * VOICES + v], vout[i]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn polyms20_stays_bounded_at_high_res_and_drive() {
+        use crate::filter::Ms20Resp;
+        let dt = 1.0 / 48_000.0;
+        let n = 4096;
+        let mut poly = PolyMs20::new();
+        poly.set_drive(6.0);
+        let audio = std::vec![0.5f32; n * VOICES];
+        let mut out = std::vec![0.0f32; n * VOICES];
+        poly.process(&audio, In::K(8000.0), In::K(0.99), Ms20Resp::Lp, dt, &mut out);
+        for &s in &out { assert!(s.abs() <= 8.0001, "ms20 diverged: {s}"); }
     }
 }

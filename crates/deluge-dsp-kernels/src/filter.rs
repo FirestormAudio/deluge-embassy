@@ -258,9 +258,17 @@ pub(crate) struct OnePoleHp {
 
 impl OnePoleHp {
     /// `wc = 2π·f_corner/fs` (radians/sample). `k = tan(wc/2)` in f64 (one-time).
-    fn set_coeff(&mut self, wc: f64) {
+    pub(crate) fn set_coeff(&mut self, wc: f64) {
         let k = libm::tan(wc / 2.0);
         self.a = ((1.0 - k) / (1.0 + k)) as f32;
+    }
+    /// The one-pole coefficient `a` (post `set_coeff`). Lets the SIMD `PolyMs20`
+    /// DC blocker splat the identical coeff the scalar `Ms20` uses, without
+    /// exposing the private fields.
+    #[cfg(feature = "simd")]
+    #[inline]
+    pub(crate) fn coeff(&self) -> f32 {
+        self.a
     }
     #[inline]
     fn process(&mut self, input: f32) -> f32 {
@@ -466,7 +474,7 @@ pub(crate) const MS20_OVERSAMPLE: u32 = 2;
 /// DC blocker, not the resonant core, and is why `ms20_tests` doesn't include a
 /// `minus_3db_hz`-based cutoff-accuracy gate (band/slope + self-osc-near-cutoff cover
 /// cutoff tracking instead).
-const MS20_DC_HP_HZ: f64 = 30.0;
+pub(crate) const MS20_DC_HP_HZ: f64 = 30.0;
 
 /// Asymmetric diode-pair clipper (the MS-20 scream): softer on one polarity, harder on the
 /// other → even harmonics + a DC offset (removed downstream by the DC blocker). Pure f32,
@@ -487,6 +495,30 @@ pub(crate) fn ms20_clip_x8(x: core::simd::f32x8) -> core::simd::f32x8 {
     use core::simd::prelude::*;
     const B: f32 = 0.5;
     pade_tanh_x8(x + f32x8::splat(B)) - pade_tanh_x8(f32x8::splat(B))
+}
+
+/// MS-20 per-sample coefficients, shared by the mono `Ms20::process` and the
+/// poly `PolyMs20`. `k` is the resonance damping (`2(1−res)`, floored); a1/a2/a3
+/// are the TPT integrator coefficients at the oversampled step.
+#[inline]
+pub(crate) fn ms20_coeffs(cutoff: f32, res: f32, dt: f32) -> (f32, f32, f32, f32) {
+    let fc = cutoff.clamp(20.0, 18_000.0);
+    let res = res.clamp(0.0, 1.0);
+    // res→k: k=2 (gentle) at res=0, k→~0 (self-osc edge, Sallen-Key K→3) at res=1.
+    let k = (2.0 * (1.0 - res)).max(1e-4);
+    // Prewarp at dt/MS20_OVERSAMPLE, not dt: the loop below sub-steps
+    // MS20_OVERSAMPLE times per output sample, so each sub-step advances
+    // physical time by dt/MS20_OVERSAMPLE, not a full dt (an earlier version of
+    // this kernel prewarped at the full dt here, which advanced physical time by
+    // MS20_OVERSAMPLE·dt per output sample instead — self-oscillation came out
+    // pitched ~2× sharp, e.g. 1998 Hz measured for a 1000 Hz target).
+    let theta = (core::f32::consts::PI * fc * dt / MS20_OVERSAMPLE as f32)
+        .min(0.49 * core::f32::consts::PI);
+    let g = svf_tan_prewarp(theta);
+    let a1 = 1.0 / (1.0 + g * (g + k));
+    let a2 = g * a1;
+    let a3 = g * a2;
+    (k, a1, a2, a3)
 }
 
 /// Which Sallen-Key response a node writes.
@@ -517,57 +549,67 @@ impl Ms20 {
         self.drive = d.max(0.0);
     }
 
-    pub fn process(&mut self, input: In, cutoff: In, res: In, resp: Ms20Resp, dt: f32, out: &mut [f32]) {
+    /// One output sample. Coeffs precomputed by `ms20_coeffs`; `self.dc`/`self.drive`
+    /// are the DC-blocker state and drive gain. Shared by mono `process` and `PolyMs20`.
+    /// Assumes `self.dc`'s coefficient is already set (see `tick_with_dt`).
+    #[inline]
+    pub(crate) fn tick(&mut self, input: f32, k: f32, a1: f32, a2: f32, a3: f32, resp: Ms20Resp) -> f32 {
+        let mut y = 0.0;
+        for _ in 0..MS20_OVERSAMPLE {
+            // The resonance feedback (bandpass v1) is where the diode clips (MS-20).
+            // Apply the asymmetric clip to the resonance signal, iteration-free using
+            // the current bandpass state estimate (ic1eq).
+            let v0 = input * self.drive - k * ms20_clip(self.drive * self.ic1eq);
+            let v3 = v0 - self.ic2eq;
+            let v1 = a1 * self.ic1eq + a2 * v3; // bandpass (resonance)
+            let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3; // lowpass
+            self.ic1eq = 2.0 * v1 - self.ic1eq;
+            self.ic2eq = 2.0 * v2 - self.ic2eq;
+            y = match resp {
+                Ms20Resp::Lp => v2,
+                Ms20Resp::Hp => v0 - k * v1 - v2,
+            };
+        }
+        // Output soft-saturation (MS-20 output stage): only the resonance
+        // *feedback* (the `k·ms20_clip(...)` term) is nonlinearly bounded going in —
+        // the forward path (`drive·input`, and `v0` directly in the Hp tap) is not,
+        // so under drive+resonance the pre-saturation output can reach tens-to-hundreds
+        // (e.g. Lp measured ≈92 at cutoff=18000, res=0.99, drive=8, well inside the
+        // tested domain — this is NOT limited to a narrow Hp corner). A hard clamp
+        // there would flatten that into a digital rail; instead run it through the same
+        // Padé tanh used for the resonance clip, scaled to ±8 (the kernel's contractual
+        // bound), giving an analog-style output limiter: ~transparent at normal levels
+        // (|y| ≲ 4), soft-clips heavy driven output. `pade_tanh` ∈ [-1,1], so this
+        // bounds the output to (-8, 8) by construction — DC-block first, then saturate.
+        8.0 * pade_tanh(self.dc.process(y) / 8.0)
+    }
+
+    /// `tick`, but sets the DC-blocker coeff on `dt` change first. There is exactly
+    /// one dt-guard implementation (this one); both mono `process` and the scalar
+    /// `PolyMs20` path route through it, so they stay bit-identical.
+    #[inline]
+    pub(crate) fn tick_with_dt(
+        &mut self,
+        input: f32,
+        k: f32,
+        a1: f32,
+        a2: f32,
+        a3: f32,
+        resp: Ms20Resp,
+        dt: f32,
+    ) -> f32 {
         if dt != self.cached_dt {
             // DC blocker (removes the asymmetric clip's offset) — see MS20_DC_HP_HZ.
             self.dc.set_coeff(MS20_DC_HP_HZ * 2.0 * core::f64::consts::PI / (1.0 / dt as f64));
             self.cached_dt = dt;
         }
+        self.tick(input, k, a1, a2, a3, resp)
+    }
+
+    pub fn process(&mut self, input: In, cutoff: In, res: In, resp: Ms20Resp, dt: f32, out: &mut [f32]) {
         for (i, s) in out.iter_mut().enumerate() {
-            let fc = cutoff.at(i).clamp(20.0, 18_000.0);
-            let res = res.at(i).clamp(0.0, 1.0);
-            // res→k: k=2 (gentle) at res=0, k→~0 (self-osc edge, Sallen-Key K→3) at res=1.
-            let k = (2.0 * (1.0 - res)).max(1e-4);
-            // Prewarp at dt/MS20_OVERSAMPLE, not dt: the loop below sub-steps
-            // MS20_OVERSAMPLE times per output sample, so each sub-step advances
-            // physical time by dt/MS20_OVERSAMPLE, not a full dt (an earlier version of
-            // this kernel prewarped at the full dt here, which advanced physical time by
-            // MS20_OVERSAMPLE·dt per output sample instead — self-oscillation came out
-            // pitched ~2× sharp, e.g. 1998 Hz measured for a 1000 Hz target).
-            let theta = (core::f32::consts::PI * fc * dt / MS20_OVERSAMPLE as f32)
-                .min(0.49 * core::f32::consts::PI);
-            let g = svf_tan_prewarp(theta);
-            let a1 = 1.0 / (1.0 + g * (g + k));
-            let a2 = g * a1;
-            let a3 = g * a2;
-            let mut y = 0.0;
-            for _ in 0..MS20_OVERSAMPLE {
-                // The resonance feedback (bandpass v1) is where the diode clips (MS-20).
-                // Apply the asymmetric clip to the resonance signal, iteration-free using
-                // the current bandpass state estimate (ic1eq).
-                let v0 = input.at(i) * self.drive - k * ms20_clip(self.drive * self.ic1eq);
-                let v3 = v0 - self.ic2eq;
-                let v1 = a1 * self.ic1eq + a2 * v3; // bandpass (resonance)
-                let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3; // lowpass
-                self.ic1eq = 2.0 * v1 - self.ic1eq;
-                self.ic2eq = 2.0 * v2 - self.ic2eq;
-                y = match resp {
-                    Ms20Resp::Lp => v2,
-                    Ms20Resp::Hp => v0 - k * v1 - v2,
-                };
-            }
-            // Output soft-saturation (MS-20 output stage): only the resonance
-            // *feedback* (the `k·ms20_clip(...)` term) is nonlinearly bounded going in —
-            // the forward path (`drive·input`, and `v0` directly in the Hp tap) is not,
-            // so under drive+resonance the pre-saturation output can reach tens-to-hundreds
-            // (e.g. Lp measured ≈92 at cutoff=18000, res=0.99, drive=8, well inside the
-            // tested domain — this is NOT limited to a narrow Hp corner). A hard clamp
-            // there would flatten that into a digital rail; instead run it through the same
-            // Padé tanh used for the resonance clip, scaled to ±8 (the kernel's contractual
-            // bound), giving an analog-style output limiter: ~transparent at normal levels
-            // (|y| ≲ 4), soft-clips heavy driven output. `pade_tanh` ∈ [-1,1], so this
-            // bounds the output to (-8, 8) by construction — DC-block first, then saturate.
-            *s = 8.0 * pade_tanh(self.dc.process(y) / 8.0);
+            let (k, a1, a2, a3) = ms20_coeffs(cutoff.at(i), res.at(i), dt);
+            *s = self.tick_with_dt(input.at(i), k, a1, a2, a3, resp, dt);
         }
     }
 }
