@@ -201,10 +201,19 @@ impl<
                 }
 
                 for j in 0..Node::poly_in_count(kind) {
-                    // Ports 0..k are poly edges; copy each source's VOICES rows
-                    // verbatim (row-copy preserves the interleaved layout).
+                    // Ports 0..k are poly edges. A poly (VOICES-wide) source's
+                    // rows are copied verbatim (row-copy preserves the
+                    // interleaved layout). A mono (width-1) source instead has
+                    // its single output row splatted to every voice lane —
+                    // copying VOICES rows from a width-1 producer would read
+                    // adjacent-node garbage/silence past its one live slot.
                     match inputs[j] {
                         Input::Node { node, .. } => match self.arena.out_base(node) {
+                            Some(sbase) if Node::out_width(self.arena.kind_of(node).expect(
+                                "out_base returned Some ⇒ node is live ⇒ kind_of is Some"
+                            )) == 1 && sbase < OUTS => {
+                                for v in 0..VOICES { poly_scratch[j][v] = arr[sbase]; }
+                            }
                             Some(sbase) if sbase + VOICES <= OUTS => {
                                 for v in 0..VOICES { poly_scratch[j][v] = arr[sbase + v]; }
                             }
@@ -814,6 +823,50 @@ mod tests {
         let out = e.node_output(NodeId(3), 0);
         let want: f32 = (1..=VOICES).map(|x| x as f32 * 2.0).sum(); // Σ 2·(1..8) = 72
         assert!(out.iter().all(|&s| (s - want).abs() < 1e-3), "sum of a·b == {want}");
+    }
+
+    #[test]
+    fn mono_source_broadcasts_to_all_poly_lanes() {
+        // PolyOsc(pitch) as poly source A; a mono Ctrl=0.5 as source B;
+        // PolyMul(A, B). Because B is width-1, the broadcast must splat 0.5 to
+        // every lane, so PolyMul lane v == PolyOsc lane v * 0.5 for every v —
+        // including v > 0, which the old VOICES-row-copy left as zero/garbage
+        // (Ctrl only ever writes its own single output row).
+        type PE = Engine<64, 8, 40, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        e.create(NodeId(0), Kind::PolyCtrl); // pitch per voice
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+        }
+        e.create(NodeId(1), Kind::PolyOsc); // poly source A
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.create(NodeId(2), Kind::Ctrl); // mono source B
+        e.apply(Cmd::SetParam { node: NodeId(2), param: 0, value: 0.5 });
+        e.create(NodeId(3), Kind::PolyMul);
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+        e.render_block();
+
+        for v in 0..VOICES {
+            let osc = e.node_output(NodeId(1), v as u8);
+            let out = e.node_output(NodeId(3), v as u8);
+            let osc: [f32; 64] = osc.try_into().unwrap();
+            let out: [f32; 64] = out.try_into().unwrap();
+            for i in 0..64 {
+                let want = osc[i] * 0.5;
+                assert!(
+                    (out[i] - want).abs() < 1e-5,
+                    "voice {v} sample {i}: got {}, want {} (broadcast of mono B)",
+                    out[i], want
+                );
+            }
+            if v > 0 {
+                assert!(
+                    out.iter().any(|&s| s.abs() > 1e-6),
+                    "voice {v} must carry the broadcast mono source, not zero/garbage"
+                );
+            }
+        }
     }
 
     #[test]

@@ -101,6 +101,12 @@ impl<const NODES: usize, const OUTS: usize> Arena<NODES, OUTS> {
         self.node(id).map(|n| n.out_base as usize)
     }
 
+    /// Read-only accessor for a node's `Kind` (e.g. so a consumer can check a
+    /// source's `out_width` before deciding how to resolve a poly input edge).
+    pub fn kind_of(&self, id: NodeId) -> Option<Kind> {
+        self.node(id).map(|n| n.kind)
+    }
+
     pub fn eval_order(&self) -> &[u16] {
         &self.order[..self.order_len]
     }
