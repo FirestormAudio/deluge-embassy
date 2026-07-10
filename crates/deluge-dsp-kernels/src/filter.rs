@@ -174,6 +174,16 @@ pub(crate) fn pade_tanh(x: f32) -> f32 {
     s.max(-1.0).min(1.0)
 }
 
+/// Lane-parallel `pade_tanh` (Task-1 null-tested against the scalar oracle).
+#[cfg(feature = "simd")]
+#[inline]
+pub(crate) fn pade_tanh_x8(x: core::simd::f32x8) -> core::simd::f32x8 {
+    use core::simd::prelude::*;
+    let x2 = x * x;
+    let s = x * (f32x8::splat(27.0) + x2) / (f32x8::splat(27.0) + f32x8::splat(9.0) * x2);
+    s.simd_max(f32x8::splat(-1.0)).simd_min(f32x8::splat(1.0))
+}
+
 /// Nonlinear diode ladder (Vult/Heun RK2 core, de-SIMD'd from spark
 /// `SimdDiodeLadderFilter<f32,1,STAGES>`). Holds only integrator state;
 /// coefficients (`fh`), resonance, and oversampling are passed per call so the
@@ -459,6 +469,15 @@ pub(crate) fn ms20_clip(x: f32) -> f32 {
     // subtract the bias's DC so small signals stay ~centered (DC blocker mops up the rest).
     const B: f32 = 0.5;
     pade_tanh(x + B) - pade_tanh(B)
+}
+
+/// Lane-parallel `ms20_clip` (biased `pade_tanh`, de-biased). Matches scalar exactly.
+#[cfg(feature = "simd")]
+#[inline]
+pub(crate) fn ms20_clip_x8(x: core::simd::f32x8) -> core::simd::f32x8 {
+    use core::simd::prelude::*;
+    const B: f32 = 0.5;
+    pade_tanh_x8(x + f32x8::splat(B)) - pade_tanh_x8(f32x8::splat(B))
 }
 
 /// Which Sallen-Key response a node writes.
@@ -825,6 +844,33 @@ mod diode_ladder_tests {
             max_diff = max_diff.max((ya - yb).abs());
         }
         assert!(max_diff > 1e-4, "oversample param not honoured: max|Δ|={max_diff}");
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn pade_tanh_x8_matches_scalar() {
+        use core::simd::prelude::*;
+        // Sweep including saturating tails (scalar clamps to ±1 at |x|≥3).
+        let xs = [-8.0f32, -3.5, -3.0, -1.7, -0.4, 0.0, 0.25, 1.0, 2.9, 3.0, 5.0, 8.0];
+        for &x in &xs {
+            let v = pade_tanh_x8(f32x8::splat(x)).to_array();
+            for lane in v {
+                assert!((lane - pade_tanh(x)).abs() <= 1e-4, "x={x} got {lane} want {}", pade_tanh(x));
+            }
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn ms20_clip_x8_matches_scalar() {
+        use core::simd::prelude::*;
+        let xs = [-8.0f32, -3.0, -1.0, -0.3, 0.0, 0.3, 1.0, 3.0, 8.0];
+        for &x in &xs {
+            let v = ms20_clip_x8(f32x8::splat(x)).to_array();
+            for lane in v {
+                assert!((lane - ms20_clip(x)).abs() <= 1e-4, "x={x} got {lane} want {}", ms20_clip(x));
+            }
+        }
     }
 }
 
