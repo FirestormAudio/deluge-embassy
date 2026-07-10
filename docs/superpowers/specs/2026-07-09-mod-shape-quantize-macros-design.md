@@ -18,7 +18,9 @@ Quantize / Macros (this)** — completes the Mod suite.
 **Why one spec:** linear scale/offset/attenuvert are already expressible with
 the shipped `*`/`+`/`.to()` sugar, so Mod-3's genuinely-new content is the five
 kernels below plus two thin Wren layers. They share one theme (shape a
-modulation signal) and one new primitive (`exp2_approx`), so they ship together.
+modulation signal), so they ship together. `Mtof`'s `2^x` uses `libm::exp2f`
+(`libm` is already a kernel dependency — `log2f`/`sinf`/`sqrtf`/`floorf` are all
+used today); no custom exp2 primitive is needed.
 
 ---
 
@@ -42,8 +44,7 @@ modulation signal) and one new primitive (`exp2_approx`), so they ship together.
   *is* a macro. `Macro.new(v)` → `Ctrl` with a `.value=` setter.
 - **Scaling sugar** — Wren methods on `Node`/`Port` wrapping existing
   arithmetic, plus wiring methods to the new nodes.
-- **`exp2_approx`** — a shared `no_std` fast `2^x` primitive (for `Mtof`).
-- **QA-proven:** exp2 sub-cent accurate; Curve monotonic/odd-symmetric/linear at
+- **QA-proven:** Curve monotonic/odd-symmetric/linear at
   `k=0`; QuantStep hits exact levels; QuantPitch snaps known inputs to known
   degrees (incl. octave wrap + root shift); Mtof octave doublings exact; Ctrl
   outputs and updates its value; all bounded, finite, deterministic.
@@ -61,31 +62,18 @@ modulation signal) and one new primitive (`exp2_approx`), so they ship together.
 
 ---
 
-## 2. Shared primitive: `exp2_approx` (`deluge-dsp-kernels/src/math.rs`)
+## 2. `no_std` numeric note (applies to every kernel below)
 
-```rust
-/// Fast `2^x` for `no_std`, deterministic. Splits x into an integer part
-/// (composed into the f32 exponent field) and a fractional part in [0,1)
-/// evaluated by a minimax cubic. Input clamped to a safe exponent range.
-pub fn exp2_approx(x: f32) -> f32;
-```
+`core` does not provide `f32::floor`/`round`/`exp2` (they need libm). This crate
+already depends on `libm` (`libm::log2f`/`sinf`/`sqrtf`/`floorf` are used today),
+plus a crate-root `pub(crate) fn floorf` (used by Lfo/Delay). For Mod-3:
 
-- Clamp `x` to e.g. `[−126.0, 126.0]` (f32 exponent range) to avoid overflow.
-- `i = floorf(x)`, `f = x − i` (`f ∈ [0,1)`).
-- `2^i`: build the float via `f32::from_bits(((i as i32 + 127) as u32) << 23)`.
-- `2^f`: minimax cubic `poly(f) ≈ 2^f` on `[0,1]` (coefficients chosen for
-  < ~0.06 % relative error, i.e. < ~1 cent when used for pitch).
-- Result: `2^i · poly(f)`.
-- **Accuracy target:** over `x ∈ [−6, 6]` (i.e. `[−72,72]/12` semitones), max
-  relative error vs `f64::exp2` < `1e-3` (sub-cent). Tested.
-
-`floorf` is already a crate-root export (used by Lfo). Pure `f32`, no libm.
-
-> **`no_std` float note (applies to every kernel below):** `core` does not
-> provide `f32::floor`/`round` (they need libm). Use the crate-root `floorf`;
-> express `round(x)` as `floorf(x + 0.5)` (half-rounds toward +∞ — consistent
-> with `QuantPitch`'s tie-up policy). `clamp` is fine (`core`); for `abs`, use a
-> branch (`if x < 0.0 { -x } else { x }`) to stay portable.
+- **Floor / round:** use the crate-root `floorf`; express `round(x)` as
+  `floorf(x + 0.5)` (half-rounds toward +∞ — consistent with `QuantPitch`'s
+  tie-up policy).
+- **`2^x` (Mtof):** `libm::exp2f` — exact, no custom primitive.
+- **`clamp`** is `core` (fine); for **`abs`**, use a branch
+  (`if x < 0.0 { -x } else { x }`) to stay portable.
 
 ---
 
@@ -184,7 +172,7 @@ impl Mtof {
 }
 ```
 
-**Per sample:** `out[i] = self.ref_hz * exp2_approx(input.at(i) / 12.0)`.
+**Per sample:** `out[i] = self.ref_hz * libm::exp2f(input.at(i) / 12.0)`.
 `0 → ref`, `+12 → 2·ref`, `−12 → ½·ref`. Bounded/finite for finite input.
 
 ### 3.5 `Ctrl` (`deluge-dsp-kernels/src/shape.rs`)
@@ -274,8 +262,6 @@ the plan and cross-checked in tests.)
 ## 5. QA acceptance & testing
 
 **Kernels (`deluge-dsp-kernels`):**
-- **`exp2_approx`** — vs `f64::exp2` over `x ∈ [−6, 6]`: max relative error
-  `< 1e-3`. Exact-ish at integers (`2^0=1`, `2^1=2`, `2^-1=0.5`).
 - **`Curve`** — `k=0` ⇒ output == input (linear, within eps); monotonic
   non-decreasing over a `−1→1` ramp for any `k`; odd-symmetric
   (`f(−x) = −f(x)`); fixed points `f(0)=0`, `f(±1)=±1`; `k>0` boosts mid
@@ -313,6 +299,9 @@ the plan and cross-checked in tests.)
 
 ## 6. Deferred / follow-ups
 
+- **Hand-rolled libm-free `exp2`** for the pitch path — only if a future
+  requirement bans `libm` on that path (it doesn't today; `Mtof` uses
+  `libm::exp2f`).
 - **S-curve/smoothstep, asymmetric curves** — a distinct shape family, later.
 - **Explicit multi-tap macro helper, macro snapshots/morph, named banks** —
   fan-out via existing sugar suffices for v1.
