@@ -40,14 +40,14 @@ impl Default for PolyCtrl {
     }
 }
 
-/// A poly oscillator. `pitch` is a voice-interleaved tile of per-voice Hz;
-/// writes a voice-interleaved audio tile. SoA phase; voice loop is the inner
-/// (vectorizable) dimension. Raw sine shape (band-limiting is a later concern).
 // The f32x8 poly path assumes exactly 8 voices. Changing VOICES requires
 // revisiting the SIMD width (e.g. f32x16 or 2× f32x8).
 #[cfg(feature = "simd")]
 const _: () = assert!(VOICES == 8);
 
+/// A poly oscillator. `pitch` is a voice-interleaved tile of per-voice Hz;
+/// writes a voice-interleaved audio tile. SoA phase; voice loop is the inner
+/// (vectorizable) dimension. Raw sine shape (band-limiting is a later concern).
 #[derive(Clone, Copy)]
 pub struct PolyOsc {
     phase: [f32; VOICES], // [0,1) per voice
