@@ -884,4 +884,63 @@ mod tests {
         assert!(voiced.iter().all(|&s| s.is_finite() && s.abs() <= 8.0), "bounded");
         assert!(voiced.iter().any(|&s| s.abs() > 1e-4), "gated voices sound");
     }
+
+    fn build_voice(e: &mut Engine<64, 8, 56, 4, 45056, 2048>) {
+        // PolyCtrl(0) → PolyMtof(1) → PolyOsc(2) → PolySvf(3) →
+        //     PolyMul(4, PolyAr(5)) → VoiceSum(6)
+        e.create(NodeId(0), Kind::PolyCtrl);
+        e.create(NodeId(1), Kind::PolyMtof);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.create(NodeId(2), Kind::PolyOsc);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        e.create(NodeId(3), Kind::PolySvf);
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+        *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(2000.0);
+        *e.node_input_mut(NodeId(3), 2).unwrap() = Input::Const(0.2);
+        e.create(NodeId(5), Kind::PolyAr);
+        *e.node_input_mut(NodeId(5), 0).unwrap() = Input::Const(0.001); // attack
+        *e.node_input_mut(NodeId(5), 1).unwrap() = Input::Const(0.005); // release
+        e.create(NodeId(4), Kind::PolyMul);
+        *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node { node: NodeId(3), port: 0 };
+        *e.node_input_mut(NodeId(4), 1).unwrap() = Input::Node { node: NodeId(5), port: 0 };
+        e.create(NodeId(6), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(6), 0).unwrap() = Input::Node { node: NodeId(4), port: 0 };
+    }
+
+    #[test]
+    fn note_on_sounds_then_note_off_silences() {
+        type PE = Engine<64, 8, 56, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        build_voice(&mut e);
+        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), NodeId(5));
+
+        { let mut emit = |c: Cmd| e.apply(c); alloc.note_on(69, 100, &mut emit); }
+        for _ in 0..8 { e.render_block(); } // let the fast envelope attack
+        let out = e.node_output(NodeId(6), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 8.5), "bounded");
+        assert!(out.iter().any(|&s| s.abs() > 1e-3), "note-on sounds");
+
+        { let mut emit = |c: Cmd| e.apply(c); alloc.note_off(69, &mut emit); }
+        for _ in 0..300 { e.render_block(); } // past the 5 ms release
+        let out2 = e.node_output(NodeId(6), 0);
+        assert!(out2.iter().all(|&s| s.abs() < 1e-4), "note-off silences");
+    }
+
+    #[test]
+    fn ninth_note_steals_and_still_sounds() {
+        type PE = Engine<64, 8, 56, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        build_voice(&mut e);
+        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), NodeId(5));
+        {
+            let mut emit = |c: Cmd| e.apply(c);
+            for k in 0..9u8 {
+                alloc.note_on(60 + k, 100, &mut emit); // 9 notes → one steal
+            }
+        }
+        for _ in 0..8 { e.render_block(); }
+        let out = e.node_output(NodeId(6), 0);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 8.5), "bounded after steal");
+        assert!(out.iter().any(|&s| s.abs() > 1e-3), "still sounds after steal");
+    }
 }
