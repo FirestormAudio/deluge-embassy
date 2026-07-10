@@ -1008,11 +1008,14 @@ pub(crate) unsafe extern "C" fn node_poly_begin(raw: *mut WrenVM) {
     node_poly_begin_impl(&vm);
 }
 
-/// `Node.polyosc_(pitch)` — poly sine oscillator. Ports 0 = pitch (poly Hz).
+/// `Node.polyosc_(pitch, shape)` — poly oscillator. Port 0 = pitch (poly Hz);
+/// `shape` (0=sine, 1=saw, 2=square, 3=tri) is set as param 0.
 pub(crate) fn node_polyosc_impl<S: SlotApi>(vm: &S) {
     let pitch = arg_input(vm, 1);
+    let shape = vm.get_f(2) as f32;
     let id = audio::alloc_node_id();
     audio::new_node(id, Kind::PolyOsc, [pitch, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, shape);
     unsafe { return_node(vm, id) };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -1065,6 +1068,32 @@ pub(crate) fn node_polymul_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn node_polymul(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_polymul_impl(&vm);
+}
+
+/// `Node.polyadd_(a, b)` — poly + poly (voice mixing). Ports 0/1 = both poly.
+pub(crate) fn node_polyadd_impl<S: SlotApi>(vm: &S) {
+    let a = arg_input(vm, 1);
+    let b = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyAdd, [a, b, Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polyadd(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polyadd_impl(&vm);
+}
+
+/// `Node.polynoise_()` — poly white noise source (per-voice seeded).
+pub(crate) fn node_polynoise_impl<S: SlotApi>(vm: &S) {
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyNoise, [Input::Const(0.0); 3]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polynoise(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polynoise_impl(&vm);
 }
 
 /// `Node.polyEnd_(out)` — finish a voice: VoiceSum(out) → build a VoiceAllocator
@@ -1429,10 +1458,12 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polyMode_", node_poly_mode_impl::<S>);
     method("main", "Node", true, "polyGateCount_", node_poly_gate_count_impl::<S>);
     method("main", "Node", true, "polyBegin_()", node_poly_begin_impl::<S>);
-    method("main", "Node", true, "polyosc_(_)", node_polyosc_impl::<S>);
+    method("main", "Node", true, "polyosc_(_,_)", node_polyosc_impl::<S>);
     method("main", "Node", true, "polysvf_(_,_,_)", node_polysvf_impl::<S>);
     method("main", "Node", true, "polyar_(_,_)", node_polyar_impl::<S>);
     method("main", "Node", true, "polymul_(_,_)", node_polymul_impl::<S>);
+    method("main", "Node", true, "polyadd_(_,_)", node_polyadd_impl::<S>);
+    method("main", "Node", true, "polynoise_()", node_polynoise_impl::<S>);
     method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
     method("main", "Synth", false, "noteOn(_,_)", synth_note_on_impl::<S>);
     method("main", "Synth", false, "noteOff(_)", synth_note_off_impl::<S>);

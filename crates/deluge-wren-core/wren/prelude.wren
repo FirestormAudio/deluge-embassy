@@ -155,10 +155,12 @@ foreign class Node {
   foreign static polyMode_
   foreign static polyGateCount_
   foreign static polyBegin_()
-  foreign static polyosc_(pitch)
+  foreign static polyosc_(pitch, shape)
   foreign static polysvf_(audio, cutoff, res)
   foreign static polyar_(attack, release)
   foreign static polymul_(a, b)
+  foreign static polyadd_(a, b)
+  foreign static polynoise_()
   foreign static polyEnd_(out)
   foreign value=(v)     // Ctrl (Macro) held value
   foreign size=(v)
@@ -190,7 +192,10 @@ foreign class Node {
     return Node.binop_(0, this, o)
   }
   +(o) {
-    if (Node.polyMode_ == 1) Fiber.abort("`+` inside a Synth isn't supported yet (Sy-2b PolyAdd)")
+    if (Node.polyMode_ == 1) {
+      if (o is Num) Fiber.abort("`+` a constant inside a Synth isn't supported yet")
+      return Node.polyadd_(this, o)
+    }
     return Node.binop_(1, this, o)
   }
   -(o) {
@@ -249,7 +254,10 @@ foreign class Port {
     return Node.binop_(0, this, o)
   }
   +(o) {
-    if (Node.polyMode_ == 1) Fiber.abort("`+` inside a Synth isn't supported yet (Sy-2b PolyAdd)")
+    if (Node.polyMode_ == 1) {
+      if (o is Num) Fiber.abort("`+` a constant inside a Synth isn't supported yet")
+      return Node.polyadd_(this, o)
+    }
     return Node.binop_(1, this, o)
   }
   -(o) {
@@ -303,19 +311,19 @@ foreign class Wavetable {
 
 class Osc {
   static sine(f) {
-    if (Node.polyMode_ == 1) return Node.polyosc_(f)
+    if (Node.polyMode_ == 1) return Node.polyosc_(f, 0)
     return Node.src_(0, f)
   }
   static saw(f) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.saw not usable in a Synth yet (Sy-2b poly breadth)")
+    if (Node.polyMode_ == 1) return Node.polyosc_(f, 1)
     return Node.src_(1, f)
   }
   static square(f) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.square not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polyosc_(f, 2)
     return Node.src_(2, f)
   }
   static tri(f) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.tri not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polyosc_(f, 3)
     return Node.src_(3, f)
   }
   // Hard sync: `master` resets `slave`'s phase each cycle, locking the
@@ -584,7 +592,7 @@ class Env {
 
 class Noise {
   static new() {
-    if (Node.polyMode_ == 1) Fiber.abort("Noise.new not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polynoise_()
     return Node.noise_()
   }
   static pink() {

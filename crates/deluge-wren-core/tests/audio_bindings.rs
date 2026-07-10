@@ -971,7 +971,7 @@ fn scaling_sugar_builds_arithmetic() {
 #[test]
 fn poly_factories_emit_poly_kinds() {
     let cmds = run_and_capture_cmds(
-        "var p = Node.polyBegin_()\nvar o = Node.polyosc_(p)\nvar f = Node.polysvf_(o, 1200, 0.2)\nvar e = Node.polyar_(0.01, 0.3)\nvar v = Node.polymul_(f, e)",
+        "var p = Node.polyBegin_()\nvar o = Node.polyosc_(p, 0)\nvar f = Node.polysvf_(o, 1200, 0.2)\nvar e = Node.polyar_(0.01, 0.3)\nvar v = Node.polymul_(f, e)",
     );
     assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyCtrl, .. })), "PolyCtrl");
     assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyMtof, .. })), "PolyMtof");
@@ -994,7 +994,7 @@ fn poly_mode_reflects_build_state() {
 #[test]
 fn synth_note_on_emits_pitch_and_gate() {
     let cmds = run_and_capture_cmds(
-        "var p = Node.polyBegin_()\nvar v = Node.polymul_(Node.polysvf_(Node.polyosc_(p), 1200, 0.2), Node.polyar_(0.01, 0.3))\nvar s = Node.polyEnd_(v)\ns.noteOn(69, 100)",
+        "var p = Node.polyBegin_()\nvar v = Node.polymul_(Node.polysvf_(Node.polyosc_(p, 0), 1200, 0.2), Node.polyar_(0.01, 0.3))\nvar s = Node.polyEnd_(v)\ns.noteOn(69, 100)",
     );
     // VoiceSum built at polyEnd_.
     assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::VoiceSum, .. })), "VoiceSum");
@@ -1026,17 +1026,40 @@ fn poly_mode_is_scoped_after_synth() {
 
 #[test]
 fn synth_error_cases_abort() {
-    // Osc.saw inside a Synth aborts; a no-env voice aborts; two envs abort.
-    assert!(!run_script_ok("Synth.new { |p| Osc.saw(p) * Env.ar(0.01,0.3) }"), "Osc.saw aborts");
+    // A no-env voice aborts; two envs abort.
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) }"), "no Env.ar aborts");
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar aborts");
-    assert!(!run_script_ok("Synth.new { |p| Noise.new() * Env.ar(0.01,0.3) }"), "Noise aborts");
-    assert!(!run_script_ok("Synth.new { |p| (Osc.sine(p) + Osc.sine(p)) * Env.ar(0.01,0.3) }"), "poly + aborts");
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * 0.5 }"), "poly * scalar aborts");
     // Nested Synth aborts (the inner polyBegin sees poly_mode already set).
     assert!(!run_script_ok("Synth.new { |p| Synth.new { |q| Osc.sine(q) * Env.ar(0.01,0.3) } }"), "nested Synth aborts");
+    // Poly pink/brown noise still deferred (Sy-2c).
+    assert!(!run_script_ok("Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }"), "Noise.pink aborts");
+    assert!(!run_script_ok("Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }"), "Noise.brown aborts");
     // Sanity: a valid Synth interprets fine.
     assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"), "valid Synth ok");
+}
+
+#[test]
+fn synth_saw_and_add_and_noise_build() {
+    // Osc.saw → PolyOsc with SetParam(0,1); `+` → PolyAdd; Noise.new → PolyNoise.
+    let cmds = run_and_capture_cmds(
+        "var s = Synth.new { |p| (Osc.saw(p) + Noise.new()).lpf(1200) * Env.ar(0.01,0.3) }",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyOsc, .. })), "PolyOsc");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 1.0).abs() < 1e-6)), "saw shape");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyAdd, .. })), "PolyAdd");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyNoise, .. })), "PolyNoise");
+}
+
+#[test]
+fn synth_saw_renders_sound() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.saw(p).lpf(2000) * Env.ar(0.001,0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "saw voice sounds");
 }
 
 #[test]
