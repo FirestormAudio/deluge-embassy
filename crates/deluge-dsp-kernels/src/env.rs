@@ -39,33 +39,34 @@ impl Ar {
         self.stage = Stage::Attack;
     }
 
+    /// Advance one sample; returns the new level. attack/release in seconds.
+    pub fn tick(&mut self, attack: f32, release: f32, dt: f32) -> f32 {
+        let atk = attack.max(0.0001);
+        let rel = release.max(0.0001);
+        match self.stage {
+            Stage::Attack => {
+                self.level += dt / atk;
+                if self.level >= 1.0 {
+                    self.level = 1.0;
+                    self.stage = if self.oneshot { Stage::Release } else { Stage::Sustain };
+                }
+            }
+            Stage::Sustain => self.level = 1.0,
+            Stage::Release => {
+                self.level -= dt / rel;
+                if self.level <= 0.0 {
+                    self.level = 0.0;
+                    self.stage = Stage::Idle;
+                }
+            }
+            Stage::Idle => self.level = 0.0,
+        }
+        self.level
+    }
+
     pub fn process(&mut self, attack: In, release: In, dt: f32, out: &mut [f32]) {
         for (i, s) in out.iter_mut().enumerate() {
-            let atk = attack.at(i).max(0.0001);
-            let rel = release.at(i).max(0.0001);
-            match self.stage {
-                Stage::Attack => {
-                    self.level += dt / atk;
-                    if self.level >= 1.0 {
-                        self.level = 1.0;
-                        self.stage = if self.oneshot {
-                            Stage::Release
-                        } else {
-                            Stage::Sustain
-                        };
-                    }
-                }
-                Stage::Sustain => self.level = 1.0,
-                Stage::Release => {
-                    self.level -= dt / rel;
-                    if self.level <= 0.0 {
-                        self.level = 0.0;
-                        self.stage = Stage::Idle;
-                    }
-                }
-                Stage::Idle => self.level = 0.0,
-            }
-            *s = self.level;
+            *s = self.tick(attack.at(i), release.at(i), dt);
         }
     }
 }

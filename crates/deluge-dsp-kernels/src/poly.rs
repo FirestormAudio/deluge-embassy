@@ -5,6 +5,8 @@
 
 #[cfg(not(feature = "simd"))]
 use crate::{fast_sin, floorf};
+use crate::env::Ar;
+use crate::In;
 
 /// Voices processed in parallel per poly node. Fixed at compile time.
 pub const VOICES: usize = 8;
@@ -96,6 +98,40 @@ impl Default for PolyOsc {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A pure poly envelope source: 8 independent attack/release envelopes with
+/// per-voice gate state. attack/release are shared (mono) controls; output is a
+/// voice-interleaved tile of levels ∈ [0,1]. No audio input — a modulation
+/// source. Scalar (the AR state machine is branchy and cheap).
+#[derive(Clone, Copy)]
+pub struct PolyAr {
+    voices: [Ar; VOICES],
+}
+impl PolyAr {
+    pub fn new() -> PolyAr {
+        PolyAr { voices: [Ar::new(); VOICES] }
+    }
+    pub fn gate_voice(&mut self, v: usize, on: bool) {
+        if v < VOICES { self.voices[v].gate(on); }
+    }
+    pub fn trigger_voice(&mut self, v: usize) {
+        if v < VOICES { self.voices[v].trigger(); }
+    }
+    /// attack/release mono controls; writes a voice-interleaved env tile.
+    pub fn process(&mut self, attack: In, release: In, dt: f32, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        for i in 0..n {
+            let atk = attack.at(i);
+            let rel = release.at(i);
+            for v in 0..VOICES {
+                out[i * VOICES + v] = self.voices[v].tick(atk, rel, dt);
+            }
+        }
+    }
+}
+impl Default for PolyAr {
+    fn default() -> Self { Self::new() }
 }
 
 /// Collapse a voice-interleaved tile to mono: `out[i] = Σ_v tile[i*VOICES + v]`.
@@ -216,5 +252,45 @@ mod tests {
                 prop_assert!(s.is_finite() && s.abs() <= 1.0001, "polyosc unbounded: {s}");
             }
         }
+    }
+
+    #[test]
+    fn polyar_gates_per_voice_independently() {
+        let dt = 1.0 / 48_000.0;
+        let mut env = PolyAr::new();
+        env.gate_voice(0, true); // voice 0 attacks
+        env.gate_voice(3, true); // voice 3 attacks
+        let n = 4800; // 100 ms
+        // attack/release are mono broadcast blocks (same for all voices per sample).
+        let atk_mono: std::vec::Vec<f32> = (0..n).map(|_| 0.01).collect(); // 10 ms attack
+        let rel_mono: std::vec::Vec<f32> = (0..n).map(|_| 0.05).collect();
+        let mut out = std::vec![0.0f32; VOICES * n];
+        env.process(In::A(&atk_mono), In::A(&rel_mono), dt, &mut out);
+        // Gated voices reach ~1.0 by the end of a 100 ms window (10 ms attack).
+        assert!((out[(n - 1) * VOICES + 0] - 1.0).abs() < 1e-3, "voice 0 reached sustain");
+        assert!((out[(n - 1) * VOICES + 3] - 1.0).abs() < 1e-3, "voice 3 reached sustain");
+        // Ungated voices stay silent.
+        for v in [1usize, 2, 4, 5, 6, 7] {
+            assert!(out[(n - 1) * VOICES + v].abs() < 1e-9, "voice {v} silent");
+        }
+        // Monotonic rise for voice 0 over the attack.
+        assert!(out[10 * VOICES + 0] > out[0 * VOICES + 0]);
+    }
+
+    #[test]
+    fn polyar_release_returns_to_zero() {
+        let dt = 1.0 / 48_000.0;
+        let mut env = PolyAr::new();
+        env.gate_voice(0, true);
+        let n = 480;
+        let atk: std::vec::Vec<f32> = (0..n).map(|_| 0.001).collect(); // 1 ms
+        let rel: std::vec::Vec<f32> = (0..n).map(|_| 0.001).collect();
+        let mut out = std::vec![0.0f32; VOICES * n];
+        env.process(In::A(&atk), In::A(&rel), dt, &mut out);
+        assert!((out[(n - 1) * VOICES] - 1.0).abs() < 1e-3, "reached sustain");
+        env.gate_voice(0, false); // release
+        let mut out2 = std::vec![0.0f32; VOICES * n];
+        env.process(In::A(&atk), In::A(&rel), dt, &mut out2);
+        assert!(out2[(n - 1) * VOICES].abs() < 1e-3, "released to 0");
     }
 }
