@@ -4,7 +4,7 @@
 
 **Goal:** Teach the audio graph to carry `VOICES = 8` voice-lanes through a poly region and collapse them to mono at a `VoiceSum` boundary, proven by `PolyCtrl → PolyOsc → VoiceSum`.
 
-**Architecture:** Three new kernels (`PolyCtrl`, `PolyOsc`, `voice_sum`) operating on **voice-interleaved** flat tiles (`tile[i*VOICES + v]`). Poly nodes reserve `VOICES` contiguous arena rows (reusing `out_width`/`out_base`) and are dispatched through a new isolated engine path (`Node::poly_process`) — `process_resolved` and its ~30 callers are untouched.
+**Architecture:** Three new kernels (`PolyCtrl`, `PolyOsc`, `voice_sum`) operating on **voice-interleaved** flat tiles (`tile[i*VOICES + v]`). Poly nodes reserve `VOICES` contiguous arena rows (reusing `out_width`/`out_base`) and are dispatched through a new isolated engine path (`Node::poly_process`) — `process_resolved` and its ~30 callers are untouched. Task 4 adds the `f32x8` fast path for `PolyOsc` (the interleaved layout makes an `f32x8` load one SIMD step) behind the `simd` feature, null-tested against the scalar oracle.
 
 **Tech Stack:** Rust `no_std` (`deluge-dsp-kernels`), the audio graph/engine (`deluge-audio-graph`), `proptest`.
 
@@ -127,7 +127,7 @@ pub fn voice_sum(tile: &[f32], out: &mut [f32]) {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::fast_sin;
+    use crate::{fast_sin, floorf}; // explicit so tests build under `--features simd` too
 
     #[test]
     fn polyctrl_fills_interleaved_lanes() {
@@ -609,6 +609,150 @@ Expected: PASS — the full crate suite plus `poly_chain_sums_eight_voices_in_ph
 ```bash
 git add crates/deluge-audio-graph/src/engine.rs
 git commit -m "feat(audio-graph): engine poly-edge resolution + poly_process dispatch"
+```
+
+---
+
+### Task 4: `f32x8` fast path for `PolyOsc` (behind the `simd` feature)
+
+**Files:**
+- Modify: `crates/deluge-dsp-kernels/src/lib.rs` (add `fast_sin_x8`)
+- Modify: `crates/deluge-dsp-kernels/src/poly.rs` (`PolyOsc::process` SIMD path, guard, null test)
+
+**Interfaces:**
+- Consumes: `crate::fast_sin` (scalar oracle), `core::simd::f32x8` (nightly `portable_simd`, already enabled by the `simd` feature).
+- Produces: `#[cfg(feature = "simd")] pub fn fast_sin_x8(p: f32x8) -> f32x8`; a
+  `PolyOsc::process` that uses `f32x8` when `--features simd`, scalar otherwise.
+
+**Context:** The default toolchain is nightly; `cargo test --features simd`
+builds `portable_simd` on the host (→ SSE) and on device (→ NEON, 8 voices = 2×
+`float32x4_t`). The crate convention (`math.rs`) is a scalar path + a
+`#[cfg(feature = "simd")]` fast path that must agree — the scalar path is the
+correctness oracle. Only `PolyOsc` is hand-vectorized: `PolyCtrl` (broadcast)
+and `voice_sum` (reduction) auto-vectorize, so hand-SIMD there is YAGNI.
+
+- [ ] **Step 1: Add `fast_sin_x8` to `lib.rs`**
+
+After the scalar `fast_sin` in `crates/deluge-dsp-kernels/src/lib.rs`, add the
+branchless 8-lane counterpart (identical polynomial, so it matches lane-for-lane):
+
+```rust
+/// SIMD counterpart of [`fast_sin`]: 8 phases at once, branchless (the `x > π`
+/// wrap becomes a lanewise `select`). Matches `fast_sin` to f32 rounding.
+/// On NEON this is 2× `float32x4_t`.
+#[cfg(feature = "simd")]
+#[inline]
+pub fn fast_sin_x8(p: core::simd::f32x8) -> core::simd::f32x8 {
+    use core::f32::consts::PI;
+    use core::simd::prelude::*;
+    let pi = f32x8::splat(PI);
+    let two_pi = f32x8::splat(2.0 * PI);
+    let mut x = f32x8::splat(2.0 * PI) * p;
+    x = x.simd_gt(pi).select(x - two_pi, x); // if x > π { x -= 2π }
+    let b = f32x8::splat(4.0 / PI);
+    let c = f32x8::splat(-4.0 / (PI * PI));
+    let y = b * x + c * x * x.abs();
+    f32x8::splat(0.225) * (y * y.abs() - y) + y
+}
+```
+
+- [ ] **Step 2: Gate the scalar imports and split `PolyOsc::process`**
+
+In `poly.rs`, change the module import so the scalar helpers are only pulled in
+for the non-SIMD build (they are unused on the SIMD path):
+
+```rust
+#[cfg(not(feature = "simd"))]
+use crate::{fast_sin, floorf};
+```
+
+Add a compile-time guard that the SIMD path's `f32x8` matches `VOICES` (put it
+just above the `PolyOsc` struct):
+
+```rust
+// The f32x8 poly path assumes exactly 8 voices. Changing VOICES requires
+// revisiting the SIMD width (e.g. f32x16 or 2× f32x8).
+#[cfg(feature = "simd")]
+const _: () = assert!(VOICES == 8);
+```
+
+Replace `PolyOsc::process`'s body with a feature-split (the scalar arm is the
+Task-1 body verbatim; the SIMD arm keeps phase register-resident as one `f32x8`):
+
+```rust
+    /// `pitch` and `out` are voice-interleaved, length `VOICES * n_samples`.
+    pub fn process(&mut self, pitch: &[f32], dt: f32, out: &mut [f32]) {
+        #[cfg(feature = "simd")]
+        {
+            use core::simd::prelude::*;
+            let n = out.len() / VOICES;
+            let one = f32x8::splat(1.0);
+            let dtv = f32x8::splat(dt);
+            let mut ph = f32x8::from_array(self.phase);
+            for i in 0..n {
+                let f = f32x8::from_slice(&pitch[i * VOICES..]);
+                let mut p = ph + f * dtv;
+                // wrap: p -= trunc-floor(p), matching scalar `floorf`
+                let t: f32x8 = p.cast::<i32>().cast::<f32>();
+                let fl = t.simd_gt(p).select(t - one, t);
+                p -= fl;
+                ph = p;
+                crate::fast_sin_x8(p).copy_to_slice(&mut out[i * VOICES..]);
+            }
+            self.phase = ph.to_array();
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            let n = out.len() / VOICES;
+            for i in 0..n {
+                for v in 0..VOICES {
+                    let f = pitch[i * VOICES + v];
+                    let mut p = self.phase[v] + f * dt;
+                    p -= floorf(p);
+                    self.phase[v] = p;
+                    out[i * VOICES + v] = fast_sin(p);
+                }
+            }
+        }
+    }
+```
+
+- [ ] **Step 3: Add a SIMD null test (only compiles under `--features simd`)**
+
+In `poly.rs`'s `#[cfg(test)] mod tests`, add:
+
+```rust
+    #[cfg(feature = "simd")]
+    #[test]
+    fn fast_sin_x8_matches_scalar() {
+        use core::simd::f32x8;
+        // Sweep phases across two full cycles; every lane must match scalar fast_sin.
+        for base in 0..250 {
+            let ps: [f32; 8] = core::array::from_fn(|k| (base as f32 * 8.0 + k as f32) / 1000.0);
+            let v = crate::fast_sin_x8(f32x8::from_array(ps)).to_array();
+            for k in 0..8 {
+                assert!((v[k] - crate::fast_sin(ps[k])).abs() < 1e-6, "phase {} lane {k}", ps[k]);
+            }
+        }
+    }
+```
+
+- [ ] **Step 4: Run BOTH feature configs**
+
+The Task-1 reference tests (`polyosc_renders_independent_per_voice_partials`,
+`polyosc_bounded`) use scalar `fast_sin` as an independent oracle, so they pin
+the SIMD path too. Run both:
+
+Run: `cargo test --target x86_64-unknown-linux-gnu -p deluge-dsp-kernels poly`
+Expected: PASS (scalar build).
+Run: `cargo test --target x86_64-unknown-linux-gnu -p deluge-dsp-kernels --features simd poly`
+Expected: PASS — all Task-1 poly tests PLUS `fast_sin_x8_matches_scalar`. No warnings in either config.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/deluge-dsp-kernels/src/lib.rs crates/deluge-dsp-kernels/src/poly.rs
+git commit -m "perf(dsp-kernels): f32x8 PolyOsc + fast_sin_x8 behind the simd feature"
 ```
 
 ---

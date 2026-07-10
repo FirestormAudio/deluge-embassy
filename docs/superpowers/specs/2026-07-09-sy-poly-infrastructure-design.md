@@ -145,11 +145,11 @@ impl PolyOsc {
 // + Default
 ```
 
-- The inner `for v in 0..VOICES` loops over the interleaved lane block; behind
-  the `simd` feature it lowers to one `f32x8` step (scalar fallback otherwise) —
-  identical structure to `math.rs`. (Sy-1 may ship the scalar form; the layout
-  is what makes the `f32x8` rewrite a drop-in, and that rewrite/bench is a
-  tracked follow-up.)
+- The inner `for v in 0..VOICES` loops over the interleaved lane block. `PolyOsc`
+  ships an explicit `#[cfg(feature = "simd")]` `f32x8` fast path (with a scalar
+  oracle fallback, null-tested — the `math.rs` convention), since its `floorf`/
+  `fast_sin` branches block auto-vectorization. `PolyCtrl` (broadcast) and
+  `voice_sum` (reduction) stay scalar (LLVM auto-vectorizes them).
 - `PolyOsc` uses `fast_sin` (a clean sine) for Sy-1; the poly counterparts of
   the band-limited `Osc` shapes are a later concern.
 
@@ -238,9 +238,9 @@ are copied into scratch/poly_scratch.)
 
 ## 6. Deferred / follow-ups
 
-- **`f32x8` vectorization of the poly kernels** behind the `simd` feature +
-  a QEMU-Cortex-A9 Criterion bench (the `deluge-fft` harness) to A/B
+- **QEMU-Cortex-A9 Criterion bench** (the `deluge-fft` harness) to A/B
   `VOICES ∈ {4, 8, 16}` on a recurrent poly kernel — confirm §2.1 empirically.
+  (The `f32x8` `PolyOsc` path itself ships in Sy-1; this is the *measurement*.)
 - **Sy-2:** per-voice `gate(v, on)`/`trigger(v)`, poly `PolyAr` envelope, poly
   filter (`PolySvf`) — the rest of a voice; reuses the poly-edge seam.
 - **Sy-3:** voice allocation (note-on → free/steal a lane, write `PolyCtrl`
