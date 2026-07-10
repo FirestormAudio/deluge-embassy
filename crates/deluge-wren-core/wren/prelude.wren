@@ -152,6 +152,13 @@ foreign class Node {
   foreign static qstep_(input, n)
   foreign static qpitch_(input, mask, root)
   foreign static mtof_(input, ref)
+  foreign static polyMode_
+  foreign static polyGateCount_
+  foreign static polyBegin_()
+  foreign static polyosc_(pitch)
+  foreign static polysvf_(audio, cutoff, res)
+  foreign static polyar_(attack, release)
+  foreign static polymul_(a, b)
   foreign value=(v)     // Ctrl (Macro) held value
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)

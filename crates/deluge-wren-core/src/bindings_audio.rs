@@ -960,6 +960,97 @@ pub(crate) unsafe extern "C" fn node_mtof(raw: *mut WrenVM) {
     node_mtof_impl(&vm);
 }
 
+/// `Node.polyMode_` — 1.0 while inside a Synth build, else 0.0 (number, since
+/// Wren treats 0 as truthy — the prelude compares `== 1`).
+pub(crate) fn node_poly_mode_impl<S: SlotApi>(vm: &S) {
+    vm.set_f(0, if audio::poly_mode() { 1.0 } else { 0.0 });
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_poly_mode(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_poly_mode_impl(&vm);
+}
+
+/// `Node.polyGateCount_` — number of Env.ar created this build.
+pub(crate) fn node_poly_gate_count_impl<S: SlotApi>(vm: &S) {
+    vm.set_f(0, audio::poly_gate_count() as f64);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_poly_gate_count(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_poly_gate_count_impl(&vm);
+}
+
+/// `Node.polyBegin_()` — start a voice build; returns the `pitch` node (PolyMtof).
+pub(crate) fn node_poly_begin_impl<S: SlotApi>(vm: &S) {
+    let mtof = audio::poly_begin();
+    unsafe { return_node(vm, mtof) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_poly_begin(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_poly_begin_impl(&vm);
+}
+
+/// `Node.polyosc_(pitch)` — poly sine oscillator. Ports 0 = pitch (poly Hz).
+pub(crate) fn node_polyosc_impl<S: SlotApi>(vm: &S) {
+    let pitch = arg_input(vm, 1);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyOsc, [pitch, Input::Const(0.0), Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polyosc(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polyosc_impl(&vm);
+}
+
+/// `Node.polysvf_(audio, cutoff, res)` — poly SVF lowpass. Port 0 = audio (poly),
+/// ports 1/2 = cutoff/res (mono).
+pub(crate) fn node_polysvf_impl<S: SlotApi>(vm: &S) {
+    let audio_in = arg_input(vm, 1);
+    let cutoff = arg_input(vm, 2);
+    let res = arg_input(vm, 3);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolySvf, [audio_in, cutoff, res]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polysvf(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polysvf_impl(&vm);
+}
+
+/// `Node.polyar_(attack, release)` — poly AR envelope (the amp gate). Ports
+/// 0/1 = attack/release (mono). Records itself as the voice's gate.
+pub(crate) fn node_polyar_impl<S: SlotApi>(vm: &S) {
+    let attack = arg_input(vm, 1);
+    let release = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyAr, [attack, release, Input::Const(0.0)]);
+    audio::poly_record_gate(id);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polyar(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polyar_impl(&vm);
+}
+
+/// `Node.polymul_(a, b)` — poly × poly (the VCA). Ports 0/1 = both poly.
+pub(crate) fn node_polymul_impl<S: SlotApi>(vm: &S) {
+    let a = arg_input(vm, 1);
+    let b = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyMul, [a, b, Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polymul(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polymul_impl(&vm);
+}
+
 /// `macro.value = v` — set a `Ctrl` node's held value (`param 0`).
 pub(crate) fn node_set_value_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32;
@@ -1266,6 +1357,13 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "qstep_(_,_)", node_qstep_impl::<S>);
     method("main", "Node", true, "qpitch_(_,_,_)", node_qpitch_impl::<S>);
     method("main", "Node", true, "mtof_(_,_)", node_mtof_impl::<S>);
+    method("main", "Node", true, "polyMode_", node_poly_mode_impl::<S>);
+    method("main", "Node", true, "polyGateCount_", node_poly_gate_count_impl::<S>);
+    method("main", "Node", true, "polyBegin_()", node_poly_begin_impl::<S>);
+    method("main", "Node", true, "polyosc_(_)", node_polyosc_impl::<S>);
+    method("main", "Node", true, "polysvf_(_,_,_)", node_polysvf_impl::<S>);
+    method("main", "Node", true, "polyar_(_,_)", node_polyar_impl::<S>);
+    method("main", "Node", true, "polymul_(_,_)", node_polymul_impl::<S>);
     method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);

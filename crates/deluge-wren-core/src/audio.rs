@@ -73,6 +73,67 @@ fn alloc() -> &'static mut Alloc {
     unsafe { &mut *core::ptr::addr_of_mut!(ALLOC) }
 }
 
+/// Voice-build state for `Synth.new` (set between polyBegin_/polyEnd_).
+struct PolyCtx {
+    mode: bool,
+    pitch_ctrl: u16, // the PolyCtrl created by polyBegin_
+    gate_ar: u16,    // the PolyAr recorded by polyar_ (amp gate)
+    gate_count: u8,  // number of Env.ar created this build (must be 1)
+}
+impl PolyCtx {
+    const fn new() -> Self {
+        PolyCtx { mode: false, pitch_ctrl: NULL_ID, gate_ar: NULL_ID, gate_count: 0 }
+    }
+}
+// SAFETY: single-threaded VM context, like `ALLOC`.
+static mut POLY: PolyCtx = PolyCtx::new();
+
+#[inline]
+fn poly() -> &'static mut PolyCtx {
+    // SAFETY: sole accessor is the VM thread.
+    unsafe { &mut *core::ptr::addr_of_mut!(POLY) }
+}
+
+pub fn poly_mode() -> bool {
+    poly().mode
+}
+pub fn poly_gate_count() -> u8 {
+    poly().gate_count
+}
+/// Begin a voice build: reset state fresh (clears any stale flag from an
+/// aborted prior build), create the PolyCtrl pitch source + PolyMtof, return
+/// the PolyMtof id (the `pitch` node).
+pub fn poly_begin() -> u16 {
+    let ctrl = alloc_node_id();
+    new_node(ctrl, Kind::PolyCtrl, [Input::Const(0.0); 3]);
+    let mtof = alloc_node_id();
+    new_node(
+        mtof,
+        Kind::PolyMtof,
+        [Input::Node { node: NodeId(ctrl), port: 0 }, Input::Const(0.0), Input::Const(0.0)],
+    );
+    let p = poly();
+    p.mode = true;
+    p.pitch_ctrl = ctrl;
+    p.gate_ar = NULL_ID;
+    p.gate_count = 0;
+    mtof
+}
+/// Record a PolyAr as the voice's amp gate.
+pub fn poly_record_gate(id: u16) {
+    let p = poly();
+    p.gate_ar = id;
+    p.gate_count = p.gate_count.saturating_add(1);
+}
+/// End a voice build: clear the flag; returns (pitch_ctrl, gate_ar) for the allocator.
+// Not yet called: wired up in Sy-4 Task 3 (`Synth.new`'s build-finalize path).
+#[allow(dead_code)]
+pub fn poly_end() -> (u16, u16) {
+    let p = poly();
+    p.mode = false;
+    (p.pitch_ctrl, p.gate_ar)
+}
+
 pub fn alloc_node_id() -> u16 {
     alloc().alloc_node()
 }
@@ -247,5 +308,6 @@ pub fn free(id: u16) {
 }
 pub fn reset() {
     alloc().reset();
+    *poly() = PolyCtx::new();
     host().audio_cmd(Cmd::Reset);
 }

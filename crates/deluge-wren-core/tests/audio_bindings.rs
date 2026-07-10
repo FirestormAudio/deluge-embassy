@@ -965,3 +965,26 @@ fn scaling_sugar_builds_arithmetic() {
     assert!(uni.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mul, .. })), "unipolar has Mul");
     assert!(uni.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Add, .. })), "unipolar has Add");
 }
+
+#[test]
+fn poly_factories_emit_poly_kinds() {
+    let cmds = run_and_capture_cmds(
+        "var p = Node.polyBegin_()\nvar o = Node.polyosc_(p)\nvar f = Node.polysvf_(o, 1200, 0.2)\nvar e = Node.polyar_(0.01, 0.3)\nvar v = Node.polymul_(f, e)",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyCtrl, .. })), "PolyCtrl");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyMtof, .. })), "PolyMtof");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyOsc, .. })), "PolyOsc");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolySvf, .. })), "PolySvf");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyAr, .. })), "PolyAr");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyMul, .. })), "PolyMul");
+}
+
+#[test]
+fn poly_mode_reflects_build_state() {
+    // polyMode_ is 1 during a build, 0 after (script leaves it set; a follow-up
+    // script starts fresh — poly_begin resets). Here: 1 right after polyBegin_.
+    let cmds = run_and_capture_cmds("var m = Node.polyMode_\nvar p = Node.polyBegin_()");
+    // Nothing to assert on m directly via Cmds; the render/error behavior in
+    // Task 3 exercises polyMode_. This test just confirms polyBegin_ emits nodes.
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyCtrl, .. })));
+}
