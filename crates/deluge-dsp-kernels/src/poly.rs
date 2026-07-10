@@ -94,8 +94,12 @@ impl PolyOsc {
             _ => Wave::Sine,
         };
     }
-    /// `pitch` and `out` are voice-interleaved, length `VOICES * n_samples`.
-    pub fn process(&mut self, pitch: &[f32], dt: f32, out: &mut [f32]) {
+    /// `pitch`, `width`, and `out` are voice-interleaved, length
+    /// `VOICES * n_samples`. `width` is the per-voice Square PWM duty
+    /// (`<= 0` → 0.5, else clamped to `[0.01, 0.99]`, matching scalar
+    /// `wave_sample`); ignored by Sine/Saw/Tri. An all-zero `width` tile
+    /// reproduces the pre-Sy-2d fixed-0.5-duty PolyOsc output bit-for-bit.
+    pub fn process(&mut self, pitch: &[f32], width: &[f32], dt: f32, out: &mut [f32]) {
         #[cfg(feature = "simd")]
         {
             use core::simd::prelude::*;
@@ -105,6 +109,7 @@ impl PolyOsc {
             let mut ph = f32x8::from_array(self.phase);
             for i in 0..n {
                 let f = f32x8::from_slice(&pitch[i * VOICES..]);
+                let w = f32x8::from_slice(&width[i * VOICES..]);
                 let dtp = f * dtv;
                 let mut p = ph + dtp;
                 // wrap: p -= trunc-floor(p), matching scalar `floorf`
@@ -112,7 +117,7 @@ impl PolyOsc {
                 let fl = t.simd_gt(p).select(t - one, t);
                 p -= fl;
                 ph = p;
-                wave_sample_x8(self.shape, p, dtp).copy_to_slice(&mut out[i * VOICES..]);
+                wave_sample_x8(self.shape, p, dtp, w).copy_to_slice(&mut out[i * VOICES..]);
             }
             self.phase = ph.to_array();
         }
@@ -126,7 +131,7 @@ impl PolyOsc {
                     let mut p = self.phase[v] + dtp;
                     p -= floorf(p); // wrap [0,1)
                     self.phase[v] = p;
-                    out[i * VOICES + v] = wave_sample(self.shape, p, dtp, 0.5);
+                    out[i * VOICES + v] = wave_sample(self.shape, p, dtp, width[i * VOICES + v]);
                 }
             }
         }
@@ -636,7 +641,7 @@ mod tests {
         let mut po = PolyOsc::new();
         po.set_shape(1); // Saw
         let mut out = std::vec![0.0f32; VOICES * n];
-        po.process(&std::vec![freq; VOICES * n], dt, &mut out);
+        po.process(&std::vec![freq; VOICES * n], &std::vec![0.0f32; VOICES * n], dt, &mut out);
         // Mono reference: Osc::process(wave, freq, pmod, width, dt, out).
         // PolyOsc advances phase THEN outputs (Sy-1 convention); mono Osc outputs
         // THEN advances — PolyOsc is one sample ahead: poly[i] == mono[i+1].
@@ -720,7 +725,8 @@ mod tests {
         }
         let mut osc = PolyOsc::new();
         let mut out = std::vec![0.0f32; VOICES * n];
-        osc.process(&pitch, dt, &mut out);
+        let width = std::vec![0.0f32; VOICES * n];
+        osc.process(&pitch, &width, dt, &mut out);
         // Reference: independent phase accumulators per voice.
         let mut ph = [0.0f32; VOICES];
         for i in 0..n {
@@ -733,6 +739,78 @@ mod tests {
             }
         }
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0001));
+    }
+
+    #[test]
+    fn polyosc_pwm_backcompat_and_per_voice() {
+        let dt = 1.0 / 48_000.0;
+        let n = 128;
+        // (a) width all-zero ⇒ bit-identical to the pre-Sy-2d hardcoded-0.5
+        // PolyOsc, for all four shapes. Per the `<=0 ⇒ 0.5` convention (scalar
+        // `wave_sample`'s `if w <= 0.0 { w = 0.5 }`, mirrored structurally by
+        // `wave_sample_x8`'s `select`), a width=0 tile and a width=0.5 tile
+        // must flow through identical downstream arithmetic — so comparing
+        // against a *second* PolyOsc instance fed an all-0.5 width tile is
+        // exactly the "old hardcoded-0.5 path" the brief calls for, without
+        // re-deriving the phase recurrence (and without risking an
+        // unrelated scalar-vs-SIMD tolerance mismatch — both runs go
+        // through the identical code path for this build).
+        let pitch: std::vec::Vec<f32> =
+            (0..n * VOICES).map(|j| 110.0 + (j % VOICES) as f32 * 37.0).collect();
+        for code in 0u8..4 {
+            let mut o_zero = PolyOsc::new();
+            o_zero.set_shape(code);
+            let width_zero = std::vec![0.0f32; n * VOICES];
+            let mut out_zero = std::vec![0.0f32; n * VOICES];
+            o_zero.process(&pitch, &width_zero, dt, &mut out_zero);
+
+            let mut o_half = PolyOsc::new();
+            o_half.set_shape(code);
+            let width_half = std::vec![0.5f32; n * VOICES];
+            let mut out_half = std::vec![0.0f32; n * VOICES];
+            o_half.process(&pitch, &width_half, dt, &mut out_half);
+
+            assert_eq!(
+                out_zero, out_half,
+                "shape code {code}: width=0 tile must reproduce the hardcoded-0.5 PolyOsc bit-for-bit"
+            );
+
+            // Independent ground truth: voice 0's phase recurrence run through
+            // the (unchanged) scalar `wave_sample(..., 0.5)` directly — the
+            // exact expression the pre-Sy-2d PolyOsc hardcoded.
+            let shape = match code {
+                1 => Wave::Saw,
+                2 => Wave::Square,
+                3 => Wave::Tri,
+                _ => Wave::Sine,
+            };
+            let mut p0 = 0.0f32;
+            for i in 0..n {
+                let dtp = pitch[i * VOICES] * dt;
+                p0 += dtp;
+                p0 -= floorf(p0);
+                let want = crate::osc::wave_sample(shape, p0, dtp, 0.5);
+                assert!(
+                    (out_zero[i * VOICES] - want).abs() < 1e-4,
+                    "shape code {code} sample {i} voice 0: {} vs scalar ground truth {want}",
+                    out_zero[i * VOICES]
+                );
+            }
+        }
+
+        // (b) per-voice width: lanes with distinct widths differ (Square).
+        let mut o = PolyOsc::new();
+        o.set_shape(2); // Square
+        let pitch = std::vec![220.0f32; n * VOICES];
+        let width: std::vec::Vec<f32> =
+            (0..n * VOICES).map(|j| 0.1 + 0.1 * ((j % VOICES) as f32)).collect();
+        let mut out = std::vec![0.0f32; n * VOICES];
+        o.process(&pitch, &width, dt, &mut out);
+        assert!(
+            (0..n).any(|i| out[i * VOICES + 1] != out[i * VOICES + 7]),
+            "distinct per-voice widths must produce distinct output"
+        );
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
     }
 
     #[cfg(feature = "simd")]
@@ -774,9 +852,10 @@ mod tests {
             let dt = 1.0 / 48_000.0;
             let n = 64;
             let pitch = std::vec![f; VOICES * n];
+            let width = std::vec![0.0f32; VOICES * n];
             let mut osc = PolyOsc::new();
             let mut out = std::vec![0.0f32; VOICES * n];
-            osc.process(&pitch, dt, &mut out);
+            osc.process(&pitch, &width, dt, &mut out);
             for &s in &out {
                 prop_assert!(s.is_finite() && s.abs() <= 1.0001, "polyosc unbounded: {s}");
             }

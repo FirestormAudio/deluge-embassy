@@ -239,9 +239,12 @@ impl Node {
     /// controls). Generalizes the Sy-1 single-poly-input model.
     pub fn poly_in_count(kind: Kind) -> usize {
         match kind {
-            Kind::PolyOsc | Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof
+            Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => 1,
-            Kind::PolyMul | Kind::PolyAdd => 2,
+            // PolyOsc: port 0 = pitch, port 1 = PWM width (unconnected ⇒
+            // Const(0.0) ⇒ all-zero tile ⇒ 0.5 duty, bit-identical to the
+            // pre-width PolyOsc).
+            Kind::PolyOsc | Kind::PolyMul | Kind::PolyAdd => 2,
             _ => 0, // PolyCtrl, PolyAr, PolyNoise/PolyPink/PolyBrown, and all mono kinds
         }
     }
@@ -741,8 +744,11 @@ impl Node {
                 if let State::PolyCtrl(c) = &mut self.state { c.process(out); }
             }
             Kind::PolyOsc => {
-                if let (State::PolyOsc(o), Some(pin)) = (&mut self.state, poly_in[0]) {
-                    o.process(pin, dt, out);
+                // width port optional: unconnected ⇒ Const(0.0) ⇒ engine
+                // broadcasts an all-zero tile ⇒ 0.5 duty (backward-compat).
+                if let (State::PolyOsc(o), Some(pitch), Some(width)) =
+                    (&mut self.state, poly_in[0], poly_in[1]) {
+                    o.process(pitch, width, dt, out);
                 }
             }
             Kind::VoiceSum => {
@@ -1505,7 +1511,7 @@ mod tests {
         assert_eq!(Node::out_width(Kind::VoiceSum), 1);
         assert!(Node::is_poly(Kind::PolyCtrl) && Node::is_poly(Kind::PolyOsc) && Node::is_poly(Kind::VoiceSum));
         assert!(!Node::is_poly(Kind::Saw));
-        assert_eq!(Node::poly_in_count(Kind::PolyOsc), 1);
+        assert_eq!(Node::poly_in_count(Kind::PolyOsc), 2); // pitch (port 0) + PWM width (port 1)
         assert_eq!(Node::poly_in_count(Kind::VoiceSum), 1);
         assert_eq!(Node::poly_in_count(Kind::PolyCtrl), 0);
         assert_eq!(Node::poly_in_count(Kind::PolyMul), 2);
@@ -1563,9 +1569,10 @@ mod tests {
         let mut n = Node::new(Kind::PolyOsc, 0);
         n.set_param(0, 1.0); // Saw
         let pitch = [220.0f32; VOICES * 4];
+        let width = [0.0f32; VOICES * 4]; // unconnected ⇒ 0.5 duty default
         let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
         let mut out = [0.0f32; VOICES * 4];
-        n.poly_process(&ins, [Some(&pitch), None], 1.0 / 48_000.0, &mut out);
+        n.poly_process(&ins, [Some(&pitch), Some(&width)], 1.0 / 48_000.0, &mut out);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out.iter().any(|&s| s != 0.0), "saw renders");
     }

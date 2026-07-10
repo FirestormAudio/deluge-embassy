@@ -868,6 +868,58 @@ mod tests {
     }
 
     #[test]
+    fn polyosc_width_port_default_and_mono_broadcast_pwm() {
+        // PolyOsc's new width port (port 1): unconnected ⇒ Const(0.0) ⇒ the
+        // engine's mono→poly broadcast (Task 1) delivers an all-zero tile ⇒
+        // 0.5 duty (backward-compat default). Wiring a mono Ctrl source ⇒ that
+        // value's duty, broadcast to every voice. Low freq (100 Hz, exactly 480
+        // samples/cycle @ 48 kHz) over 10 cycles so the +1 fraction approximates
+        // the duty cycle (mirrors `osc::tests::pwm_duty_cycle_tracks_width`).
+        type PE = Engine<64, 8, 40, 4, 45056, 2048>;
+        const BLOCK: usize = 64;
+        const N_BLOCKS: usize = 75; // 4800 samples = 10 cycles @ 100 Hz
+        let sr = 48_000.0f32;
+        let freq = 100.0f32;
+
+        let render = |width_const: Option<f32>| -> [f32; BLOCK * N_BLOCKS] {
+            let mut e = PE::new(sr);
+            e.create(NodeId(0), Kind::PolyCtrl); // pitch per voice
+            for v in 0..VOICES {
+                e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: freq });
+            }
+            e.create(NodeId(1), Kind::PolyOsc);
+            e.apply(Cmd::SetParam { node: NodeId(1), param: 0, value: 2.0 }); // Square
+            *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+            if let Some(w) = width_const {
+                e.create(NodeId(2), Kind::Ctrl); // mono width source
+                e.apply(Cmd::SetParam { node: NodeId(2), param: 0, value: w });
+                *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+            }
+            // else: width port (1) stays unconnected, i.e. Input::Const(0.0).
+            let mut out = [0.0f32; BLOCK * N_BLOCKS];
+            for b in 0..N_BLOCKS {
+                e.render_block();
+                out[b * BLOCK..(b + 1) * BLOCK].copy_from_slice(e.node_output(NodeId(1), 0));
+            }
+            out
+        };
+
+        let default_out = render(None);
+        let shifted_out = render(Some(0.2));
+
+        for out in [&default_out, &shifted_out] {
+            assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2), "finite/bounded");
+            assert!(out.iter().any(|&s| s != 0.0), "non-silent");
+        }
+
+        let duty = |out: &[f32]| out.iter().filter(|&&s| s > 0.0).count() as f32 / out.len() as f32;
+        let d_default = duty(&default_out);
+        let d_shifted = duty(&shifted_out);
+        assert!((d_default - 0.5).abs() < 0.05, "unconnected width port ⇒ ~0.5 duty, got {d_default}");
+        assert!((d_shifted - 0.2).abs() < 0.05, "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}");
+    }
+
+    #[test]
     fn gate_voice_reaches_only_addressed_lane() {
         // A PolyAr gated on voice 3 only → after some samples, VoiceSum > 0 comes
         // solely from lane 3 (all others idle at 0).

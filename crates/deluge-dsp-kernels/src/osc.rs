@@ -150,19 +150,23 @@ fn poly_blamp_x8(t: f32x8, dtp: f32x8) -> f32x8 {
     am.select(a, bm.select(b, f32x8::splat(0.0)))
 }
 
-/// f32x8 band-limited waveform (Square PWM fixed 0.5). Matches scalar
-/// `wave_sample(..., 0.5)` lane-for-lane.
+/// f32x8 band-limited waveform, with per-lane Square PWM `width` (`<= 0` →
+/// 0.5, else clamped to `[0.01, 0.99]`, matching scalar `wave_sample`).
+/// Sine/Saw/Tri ignore `width`.
 #[cfg(feature = "simd")]
 #[inline]
-pub(crate) fn wave_sample_x8(wave: Wave, ph: f32x8, dtp: f32x8) -> f32x8 {
+pub(crate) fn wave_sample_x8(wave: Wave, ph: f32x8, dtp: f32x8, width: f32x8) -> f32x8 {
     let one = f32x8::splat(1.0);
     match wave {
         Wave::Sine => crate::fast_sin_x8(ph),
         Wave::Saw => (f32x8::splat(2.0) * ph - one) - poly_blep_x8(ph, dtp),
         Wave::Square => {
+            // width <= 0 ⇒ 0.5, else clamp [0.01, 0.99] (matches scalar wave_sample).
             let half = f32x8::splat(0.5);
-            let naive = ph.simd_lt(half).select(one, -one);
-            let mut pw = ph - half;
+            let w = width.simd_le(f32x8::splat(0.0)).select(half, width)
+                .simd_max(f32x8::splat(0.01)).simd_min(f32x8::splat(0.99));
+            let naive = ph.simd_lt(w).select(one, -one);
+            let mut pw = ph - w;
             pw -= floor_x8(pw);
             naive + poly_blep_x8(ph, dtp) - poly_blep_x8(pw, dtp)
         }
@@ -350,9 +354,23 @@ mod tests {
                 for pk in 0..97 {
                     let ph = pk as f32 / 97.0; // sweep [0,1)
                     let s = wave_sample(shape, ph, dtp, 0.5);
-                    let v = wave_sample_x8(shape, f32x8::splat(ph), f32x8::splat(dtp)).to_array()[0];
+                    let v = wave_sample_x8(shape, f32x8::splat(ph), f32x8::splat(dtp), f32x8::splat(0.5)).to_array()[0];
                     assert!((v - s).abs() < 1e-4, "shape idx {wi} f {freq} ph {ph}: {v} vs {s}");
                 }
+            }
+        }
+    }
+
+    #[cfg(feature = "simd")]
+    #[test]
+    fn wave_sample_x8_pwm_matches_scalar() {
+        use core::simd::f32x8;
+        let dtp = 0.01f32;
+        for &w in &[0.0f32, 0.1, 0.25, 0.5, 0.75, 0.99, 1.5] {
+            for &ph in &[0.0f32, 0.1, 0.49, 0.5, 0.51, 0.9] {
+                let got = wave_sample_x8(Wave::Square, f32x8::splat(ph), f32x8::splat(dtp), f32x8::splat(w)).to_array();
+                let want = wave_sample(Wave::Square, ph, dtp, w);
+                for lane in got { assert!((lane - want).abs() <= 1e-4, "w={w} ph={ph}: {lane} vs {want}"); }
             }
         }
     }
