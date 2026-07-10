@@ -11,7 +11,9 @@ use deluge_dsp_kernels::{
     env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
+    quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
+    shape::{self, Ctrl},
 };
 use deluge_dsp_kernels::wavetable::{
     level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
@@ -71,6 +73,11 @@ pub enum Kind {
     SampleHold,
     Slew,
     Steps,
+    Curve,
+    QuantStep,
+    QuantPitch,
+    Mtof,
+    Ctrl,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -100,6 +107,10 @@ enum State {
     SampleHold(SampleHold),
     Slew(Slew),
     Steps(Steps),
+    QuantStep(QuantStep),
+    QuantPitch(QuantPitch),
+    Mtof(Mtof),
+    Ctrl(Ctrl),
     Stateless,
 }
 
@@ -143,7 +154,7 @@ impl Node {
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
-            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan => State::Stateless,
+            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve => State::Stateless,
             Kind::Wavetable => State::Wt(WtOsc::new()),
             Kind::Delay => State::Delay(Delay::new()),
             Kind::Chorus => State::Chorus(ModDelay::<3>::new(0.020)),
@@ -157,6 +168,10 @@ impl Node {
             Kind::SampleHold => State::SampleHold(SampleHold::new()),
             Kind::Slew => State::Slew(Slew::new()),
             Kind::Steps => State::Steps(Steps::new()),
+            Kind::QuantStep => State::QuantStep(QuantStep::new()),
+            Kind::QuantPitch => State::QuantPitch(QuantPitch::new()),
+            Kind::Mtof => State::Mtof(Mtof::new()),
+            Kind::Ctrl => State::Ctrl(Ctrl::new()),
         };
         Node {
             kind,
@@ -269,6 +284,23 @@ impl Node {
             State::Steps(s) => match param {
                 0 => s.set_len(value as u8),
                 k => s.set_value(k as usize, value),
+            },
+            State::QuantStep(q) => match param {
+                0 => q.set_levels(value as u16),
+                _ => {}
+            },
+            State::QuantPitch(q) => match param {
+                0 => q.set_mask(value as u16),
+                1 => q.set_root(value as u8),
+                _ => {}
+            },
+            State::Mtof(m) => match param {
+                0 => m.set_ref(value),
+                _ => {}
+            },
+            State::Ctrl(c) => match param {
+                0 => c.set_value(value),
+                _ => {}
             },
             _ => {}
         }
@@ -590,6 +622,27 @@ impl Node {
             Kind::Steps => {
                 if let State::Steps(s) = &mut self.state {
                     s.process(ins[0], outs.port(0)); // clock on port 0
+                }
+            }
+            Kind::Curve => shape::curve(ins[0], ins[1], outs.port(0)),
+            Kind::QuantStep => {
+                if let State::QuantStep(q) = &mut self.state {
+                    q.process(ins[0], outs.port(0));
+                }
+            }
+            Kind::QuantPitch => {
+                if let State::QuantPitch(q) = &mut self.state {
+                    q.process(ins[0], outs.port(0));
+                }
+            }
+            Kind::Mtof => {
+                if let State::Mtof(m) = &mut self.state {
+                    m.process(ins[0], outs.port(0));
+                }
+            }
+            Kind::Ctrl => {
+                if let State::Ctrl(c) = &mut self.state {
+                    c.process(outs.port(0));
                 }
             }
         }
@@ -1219,5 +1272,79 @@ mod tests {
         assert!((buf[4] - 5.0).abs() < 1e-6, "step 0");
         assert!((buf[12] - 5.0).abs() < 1e-6, "first edge keeps step 0");
         assert!((buf[20] - 9.0).abs() < 1e-6, "2nd edge → step 1");
+    }
+
+    #[test]
+    fn curve_node_is_identity_at_k0() {
+        let mut n = Node::new(Kind::Curve, 0);
+        assert_eq!(Node::out_width(Kind::Curve), 1);
+        let input: [f32; 8] = core::array::from_fn(|i| i as f32 / 7.0 * 2.0 - 1.0);
+        let k = [0.0f32; 8];
+        let ins = [In::A(&input), In::A(&k), In::A(&[0.0; 8])];
+        let mut buf = [0.0f32; 8];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        for i in 0..8 {
+            assert!((buf[i] - input[i]).abs() < 1e-6, "k=0 identity at {i}");
+        }
+    }
+
+    #[test]
+    fn ctrl_node_holds_param_value() {
+        let mut n = Node::new(Kind::Ctrl, 0);
+        assert_eq!(Node::out_width(Kind::Ctrl), 1);
+        n.set_param(0, 2.5);
+        let ins = [In::A(&[0.0; 4]), In::A(&[0.0; 4]), In::A(&[0.0; 4])];
+        let mut buf = [0.0f32; 4];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert_eq!(buf, [2.5, 2.5, 2.5, 2.5]);
+    }
+
+    #[test]
+    fn qstep_node_snaps_to_levels() {
+        let mut n = Node::new(Kind::QuantStep, 0);
+        n.set_param(0, 2.0); // {-1, +1}
+        let input = [-0.4f32, 0.4, -0.9, 0.9];
+        let ins = [In::A(&input), In::A(&[0.0; 4]), In::A(&[0.0; 4])];
+        let mut buf = [0.0f32; 4];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert_eq!(buf, [-1.0, 1.0, -1.0, 1.0]);
+    }
+
+    #[test]
+    fn qpitch_node_snaps_major() {
+        let mut n = Node::new(Kind::QuantPitch, 0);
+        n.set_param(0, 2741.0); // 0b101010110101 major
+        n.set_param(1, 0.0); // root 0
+        let input = [1.0f32, 3.0, 6.4];
+        let ins = [In::A(&input), In::A(&[0.0; 3]), In::A(&[0.0; 3])];
+        let mut buf = [0.0f32; 3];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert_eq!(buf, [2.0, 4.0, 7.0]);
+    }
+
+    #[test]
+    fn mtof_node_converts_octaves() {
+        let mut n = Node::new(Kind::Mtof, 0);
+        n.set_param(0, 440.0);
+        let input = [0.0f32, 12.0, -12.0];
+        let ins = [In::A(&input), In::A(&[0.0; 3]), In::A(&[0.0; 3])];
+        let mut buf = [0.0f32; 3];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!((buf[0] - 440.0).abs() < 1e-2 && (buf[1] - 880.0).abs() < 1e-2 && (buf[2] - 220.0).abs() < 1e-2);
     }
 }
