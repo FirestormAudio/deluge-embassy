@@ -396,6 +396,20 @@ const fn moog_k(poles: usize) -> f32 {
     }
 }
 
+/// Moog per-sample coefficients (drive-independent), shared by the mono
+/// `Moog::process` and the poly `PolyMoog` so both agree bit-for-bit.
+/// Returns (`fh` = prewarped cutoff, `ladder_res` = internal resonance,
+/// `k` = loop gain `ladder_res·4` for the input compensation `1+k`).
+#[inline]
+pub(crate) fn moog_coeffs(cutoff: f32, res: f32, dt: f32, poles: usize) -> (f32, f32, f32) {
+    let two_pi_dt_os = 2.0 * core::f32::consts::PI * dt / MOOG_OVERSAMPLE as f32;
+    let cutoff = cutoff.clamp(20.0, 18_000.0);
+    let res = res.clamp(0.0, 1.0);
+    let fh = two_pi_dt_os * cutoff;
+    let ladder_res = res * moog_k(poles);
+    (fh, ladder_res, ladder_res * 4.0)
+}
+
 /// Authentic Moog transistor-ladder (Huovilainen) — a thin wrapper over the Fi-2
 /// `DiodeLadder` (already the tanh one-pole cascade), adding resonance compensation and a
 /// drive gain. `POLES` selects the slope (4 = 24 dB/oct, 2 = 12 dB/oct).
@@ -416,16 +430,11 @@ impl<const POLES: usize> Moog<POLES> {
     }
 
     pub fn process(&mut self, input: In, cutoff: In, res: In, dt: f32, out: &mut [f32]) {
-        let two_pi_dt_os = 2.0 * core::f32::consts::PI * dt / MOOG_OVERSAMPLE as f32;
         for (i, s) in out.iter_mut().enumerate() {
-            let cutoff = cutoff.at(i).clamp(20.0, 18_000.0);
-            let res = res.at(i).clamp(0.0, 1.0);
-            let fh = two_pi_dt_os * cutoff;
-            let ladder_res = res * moog_k(POLES);
+            let (fh, ladder_res, k) = moog_coeffs(cutoff.at(i), res.at(i), dt, POLES);
             // Huovilainen resonance compensation: the ladder feedback (loop gain
             // k = ladder_res·4) drops the passband gain by ≈1/(1+k); pre-scale the
             // input by (1+k) to hold it flat. Plus the drive gain into the tanh.
-            let k = ladder_res * 4.0;
             let x = input.at(i) * self.drive * (1.0 + k);
             *s = self.ladder.process(x, fh, ladder_res, MOOG_OVERSAMPLE);
         }

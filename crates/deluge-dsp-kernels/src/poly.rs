@@ -7,8 +7,8 @@
 use crate::floorf;
 use crate::env::Ar;
 #[cfg(not(feature = "simd"))]
-use crate::filter::{Svf, SvfResp};
-use crate::filter::{svf_coeffs, svf_k_from_res, svf_tan_prewarp};
+use crate::filter::{DiodeLadder, Svf, SvfResp};
+use crate::filter::{moog_coeffs, svf_coeffs, svf_k_from_res, svf_tan_prewarp, MOOG_OVERSAMPLE};
 #[cfg(not(feature = "simd"))]
 use crate::osc::wave_sample;
 use crate::osc::Wave;
@@ -243,6 +243,113 @@ impl PolySvf {
     }
 }
 impl Default for PolySvf {
+    fn default() -> Self { Self::new() }
+}
+
+/// One Heun (RK2) diode-ladder sub-step across `VOICES` lanes. Mirrors the
+/// scalar `DiodeLadder::heun_step` (filter.rs) exactly; `state` is SoA per-stage.
+/// `fh`/`res` are shared (splatted); `input` is per-voice.
+#[cfg(feature = "simd")]
+#[inline]
+fn heun_step_x8<const STAGES: usize>(
+    state: &mut [core::simd::f32x8; STAGES],
+    input: core::simd::f32x8,
+    fh: core::simd::f32x8,
+    res4: core::simd::f32x8, // res * 4.0, pre-multiplied
+) {
+    use core::simd::prelude::*;
+    use crate::filter::pade_tanh_x8;
+    let feedback = pade_tanh_x8(state[STAGES - 1]) * res4;
+    let x = input - feedback;
+
+    // Predictor (Euler)
+    let mut temp = *state;
+    let mut d = [f32x8::splat(0.0); STAGES];
+    d[0] = fh * (x - pade_tanh_x8(temp[0]));
+    for i in 1..STAGES {
+        d[i] = fh * (pade_tanh_x8(temp[i - 1]) - pade_tanh_x8(temp[i]));
+    }
+    for i in 0..STAGES {
+        temp[i] += d[i];
+    }
+
+    // Corrector (derivative at predicted state)
+    let fb_p = pade_tanh_x8(temp[STAGES - 1]) * res4;
+    let x_p = input - fb_p;
+    let mut dp = [f32x8::splat(0.0); STAGES];
+    dp[0] = fh * (x_p - pade_tanh_x8(temp[0]));
+    for i in 1..STAGES {
+        dp[i] = fh * (pade_tanh_x8(temp[i - 1]) - pade_tanh_x8(temp[i]));
+    }
+    for i in 0..STAGES {
+        state[i] += (d[i] + dp[i]) * f32x8::splat(0.5);
+    }
+}
+
+/// Poly Moog transistor-ladder. Poly audio in → 8 filtered lanes; shared mono
+/// cutoff/res. Scalar path holds `[DiodeLadder<POLES>; VOICES]` and reuses the
+/// audited `DiodeLadder::process`; the SIMD path runs the Heun ladder across
+/// `f32x8` lanes via `heun_step_x8`. Both use `moog_coeffs`, so they agree.
+#[derive(Clone, Copy)]
+pub struct PolyMoog<const POLES: usize> {
+    drive: f32,
+    #[cfg(not(feature = "simd"))]
+    ladders: [DiodeLadder<POLES>; VOICES],
+    #[cfg(feature = "simd")]
+    state: [core::simd::f32x8; POLES],
+}
+
+impl<const POLES: usize> PolyMoog<POLES> {
+    #[cfg(not(feature = "simd"))]
+    pub fn new() -> Self {
+        PolyMoog { drive: 1.0, ladders: [DiodeLadder::new(); VOICES] }
+    }
+    #[cfg(feature = "simd")]
+    pub fn new() -> Self {
+        PolyMoog { drive: 1.0, state: [core::simd::f32x8::splat(0.0); POLES] }
+    }
+
+    pub fn set_drive(&mut self, d: f32) {
+        self.drive = d.max(0.0);
+    }
+
+    /// `audio` = voice-interleaved poly input; cutoff/res shared mono; LP tile out.
+    pub fn process(&mut self, audio: &[f32], cutoff: In, res: In, dt: f32, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        #[cfg(feature = "simd")]
+        {
+            use core::simd::prelude::*;
+            use crate::filter::pade_tanh_x8;
+            let drive = f32x8::splat(self.drive);
+            for i in 0..n {
+                // res4 = ladder_res*4 = k, so moog_coeffs' k is exactly heun_step_x8's res4.
+                let (fh, _ladder_res, k) = moog_coeffs(cutoff.at(i), res.at(i), dt, POLES);
+                let (fhv, res4) = (f32x8::splat(fh), f32x8::splat(k));
+                let gain = drive * f32x8::splat(1.0 + k);
+                let x = f32x8::from_slice(&audio[i * VOICES..]) * gain;
+                for _ in 0..MOOG_OVERSAMPLE {
+                    heun_step_x8::<POLES>(&mut self.state, x, fhv, res4);
+                }
+                let y = pade_tanh_x8(self.state[POLES - 1]); // clipped last stage
+                y.copy_to_slice(&mut out[i * VOICES..]);
+            }
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            for i in 0..n {
+                let (fh, ladder_res, k) = moog_coeffs(cutoff.at(i), res.at(i), dt, POLES);
+                let gain = self.drive * (1.0 + k);
+                for v in 0..VOICES {
+                    let x = audio[i * VOICES + v] * gain;
+                    out[i * VOICES + v] =
+                        self.ladders[v].process(x, fh, ladder_res, MOOG_OVERSAMPLE);
+                }
+            }
+        }
+    }
+}
+
+impl<const POLES: usize> Default for PolyMoog<POLES> {
     fn default() -> Self { Self::new() }
 }
 
@@ -624,5 +731,48 @@ mod tests {
         let mut out = std::vec![0.0f32; VOICES];
         m.process(&std::vec![0.0f32; VOICES], &mut out);
         assert!(out.iter().all(|&h| (h - 100.0).abs() < 1e-3));
+    }
+
+    #[test]
+    fn polymoog_matches_scalar_oracle_both_slopes() {
+        use crate::filter::Moog;
+        let dt = 1.0 / 48_000.0;
+        let n = 200usize;
+        // Shared controls; per-voice distinct audio so lanes are genuinely independent.
+        let cutoff = 1200.0f32;
+        let res = 0.8f32;
+        check_slope::<4>(dt, n, cutoff, res);
+        check_slope::<2>(dt, n, cutoff, res);
+
+        fn check_slope<const P: usize>(dt: f32, n: usize, cutoff: f32, res: f32) {
+            let mut poly = PolyMoog::<P>::new();
+            let mut refs: [Moog<P>; VOICES] = core::array::from_fn(|_| Moog::<P>::new());
+            // Voice v gets a saw-ish ramp scaled per voice.
+            let audio: std::vec::Vec<f32> = (0..n * VOICES)
+                .map(|j| { let i = j / VOICES; let v = j % VOICES; ((i as f32 * 0.017 + v as f32 * 0.03) % 1.0) * 2.0 - 1.0 })
+                .collect();
+            let mut out = std::vec![0.0f32; n * VOICES];
+            poly.process(&audio, In::K(cutoff), In::K(res), dt, &mut out);
+            for v in 0..VOICES {
+                let vin: std::vec::Vec<f32> = (0..n).map(|i| audio[i * VOICES + v]).collect();
+                let mut vout = std::vec![0.0f32; n];
+                refs[v].process(In::A(&vin), In::K(cutoff), In::K(res), dt, &mut vout);
+                for i in 0..n {
+                    assert!((out[i * VOICES + v] - vout[i]).abs() <= 1e-4,
+                        "slope {P} voice {v} sample {i}: {} vs {}", out[i * VOICES + v], vout[i]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn polymoog_stays_bounded_at_high_res() {
+        let dt = 1.0 / 48_000.0;
+        let n = 4096;
+        let mut poly = PolyMoog::<4>::new();
+        let audio = std::vec![0.5f32; n * VOICES]; // constant excitation
+        let mut out = std::vec![0.0f32; n * VOICES];
+        poly.process(&audio, In::K(1000.0), In::K(1.0), dt, &mut out);
+        for &s in &out { assert!(s.abs() <= 1.0001, "moog diverged: {s}"); }
     }
 }
