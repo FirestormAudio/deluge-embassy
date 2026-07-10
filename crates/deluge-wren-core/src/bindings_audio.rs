@@ -55,6 +55,22 @@ impl WrenForeign for NodeObj {
     }
 }
 
+/// A polyphonic instrument: owns a VoiceAllocator + its VoiceSum output node.
+/// Created by `Node.polyEnd_`; not used as a node input (no shared tag).
+#[repr(C)]
+pub(crate) struct SynthObj {
+    pub alloc: deluge_audio_graph::VoiceAllocator,
+    pub out_node: u16,
+}
+impl WrenForeign for SynthObj {
+    fn module_name() -> &'static str {
+        "main"
+    }
+    fn class_name() -> &'static str {
+        "Synth"
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct PortObj {
@@ -1051,6 +1067,59 @@ pub(crate) unsafe extern "C" fn node_polymul(raw: *mut WrenVM) {
     node_polymul_impl(&vm);
 }
 
+/// `Node.polyEnd_(out)` — finish a voice: VoiceSum(out) → build a VoiceAllocator
+/// into a Synth foreign object (in slot 0). The prelude has already validated
+/// exactly-one Env.ar via polyGateCount_.
+pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
+    let out = arg_input(vm, 1);
+    let (pitch_ctrl, gate_ar) = audio::poly_end();
+    let sum = audio::alloc_node_id();
+    audio::new_node(sum, Kind::VoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
+    let alloc = deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), NodeId(gate_ar));
+    unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_poly_end(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_poly_end_impl(&vm);
+}
+
+fn self_synth<S: SlotApi>(vm: &S) -> &mut SynthObj {
+    unsafe { vm.foreign_mut::<SynthObj>(0) }
+}
+
+pub(crate) fn synth_note_on_impl<S: SlotApi>(vm: &S) {
+    let note = vm.get_f(1) as u8;
+    let vel = vm.get_f(2) as u8;
+    self_synth(vm).alloc.note_on(note, vel, &mut |c| crate::host::host().audio_cmd(c));
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_note_on(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_note_on_impl(&vm);
+}
+
+pub(crate) fn synth_note_off_impl<S: SlotApi>(vm: &S) {
+    let note = vm.get_f(1) as u8;
+    self_synth(vm).alloc.note_off(note, &mut |c| crate::host::host().audio_cmd(c));
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_note_off(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_note_off_impl(&vm);
+}
+
+/// `synth.out` — the mono VoiceSum node, for routing (`Out.patch(synth.out)`).
+pub(crate) fn synth_out_impl<S: SlotApi>(vm: &S) {
+    let id = self_synth(vm).out_node;
+    unsafe { return_node(vm, id) }; // return_node overwrites slot 0 with a NodeObj
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_out(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_out_impl(&vm);
+}
+
 /// `macro.value = v` — set a `Ctrl` node's held value (`param 0`).
 pub(crate) fn node_set_value_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32;
@@ -1364,6 +1433,10 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polysvf_(_,_,_)", node_polysvf_impl::<S>);
     method("main", "Node", true, "polyar_(_,_)", node_polyar_impl::<S>);
     method("main", "Node", true, "polymul_(_,_)", node_polymul_impl::<S>);
+    method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
+    method("main", "Synth", false, "noteOn(_,_)", synth_note_on_impl::<S>);
+    method("main", "Synth", false, "noteOff(_)", synth_note_off_impl::<S>);
+    method("main", "Synth", false, "out", synth_out_impl::<S>);
     method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);

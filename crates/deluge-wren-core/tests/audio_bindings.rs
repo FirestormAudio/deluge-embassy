@@ -988,3 +988,15 @@ fn poly_mode_reflects_build_state() {
     // Task 3 exercises polyMode_. This test just confirms polyBegin_ emits nodes.
     assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyCtrl, .. })));
 }
+
+#[test]
+fn synth_note_on_emits_pitch_and_gate() {
+    let cmds = run_and_capture_cmds(
+        "var p = Node.polyBegin_()\nvar v = Node.polymul_(Node.polysvf_(Node.polyosc_(p), 1200, 0.2), Node.polyar_(0.01, 0.3))\nvar s = Node.polyEnd_(v)\ns.noteOn(69, 100)",
+    );
+    // VoiceSum built at polyEnd_.
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::VoiceSum, .. })), "VoiceSum");
+    // note_on → SetParam(pitch lane 0 = note-69 = 0) + GateVoice(gate, 0, true).
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if value.abs() < 1e-6)), "pitch");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::GateVoice { voice: 0, on: true, .. })), "gate on");
+}

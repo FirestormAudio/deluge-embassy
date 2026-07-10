@@ -159,6 +159,7 @@ foreign class Node {
   foreign static polysvf_(audio, cutoff, res)
   foreign static polyar_(attack, release)
   foreign static polymul_(a, b)
+  foreign static polyEnd_(out)
   foreign value=(v)     // Ctrl (Macro) held value
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
@@ -196,6 +197,16 @@ foreign class Node {
   steps(n)       { Node.qstep_(this, n) }
   quantize(s, r) { Node.qpitch_(this, s, r) }
   hz(ref)        { Node.mtof_(this, ref) }
+}
+
+// A polyphonic instrument, built between `Node.polyBegin_()`/`Node.polyEnd_(out)`
+// and driven by MIDI-style note events. The full `Synth` class (`new`/`bindMidi`
+// build DSL) lands in Sy-4 Task 3 — this is just the foreign declarations so the
+// instance methods bind.
+foreign class Synth {
+  foreign noteOn(note, vel)
+  foreign noteOff(note)
+  foreign out
 }
 
 // A multi-output port: `node.out(p)` returns a handle to output port `p` of

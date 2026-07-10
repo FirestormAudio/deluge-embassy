@@ -126,8 +126,6 @@ pub fn poly_record_gate(id: u16) {
     p.gate_count = p.gate_count.saturating_add(1);
 }
 /// End a voice build: clear the flag; returns (pitch_ctrl, gate_ar) for the allocator.
-// Not yet called: wired up in Sy-4 Task 3 (`Synth.new`'s build-finalize path).
-#[allow(dead_code)]
 pub fn poly_end() -> (u16, u16) {
     let p = poly();
     p.mode = false;
