@@ -161,13 +161,13 @@ pub fn voice_sum(tile: &[f32], out: &mut [f32]) {
     }
 }
 
+#[cfg(feature = "simd")]
+const _: () = assert!(VOICES == 8);
+
 /// Poly SVF lowpass. Poly audio in → 8 filtered lanes; shared mono cutoff/res.
 /// Scalar path holds `[Svf; VOICES]` and reuses the audited `Svf::tick`; the
 /// SIMD path keeps SoA `f32x8` state register-resident. Both use identical
 /// scalar coeffs, so they agree.
-#[cfg(feature = "simd")]
-const _: () = assert!(VOICES == 8);
-
 #[derive(Clone, Copy)]
 pub struct PolySvf {
     #[cfg(not(feature = "simd"))]
