@@ -9,6 +9,7 @@ use crate::env::Ar;
 #[cfg(not(feature = "simd"))]
 use crate::filter::{Svf, SvfResp};
 use crate::filter::{svf_coeffs, svf_k_from_res, svf_tan_prewarp};
+use crate::quant::semitones_to_hz;
 use crate::In;
 use core::f32::consts::PI;
 
@@ -231,6 +232,31 @@ pub fn poly_mul(a: &[f32], b: &[f32], out: &mut [f32]) {
     for j in 0..out.len() {
         out[j] = a[j] * b[j];
     }
+}
+
+/// Poly semitone→Hz: `out[v] = ref_hz · 2^(semitone[v]/12)`. Poly-in note-offset
+/// lanes → Hz lanes. Scalar (pitch is control-rate, not a recurrent kernel).
+#[derive(Clone, Copy)]
+pub struct PolyMtof {
+    ref_hz: f32,
+}
+impl PolyMtof {
+    pub fn new() -> PolyMtof {
+        PolyMtof { ref_hz: 440.0 }
+    }
+    pub fn set_ref(&mut self, hz: f32) {
+        self.ref_hz = hz;
+    }
+    /// `semitones` = voice-interleaved note-offset tile; writes an Hz tile
+    /// (element-wise, so the interleave is preserved trivially).
+    pub fn process(&mut self, semitones: &[f32], out: &mut [f32]) {
+        for j in 0..out.len() {
+            out[j] = semitones_to_hz(semitones[j], self.ref_hz);
+        }
+    }
+}
+impl Default for PolyMtof {
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
@@ -460,5 +486,33 @@ mod tests {
         assert!(peak > 0.99, "one-shot reaches peak: {peak}");
         assert!(out[(n - 1) * VOICES + 2] < 0.05, "one-shot decays after: {}", out[(n - 1) * VOICES + 2]);
         assert!(out[(n - 1) * VOICES].abs() < 1e-9, "untriggered voice 0 silent");
+    }
+
+    #[test]
+    fn polymtof_maps_semitones_to_hz() {
+        let mut m = PolyMtof::new(); // ref 440
+        let offsets = [0.0f32, 12.0, -12.0, 7.0, -9.0, 24.0, 1.0, -1.0];
+        let n = 3;
+        let mut inp = std::vec![0.0f32; VOICES * n];
+        for i in 0..n {
+            for v in 0..VOICES {
+                inp[i * VOICES + v] = offsets[v];
+            }
+        }
+        let mut out = std::vec![0.0f32; VOICES * n];
+        m.process(&inp, &mut out);
+        assert!((out[0] - 440.0).abs() < 1e-2, "0 → 440: {}", out[0]);
+        assert!((out[1] - 880.0).abs() < 1e-2, "+12 → 880: {}", out[1]);
+        assert!((out[2] - 220.0).abs() < 1e-2, "-12 → 220: {}", out[2]);
+        assert!(out.iter().all(|&h| h.is_finite() && h > 0.0));
+    }
+
+    #[test]
+    fn polymtof_set_ref_retunes() {
+        let mut m = PolyMtof::new();
+        m.set_ref(100.0);
+        let mut out = std::vec![0.0f32; VOICES];
+        m.process(&std::vec![0.0f32; VOICES], &mut out);
+        assert!(out.iter().all(|&h| (h - 100.0).abs() < 1e-3));
     }
 }

@@ -75,6 +75,12 @@ impl Default for QuantPitch {
     }
 }
 
+/// Semitones above `ref_hz` → Hz: `ref_hz · 2^(st/12)`.
+#[inline]
+pub(crate) fn semitones_to_hz(st: f32, ref_hz: f32) -> f32 {
+    ref_hz * libm::exp2f(st / 12.0)
+}
+
 /// Semitone → Hz: `ref · 2^(x/12)`. Port 0 = input (semitones above the
 /// reference), `param 0 = reference Hz` (default 440).
 #[derive(Clone, Copy)]
@@ -90,7 +96,7 @@ impl Mtof {
     }
     pub fn process(&mut self, input: In, out: &mut [f32]) {
         for i in 0..out.len() {
-            out[i] = self.ref_hz * libm::exp2f(input.at(i) / 12.0);
+            out[i] = semitones_to_hz(input.at(i), self.ref_hz);
         }
     }
 }

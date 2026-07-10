@@ -11,7 +11,7 @@ use deluge_dsp_kernels::{
     env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
-    poly::{poly_mul, voice_sum, PolyAr, PolyCtrl, PolyOsc, PolySvf, VOICES},
+    poly::{poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMtof, PolyOsc, PolySvf, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -85,6 +85,7 @@ pub enum Kind {
     PolyAr,
     PolySvf,
     PolyMul,
+    PolyMtof,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -122,6 +123,7 @@ enum State {
     PolyOsc(PolyOsc),
     PolyAr(PolyAr),
     PolySvf(PolySvf),
+    PolyMtof(PolyMtof),
     Stateless,
 }
 
@@ -187,6 +189,7 @@ impl Node {
             Kind::PolyOsc => State::PolyOsc(PolyOsc::new()),
             Kind::PolyAr => State::PolyAr(PolyAr::new()),
             Kind::PolySvf => State::PolySvf(PolySvf::new()),
+            Kind::PolyMtof => State::PolyMtof(PolyMtof::new()),
         };
         Node {
             kind,
@@ -200,7 +203,7 @@ impl Node {
     pub fn out_width(kind: Kind) -> usize {
         match kind {
             Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul => VOICES,
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof => VOICES,
             _ => 1,
         }
     }
@@ -208,14 +211,14 @@ impl Node {
     /// A poly node carries `VOICES` voice-lanes and is dispatched via
     /// `poly_process`, not `process_resolved`.
     pub fn is_poly(kind: Kind) -> bool {
-        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul)
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof)
     }
 
     /// Number of leading input ports that are poly edges (the rest are mono
     /// controls). Generalizes the Sy-1 single-poly-input model.
     pub fn poly_in_count(kind: Kind) -> usize {
         match kind {
-            Kind::PolyOsc | Kind::PolySvf | Kind::VoiceSum => 1,
+            Kind::PolyOsc | Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof => 1,
             Kind::PolyMul => 2,
             _ => 0, // PolyCtrl, PolyAr, and all mono kinds
         }
@@ -342,6 +345,10 @@ impl Node {
                 _ => {}
             },
             State::PolyCtrl(c) => c.set_voice(param as usize, value),
+            State::PolyMtof(m) => match param {
+                0 => m.set_ref(value),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -685,7 +692,7 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul => {
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof => {
                 // Poly kinds are dispatched via `poly_process`, not this path.
             }
         }
@@ -727,6 +734,11 @@ impl Node {
             Kind::PolyMul => {
                 if let (Some(a), Some(b)) = (poly_in[0], poly_in[1]) {
                     poly_mul(a, b, out);
+                }
+            }
+            Kind::PolyMtof => {
+                if let (State::PolyMtof(m), Some(pin)) = (&mut self.state, poly_in[0]) {
+                    m.process(pin, out);
                 }
             }
             _ => {}
@@ -1468,5 +1480,22 @@ mod tests {
         sum.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono);
         let want: f32 = (1..=VOICES).map(|x| x as f32).sum(); // 36
         assert!(mono.iter().all(|&s| (s - want).abs() < 1e-4), "each sample sums to {want}");
+    }
+
+    #[test]
+    fn polymtof_node_converts_semitones() {
+        assert_eq!(Node::out_width(Kind::PolyMtof), VOICES);
+        assert_eq!(Node::poly_in_count(Kind::PolyMtof), 1);
+        let mut n = Node::new(Kind::PolyMtof, 0);
+        n.set_param(0, 440.0);
+        let mut semis = [0.0f32; VOICES * 2];
+        for i in 0..2 {
+            semis[i * VOICES] = 0.0; // voice 0 → 440
+            semis[i * VOICES + 1] = 12.0; // voice 1 → 880
+        }
+        let dummy = [In::K(0.0); MAX_INPUTS];
+        let mut out = [0.0f32; VOICES * 2];
+        n.poly_process(&dummy, [Some(&semis), None], 1.0 / 48_000.0, &mut out);
+        assert!((out[0] - 440.0).abs() < 1e-2 && (out[1] - 880.0).abs() < 1e-2);
     }
 }
