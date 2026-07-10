@@ -14,6 +14,7 @@ pub mod frame;
 pub mod ids;
 pub mod node;
 pub mod pool;
+pub mod voice;
 
 pub use arena::Arena;
 pub use cmd::{Cmd, Host};
@@ -22,4 +23,5 @@ pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId};
 pub use node::{In, Kind, Node};
 pub use pool::{Pool, PoolHandle};
+pub use voice::VoiceAllocator;
 pub use deluge_dsp_kernels::poly::VOICES;
