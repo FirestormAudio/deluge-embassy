@@ -147,6 +147,12 @@ foreign class Node {
   foreign static sh_(input, clock)
   foreign static slew_(input, time)
   foreign static steps_(values, clock)
+  foreign static curve_(input, k)
+  foreign static ctrl_(value)
+  foreign static qstep_(input, n)
+  foreign static qpitch_(input, mask, root)
+  foreign static mtof_(input, ref)
+  foreign value=(v)     // Ctrl (Macro) held value
   foreign size=(v)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
@@ -173,6 +179,16 @@ foreign class Node {
   -(o) { Node.binop_(2, this, o) }
   lpf(cutoff) { Node.lpf_(this, cutoff) }
   to(lo, hi) { this * ((hi - lo) / 2) + ((hi + lo) / 2) }
+  atten(k)       { this * k }
+  offset(c)      { this + c }
+  invert()       { this * -1 }
+  unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
+  bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
+  scale(m, a)    { this * m + a }
+  curve(k)       { Node.curve_(this, k) }
+  steps(n)       { Node.qstep_(this, n) }
+  quantize(s, r) { Node.qpitch_(this, s, r) }
+  hz(ref)        { Node.mtof_(this, ref) }
 }
 
 // A multi-output port: `node.out(p)` returns a handle to output port `p` of
@@ -184,6 +200,16 @@ foreign class Port {
   -(o) { Node.binop_(2, this, o) }
   lpf(cutoff) { Node.lpf_(this, cutoff) }
   to(lo, hi) { this * ((hi - lo) / 2) + ((hi + lo) / 2) }
+  atten(k)       { this * k }
+  offset(c)      { this + c }
+  invert()       { this * -1 }
+  unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
+  bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
+  scale(m, a)    { this * m + a }
+  curve(k)       { Node.curve_(this, k) }
+  steps(n)       { Node.qstep_(this, n) }
+  quantize(s, r) { Node.qpitch_(this, s, r) }
+  hz(ref)        { Node.mtof_(this, ref) }
 }
 
 // A user-supplied dynamic wavetable, uploaded from a Wren list of samples
@@ -266,6 +292,42 @@ class Slew {
 //   osc.freq = seq.to(110, 880)
 class Steps {
   static new(values, clock) { Node.steps_(values, clock) }
+}
+
+// Non-linear response curve (Schlick bias), odd-symmetric on [-1,1].
+//   var shaped = env.curve(0.6)          // ease-in
+//   Out.patch(Osc.saw(110) * env.curve(-0.4))
+class Curve {
+  static new(sig, k) { Node.curve_(sig, k) }
+  static exp(sig)    { Node.curve_(sig, 0.6) }
+  static log(sig)    { Node.curve_(sig, -0.6) }
+}
+
+// A macro control: one settable value that fans out to many destinations
+// (each via its own `* depth`/`.to(...)`). Drive it live from an encoder:
+//   var m = Macro.new(0.5)
+//   filter.cutoff = m.to(200, 2000)
+//   osc.width = m * 0.3 + 0.5
+//   Enc.onTurn = Fn.new { |i, d| m.value = (m.value + d * 0.05) }
+class Macro {
+  static new(v) { Node.ctrl_(v) }
+}
+
+// Musical scales as 12-bit pitch-class masks (bit i ⇒ pc i allowed, relative to
+// the root passed to `.quantize`). Use with a semitone signal:
+//   var note = seq.to(0, 24).quantize(Scale.Minor, 0)
+//   osc.freq = note.hz(220)
+class Scale {
+  static Chromatic        { 4095 }  // 0xFFF, {0..11}
+  static Major            { 2741 }  // {0,2,4,5,7,9,11}
+  static Minor            { 1453 }  // {0,2,3,5,7,8,10}  (natural)
+  static HarmonicMinor    { 2477 }  // {0,2,3,5,7,8,11}
+  static Dorian           { 1709 }  // {0,2,3,5,7,9,10}
+  static Mixolydian       { 1717 }  // {0,2,4,5,7,9,10}
+  static MajorPentatonic  { 661 }   // {0,2,4,7,9}
+  static MinorPentatonic  { 1193 }  // {0,3,5,7,10}
+  static WholeTone        { 1365 }  // {0,2,4,6,8,10}
+  static Blues            { 1257 }  // {0,3,5,6,7,10}
 }
 
 // State-variable filter: LP/HP/BP/notch from one topology, resonant and

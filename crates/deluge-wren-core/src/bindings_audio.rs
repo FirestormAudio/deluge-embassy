@@ -883,6 +883,94 @@ pub(crate) unsafe extern "C" fn node_steps(raw: *mut WrenVM) {
     node_steps_impl(&vm);
 }
 
+/// `Node.curve_(input, k)` — odd-symmetric Schlick-bias transfer. Ports 0=input,
+/// 1=k (∈[-1,1], modulatable). Stateless (`Kind::Curve`).
+pub(crate) fn node_curve_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let k = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Curve, [input, k, Input::Const(0.0)]);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_curve(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_curve_impl(&vm);
+}
+
+/// `Node.ctrl_(value)` — a settable scalar macro source. No inputs; `param 0 = value`.
+pub(crate) fn node_ctrl_impl<S: SlotApi>(vm: &S) {
+    let value = vm.get_f(1) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Ctrl, [Input::Const(0.0); 3]);
+    audio::set_param(id, 0, value);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_ctrl(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_ctrl_impl(&vm);
+}
+
+/// `Node.qstep_(input, n)` — snap to N equal levels. Port 0=input, `param 0 = N`.
+pub(crate) fn node_qstep_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let n = vm.get_f(2) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::QuantStep, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, n);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_qstep(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_qstep_impl(&vm);
+}
+
+/// `Node.qpitch_(input, mask, root)` — snap semitones to a scale. Port 0=input,
+/// `param 0 = 12-bit mask`, `param 1 = root`.
+pub(crate) fn node_qpitch_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let mask = vm.get_f(2) as f32;
+    let root = vm.get_f(3) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::QuantPitch, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, mask);
+    audio::set_param(id, 1, root);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_qpitch(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_qpitch_impl(&vm);
+}
+
+/// `Node.mtof_(input, ref)` — semitone → Hz. Port 0=input, `param 0 = ref Hz`.
+pub(crate) fn node_mtof_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let reference = vm.get_f(2) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Mtof, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, reference);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_mtof(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_mtof_impl(&vm);
+}
+
+/// `macro.value = v` — set a `Ctrl` node's held value (`param 0`).
+pub(crate) fn node_set_value_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_value(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_value_impl(&vm);
+}
+
 pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let id = audio::alloc_node_id();
@@ -1173,6 +1261,12 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "sh_(_,_)", node_sh_impl::<S>);
     method("main", "Node", true, "slew_(_,_)", node_slew_impl::<S>);
     method("main", "Node", true, "steps_(_,_)", node_steps_impl::<S>);
+    method("main", "Node", true, "curve_(_,_)", node_curve_impl::<S>);
+    method("main", "Node", true, "ctrl_(_)", node_ctrl_impl::<S>);
+    method("main", "Node", true, "qstep_(_,_)", node_qstep_impl::<S>);
+    method("main", "Node", true, "qpitch_(_,_,_)", node_qpitch_impl::<S>);
+    method("main", "Node", true, "mtof_(_,_)", node_mtof_impl::<S>);
+    method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);

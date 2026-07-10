@@ -907,3 +907,47 @@ fn steps_renders_bounded_on_engine_host() {
     run_and_render("Out.patch(Steps.new([0.2, -0.2], Osc.square(1000)))", &mut out);
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
 }
+
+#[test]
+fn shaping_factories_emit_nodes() {
+    let cmds = run_and_capture_cmds(
+        "var m = Macro.new(0.5)\nvar c = Curve.exp(m)\nvar q = m.quantize(Scale.Major, 0)\nvar f = q.hz(220)\nvar s = m.steps(4)",
+    );
+    // Ctrl (macro) with SetParam(0, 0.5)
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Ctrl, .. })), "Ctrl node");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.5).abs() < 1e-6)), "Ctrl value 0.5");
+    // Curve node (from Curve.exp)
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Curve, .. })), "Curve node");
+    // QuantPitch with mask 2741 (Scale.Major) + root 0
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::QuantPitch, .. })), "QuantPitch node");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 2741.0).abs() < 0.5)), "major mask 2741");
+    // Mtof with ref 220 + QuantStep with N 4
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mtof, .. })), "Mtof node");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::QuantStep, .. })), "QuantStep node");
+}
+
+#[test]
+fn macro_value_setter_emits_setparam() {
+    let cmds = run_and_capture_cmds("var m = Macro.new(0.0)\nm.value = 0.75");
+    // One NewNode(Ctrl) + SetParam(0, 0.0) at build, then SetParam(0, 0.75) from the setter.
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.75).abs() < 1e-6)), "value= → SetParam(0, 0.75)");
+}
+
+#[test]
+fn pitch_chain_renders_bounded_nonsilent() {
+    // seq (a bipolar LFO) → range → quantize (minor) → hz → osc.freq
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var note = LFO.saw(4).to(0, 24).quantize(Scale.Minor, 0)\nOut.patch(Osc.saw(note.hz(110)))",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
+    assert!(out.iter().any(|f| f.l != 0.0), "non-silent");
+}
+
+#[test]
+fn curve_sugar_renders_bounded() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Osc.saw(110) * Env.ar(0.0, 0.1).curve(0.6))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
+}
