@@ -1063,6 +1063,27 @@ fn synth_saw_renders_sound() {
 }
 
 #[test]
+fn synth_add_and_noise_render_sound() {
+    // A `+`-mixed voice and a noise voice both render non-silent end-to-end
+    // (spec §5 — PolyAdd/PolyNoise through the full Synth→VoiceSum path).
+    let mut mixed = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| (Osc.sine(p) + Osc.saw(p)) * Env.ar(0.001,0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut mixed,
+    );
+    assert!(mixed.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "mix bounded");
+    assert!(mixed.iter().any(|f| f.l.abs() > 1e-3), "`+` mix sounds");
+
+    let mut noise = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Noise.new() * Env.ar(0.001,0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut noise,
+    );
+    assert!(noise.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "noise bounded");
+    assert!(noise.iter().any(|f| f.l.abs() > 1e-3), "noise voice sounds");
+}
+
+#[test]
 fn synth_note_on_renders_sound() {
     // Build a Synth, route it, play a note in-script, then render.
     let mut out = [StereoFrame::default(); 32];

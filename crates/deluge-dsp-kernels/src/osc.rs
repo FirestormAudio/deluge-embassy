@@ -106,12 +106,7 @@ pub(crate) fn wave_sample(wave: Wave, ph: f32, dtp: f32, width: f32) -> f32 {
 use core::simd::prelude::*;
 
 /// SIMD trunc-floor matching scalar `floorf` (handles negatives).
-// `#[allow(dead_code)]` on this and the helpers below: not yet called outside
-// `#[cfg(test)]` — `PolyOsc` (Sy-2b Task 2) is the production consumer of
-// `wave_sample_x8`. Same forward-declared-plumbing pattern as
-// `deluge-fft/src/twiddle.rs`.
 #[cfg(feature = "simd")]
-#[allow(dead_code)]
 #[inline]
 fn floor_x8(x: f32x8) -> f32x8 {
     let t: f32x8 = x.cast::<i32>().cast::<f32>();
@@ -120,7 +115,6 @@ fn floor_x8(x: f32x8) -> f32x8 {
 
 /// f32x8 counterpart of `blep_right` (two quartic pieces via select).
 #[cfg(feature = "simd")]
-#[allow(dead_code)]
 #[inline]
 fn blep_right_x8(x: f32x8) -> f32x8 {
     let lo = x * (x * x * (x * f32x8::splat(0.25) - f32x8::splat(2.0 / 3.0)) + f32x8::splat(4.0 / 3.0)) - f32x8::splat(1.0);
@@ -131,7 +125,6 @@ fn blep_right_x8(x: f32x8) -> f32x8 {
 /// f32x8 counterpart of `poly_blep` (left/right/zero via select; left wins,
 /// matching the scalar `if/else if`).
 #[cfg(feature = "simd")]
-#[allow(dead_code)]
 #[inline]
 fn poly_blep_x8(t: f32x8, dtp: f32x8) -> f32x8 {
     let one = f32x8::splat(1.0);
@@ -145,7 +138,6 @@ fn poly_blep_x8(t: f32x8, dtp: f32x8) -> f32x8 {
 
 /// f32x8 counterpart of `poly_blamp` (two cubic pieces via select).
 #[cfg(feature = "simd")]
-#[allow(dead_code)]
 #[inline]
 fn poly_blamp_x8(t: f32x8, dtp: f32x8) -> f32x8 {
     let one = f32x8::splat(1.0);
@@ -161,7 +153,6 @@ fn poly_blamp_x8(t: f32x8, dtp: f32x8) -> f32x8 {
 /// f32x8 band-limited waveform (Square PWM fixed 0.5). Matches scalar
 /// `wave_sample(..., 0.5)` lane-for-lane.
 #[cfg(feature = "simd")]
-#[allow(dead_code)]
 #[inline]
 pub(crate) fn wave_sample_x8(wave: Wave, ph: f32x8, dtp: f32x8) -> f32x8 {
     let one = f32x8::splat(1.0);
