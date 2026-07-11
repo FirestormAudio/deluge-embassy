@@ -290,7 +290,7 @@ foreign class Synth {
       out = builder.call(pitch)
     }
     if (Node.polyGateCount_ == 0) Fiber.abort("a Synth voice needs an Env.ar (the amp gate)")
-    if (Node.polyGateCount_ > 1) Fiber.abort("multiple Env.ar in a Synth isn't supported yet")
+    if (Node.polyGateCount_ > 4) Fiber.abort("more than 4 envelopes per voice isn't supported")
     return Node.polyEnd_(out)
   }
   // A single mono/legato voice with true glide between overlapping notes:
@@ -312,7 +312,7 @@ foreign class Synth {
       out = builder.call(pitch)
     }
     if (Node.polyGateCount_ == 0) Fiber.abort("a Synth voice needs an Env.ar (the amp gate)")
-    if (Node.polyGateCount_ > 1) Fiber.abort("multiple Env.ar in a Synth isn't supported yet")
+    if (Node.polyGateCount_ > 4) Fiber.abort("more than 4 envelopes per voice isn't supported")
     return Node.monoEnd_(out)
   }
 }

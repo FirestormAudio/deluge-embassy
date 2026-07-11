@@ -1046,7 +1046,10 @@ fn poly_mode_is_scoped_after_synth() {
 fn synth_error_cases_abort() {
     // A no-env voice aborts; two envs abort.
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) }"), "no Env.ar aborts");
-    assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar aborts");
+    // Sy-5c: the gate-count guard now allows up to 4 envelopes per voice, so
+    // two Env.ar no longer aborts — see `synth_two_envelopes_*` and
+    // `synth_five_envelopes_aborts` below for the current boundary (>4 aborts).
+    assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar now ok (Sy-5c, cap raised to 4)");
     // Audio-voice signal * scalar still aborts — the negative half of the
     // control-scaling rule locked positively by `synth_env_scaled_by_constant`.
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * 0.5 }"), "poly * scalar aborts");
@@ -1540,5 +1543,47 @@ fn synth_poly_glide_aborts() {
     // guard pattern), so this script must fail to run.
     assert!(!run_script_ok(
         "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }\ns.glide = 0.1"
+    ));
+}
+
+// Sy-5c: the Wren gate-count guard now allows up to 4 `Env.ar`/`Env.adsr`
+// envelopes per voice (was capped at exactly 1). These lock the new boundary:
+// 1 (existing, unchanged elsewhere in this file), 2 and 4 build, 5 aborts,
+// 0 still aborts.
+
+#[test]
+fn synth_two_envelopes_amp_and_filter_builds_and_renders() {
+    assert!(run_script_ok(
+        "var s = Synth.new { |p| Osc.saw(p).lpf(Env.adsr(0.01,0.2,0.3,0.4).to(400,4000)) * Env.adsr(0.005,0.1,0.7,0.2) }\nOut.patch(s.out)\ns.noteOn(60,100)"
+    ));
+}
+
+#[test]
+fn synth_four_envelopes_builds() {
+    // amp + 3 mod envelopes (routed harmlessly into the cutoff sum) — at the cap.
+    // (The block's first statement must start on its own line after `|p|` —
+    // a `var` decl on the same line as the block params doesn't parse in this
+    // Wren dialect; see `synth_five_envelopes_aborts` below for the same fix.)
+    assert!(run_script_ok(
+        "var s = Synth.new { |p|\n  var e2 = Env.adsr(0.01,0.1,0.5,0.2)\n  var e3 = Env.adsr(0.01,0.1,0.5,0.2)\n  var e4 = Env.adsr(0.01,0.1,0.5,0.2)\n  Osc.saw(p).lpf(e2.to(400,4000) + e3*0 + e4*0) * Env.adsr(0.005,0.1,0.7,0.2)\n}\nOut.patch(s.out)\ns.noteOn(60,100)"
+    ));
+}
+
+#[test]
+fn synth_five_envelopes_aborts() {
+    assert!(!run_script_ok(
+        "var s = Synth.new { |p|\n  var a = Env.adsr(0.01,0.1,0.5,0.2)\n  var b = Env.adsr(0.01,0.1,0.5,0.2)\n  var c = Env.adsr(0.01,0.1,0.5,0.2)\n  var d = Env.adsr(0.01,0.1,0.5,0.2)\n  Osc.saw(p) * a * b * c * d * Env.adsr(0.005,0.1,0.7,0.2)\n}"
+    ));
+}
+
+#[test]
+fn synth_zero_envelopes_still_aborts() {
+    assert!(!run_script_ok("var s = Synth.new { |p| Osc.saw(p) }"));
+}
+
+#[test]
+fn synth_mono_two_envelopes_builds_and_renders() {
+    assert!(run_script_ok(
+        "var s = Synth.mono { |p| Osc.saw(p).lpf(Env.adsr(0.01,0.2,0.3,0.4).to(400,4000)) * Env.adsr(0.005,0.1,0.7,0.2) }\nOut.patch(s.out)\ns.noteOn(60,100)"
     ));
 }
