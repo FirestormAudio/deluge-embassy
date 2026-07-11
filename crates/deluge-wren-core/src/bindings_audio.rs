@@ -1608,7 +1608,9 @@ pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
 }
 
 /// `synth.width = amount` — set the unison stereo spread (0..1) on the active
-/// allocator. Pan rides the next note-on (no immediate SetParam).
+/// allocator. Re-emits per-voice pan for any currently-sounding voices (live
+/// re-spread, Sy-6b); with no note sounding it only stores the value, so pan
+/// takes effect on the next note-on.
 pub(crate) fn synth_set_width_impl<S: SlotApi>(vm: &S) {
     let amount = vm.get_f(1) as f32;
     self_synth(vm).alloc.set_width(amount, &mut |c| crate::host::host().audio_cmd(c));
