@@ -5,7 +5,7 @@
 
 #[cfg(not(feature = "simd"))]
 use crate::floorf;
-use crate::env::Ar;
+use crate::env::{Adsr, Ar};
 #[cfg(not(feature = "simd"))]
 use crate::filter::{DiodeLadder, Ms20, Svf, SvfResp};
 use crate::noise::{Noise, NoiseColor};
@@ -178,6 +178,40 @@ impl PolyAr {
 }
 impl Default for PolyAr {
     fn default() -> Self { Self::new() }
+}
+
+/// Poly ADSR: 8 independent `Adsr`s, scalar-per-voice (the state machine is
+/// branchy/cheap — no f32x8, like `PolyAr`). Shared mono a/d/r; per-node sustain.
+#[derive(Clone, Copy)]
+pub struct PolyAdsr {
+    voices: [Adsr; VOICES],
+}
+impl PolyAdsr {
+    pub fn new() -> PolyAdsr {
+        PolyAdsr { voices: [Adsr::new(); VOICES] }
+    }
+    pub fn gate_voice(&mut self, v: usize, on: bool) {
+        if v < VOICES { self.voices[v].gate(on); }
+    }
+    pub fn trigger_voice(&mut self, v: usize) {
+        if v < VOICES { self.voices[v].trigger(); }
+    }
+    pub fn set_sustain(&mut self, s: f32) {
+        for a in &mut self.voices { a.set_sustain(s); }
+    }
+    /// attack/decay/release mono controls; writes a voice-interleaved env tile.
+    pub fn process(&mut self, attack: In, decay: In, release: In, dt: f32, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        for i in 0..n {
+            let (atk, dec, rel) = (attack.at(i), decay.at(i), release.at(i));
+            for v in 0..VOICES {
+                out[i * VOICES + v] = self.voices[v].tick(atk, dec, rel, dt);
+            }
+        }
+    }
+}
+impl Default for PolyAdsr {
+    fn default() -> Self { PolyAdsr::new() }
 }
 
 /// Collapse a voice-interleaved tile to mono: `out[i] = Σ_v tile[i*VOICES + v]`.
@@ -1043,6 +1077,39 @@ mod tests {
         assert!(peak > 0.99, "one-shot reaches peak: {peak}");
         assert!(out[(n - 1) * VOICES + 2] < 0.05, "one-shot decays after: {}", out[(n - 1) * VOICES + 2]);
         assert!(out[(n - 1) * VOICES].abs() < 1e-9, "untriggered voice 0 silent");
+    }
+
+    #[test]
+    fn polyadsr_matches_mono_per_voice() {
+        let dt = 1.0 / 48_000.0;
+        let n = 512usize;
+        let mut poly = PolyAdsr::new();
+        poly.set_sustain(0.4);
+        let mut refs: [Adsr; VOICES] = core::array::from_fn(|_| { let mut a = Adsr::new(); a.set_sustain(0.4); a });
+        for v in 0..VOICES { poly.gate_voice(v, true); refs[v].gate(true); }
+        let mut out = std::vec![0.0f32; n * VOICES];
+        // shared a/d/r
+        poly.process(In::K(0.01), In::K(0.05), In::K(0.1), dt, &mut out);
+        for v in 0..VOICES {
+            for i in 0..n {
+                let want = refs[v].tick(0.01, 0.05, 0.1, dt);
+                assert_eq!(out[i * VOICES + v], want, "lane {v} sample {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn polyadsr_gates_are_independent() {
+        let dt = 1.0 / 48_000.0;
+        let mut poly = PolyAdsr::new();
+        poly.set_sustain(1.0);
+        for v in 0..VOICES { poly.gate_voice(v, true); }
+        let mut out = std::vec![0.0f32; VOICES];
+        // let all attack to sustain
+        for _ in 0..2000 { poly.process(In::K(0.001), In::K(0.001), In::K(0.5), dt, &mut out); }
+        poly.gate_voice(3, false); // release only voice 3
+        for _ in 0..2000 { poly.process(In::K(0.001), In::K(0.001), In::K(0.5), dt, &mut out); }
+        assert!(out[3] < out[0], "voice 3 released, others held: {} !< {}", out[3], out[0]);
     }
 
     #[test]
