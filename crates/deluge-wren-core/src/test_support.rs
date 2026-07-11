@@ -412,12 +412,14 @@ impl Host for EngineHost {
 
 static mut ENGINE_HOST: Option<EngineHost> = None;
 
-/// Boot a VM, run `src`, then render one 32-frame block into `out`.
+/// Boot a VM, run `src`, then render one `N`-frame block into `out`. Most
+/// callers use `N = 32`; a larger `N` gives slower ballistics (e.g. a
+/// limiter's attack) more samples to act within a single render call.
 ///
 /// Serialized by [`CAP_LOCK`] (shared with [`run_and_capture_cmds`]): both
 /// touch the same `crate::set_host`/VM-boot/`reset` process-globals, plus
 /// this fn's own [`ENGINE_HOST`] static.
-pub fn run_and_render(src: &str, out: &mut [StereoFrame; 32]) {
+pub fn run_and_render<const N: usize>(src: &str, out: &mut [StereoFrame; N]) {
     let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: single-threaded test helper, serialized by `_guard` above; VM
     // freed before return.

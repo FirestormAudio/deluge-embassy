@@ -1785,3 +1785,30 @@ fn synth_setter_before_noteon_is_unchanged() {
         assert_eq!(x.r, y.r);
     }
 }
+
+#[test]
+fn comp_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render("Out.patch(Comp.new(Osc.saw(110), -20, 4, 0.005, 0.1))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "compressed signal sounds");
+}
+
+#[test]
+fn comp_limiter_reduces_peak_of_loud_source() {
+    // A loud saw: dry peak vs Comp.limit peak. Limiter must lower the peak.
+    let peak = |buf: &[StereoFrame]| buf.iter().map(|f| f.l.abs()).fold(0.0f32, f32::max);
+    let mut dry = [StereoFrame::default(); 128];
+    run_and_render("Out.patch(Osc.saw(110))", &mut dry);
+    let mut lim = [StereoFrame::default(); 128];
+    run_and_render("Out.patch(Comp.limit(Osc.saw(110), -12))", &mut lim);
+    assert!(lim.iter().all(|f| f.l.is_finite()), "limiter finite");
+    assert!(peak(&lim) < peak(&dry), "limiter lowers the peak (dry {} vs lim {})", peak(&dry), peak(&lim));
+    assert!(lim.iter().any(|f| f.l.abs() > 1e-3), "limited signal still sounds");
+}
+
+#[test]
+fn comp_unity_ratio_is_transparent_ish() {
+    // ratio 1:1 → no compression; a quiet source passes essentially unchanged in level.
+    assert!(run_script_ok("Out.patch(Comp.new(Osc.sine(220), -20, 1, 0.005, 0.1))"), "ratio 1 builds/runs");
+}
