@@ -1047,6 +1047,58 @@ pub(crate) unsafe extern "C" fn gate_set_detector(raw: *mut WrenVM) {
     gate_set_detector_impl(&vm);
 }
 
+/// `Kind::Bitcrush` lo-fi amplitude-quantize node (no buffer); sets bit depth
+/// param. (Modeled on `node_gate_kind_impl`, :954.)
+pub(crate) fn node_bitcrush_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let bits = vm.get_f(2) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Bitcrush, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, bits);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_bitcrush(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_bitcrush_impl(&vm);
+}
+
+/// `Kind::Decimate` lo-fi sample-and-hold node (no buffer); sets rate (Hz)
+/// param. (Modeled on `node_gate_kind_impl`, :954.)
+pub(crate) fn node_decimate_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let rate = vm.get_f(2) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Decimate, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, rate);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_decimate(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_decimate_impl(&vm);
+}
+
+pub(crate) fn node_set_bits_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 0 = bit depth (Kind::Bitcrush)
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_bits(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_bits_impl(&vm);
+}
+
+pub(crate) fn node_set_decimate_rate_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 0 = rate Hz (Kind::Decimate)
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_decimate_rate(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_decimate_rate_impl(&vm);
+}
+
 pub(crate) fn node_set_rate_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // param 1 = rate (Kind::Chorus/Flanger)
     audio::set_param(self_id(vm), 1, v);
@@ -2142,6 +2194,10 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "gateHold=(_)", gate_set_hold_impl::<S>);
     method("main", "Node", false, "gateRange=(_)", gate_set_range_impl::<S>);
     method("main", "Node", false, "gateDetector=(_)", gate_set_detector_impl::<S>);
+    method("main", "Node", true, "bitcrush_(_,_)", node_bitcrush_impl::<S>);
+    method("main", "Node", true, "decimate_(_,_)", node_decimate_impl::<S>);
+    method("main", "Node", false, "bits=(_)", node_set_bits_impl::<S>);
+    method("main", "Node", false, "decimateRate=(_)", node_set_decimate_rate_impl::<S>);
     method("main", "Node", true, "eq_(_,_,_,_,_)", node_eq_impl::<S>);
     method("main", "Node", false, "hz=(_)", node_set_hz_impl::<S>);
     method("main", "Node", false, "gain=(_)", node_set_gain_impl::<S>);

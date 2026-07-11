@@ -155,6 +155,10 @@ foreign class Node {
   foreign gateHold=(v)
   foreign gateRange=(v)
   foreign gateDetector=(v)
+  foreign static bitcrush_(input, bits)
+  foreign static decimate_(input, rate)
+  foreign bits=(v)
+  foreign decimateRate=(v)
   foreign static eq_(input, freq, gain, q, type)
   foreign hz=(v)       // EQ centre/corner frequency (NOT freq= — that's the Osc's)
   foreign gain=(v)     // EQ band gain in dB
@@ -781,6 +785,26 @@ class NoiseGate {
   static new(input, threshold, attack, release, hold) {
     if (Node.polyMode_ == 1) Fiber.abort("NoiseGate is an effect — apply it after the Synth's .out, not inside the voice")
     return Node.gate_(input, threshold, 10, attack, release, hold, 80, 0)
+  }
+}
+
+// Lo-fi amplitude quantizer. `bits` = effective bit depth (lower = crunchier):
+//   Out.patch(Bitcrush.new(mix, 4))
+//   var b = Bitcrush.new(mix, 8); b.bits = 3
+class Bitcrush {
+  static new(input, bits) {
+    if (Node.polyMode_ == 1) Fiber.abort("Bitcrush is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.bitcrush_(input, bits)
+  }
+}
+
+// Lo-fi sample-and-hold decimator. `rate` Hz = effective sample rate (lower = more aliasing):
+//   Out.patch(Decimate.new(mix, 4000))
+//   var d = Decimate.new(mix, 8000); d.decimateRate = 2000
+class Decimate {
+  static new(input, rate) {
+    if (Node.polyMode_ == 1) Fiber.abort("Decimate is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.decimate_(input, rate)
   }
 }
 
