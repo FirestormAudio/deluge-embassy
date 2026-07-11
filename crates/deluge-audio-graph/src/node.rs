@@ -11,7 +11,7 @@ use deluge_dsp_kernels::{
     env::{Adsr, Ar}, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
-    poly::{poly_add, poly_mul, voice_sum, PolyAdsr, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySvf, PolySync, PolyWt, VOICES},
+    poly::{poly_add, poly_mul, voice_sum, PolyAdsr, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySlew, PolySvf, PolySync, PolyWt, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -86,6 +86,7 @@ pub enum Kind {
     PolyAr,
     PolyAdsr,
     PolySvf,
+    PolySlew,
     PolyMul,
     PolyMtof,
     PolyAdd,
@@ -141,6 +142,7 @@ enum State {
     PolyAr(PolyAr),
     PolyAdsr(PolyAdsr),
     PolySvf(PolySvf),
+    PolySlew(PolySlew),
     PolyMtof(PolyMtof),
     PolyNoise(PolyNoise),
     PolyMoog4(PolyMoog<4>),
@@ -215,6 +217,7 @@ impl Node {
             Kind::PolyAr => State::PolyAr(PolyAr::new()),
             Kind::PolyAdsr => State::PolyAdsr(PolyAdsr::new()),
             Kind::PolySvf => State::PolySvf(PolySvf::new()),
+            Kind::PolySlew => State::PolySlew(PolySlew::new()),
             Kind::PolyMtof => State::PolyMtof(PolyMtof::new()),
             Kind::PolyNoise => State::PolyNoise(PolyNoise::new()),
             Kind::PolyPink => State::PolyNoise(PolyNoise::new_color(NoiseColor::Pink)),
@@ -239,7 +242,7 @@ impl Node {
     pub fn out_width(kind: Kind) -> usize {
         match kind {
             Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolyMul
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul
                 | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
@@ -251,7 +254,7 @@ impl Node {
     /// A poly node carries `VOICES` voice-lanes and is dispatched via
     /// `poly_process`, not `process_resolved`.
     pub fn is_poly(kind: Kind) -> bool {
-        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
             | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
             | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
             | Kind::PolyWt | Kind::PolyWtMorph)
@@ -261,7 +264,7 @@ impl Node {
     /// controls). Generalizes the Sy-1 single-poly-input model.
     pub fn poly_in_count(kind: Kind) -> usize {
         match kind {
-            Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof
+            Kind::PolySvf | Kind::PolySlew | Kind::VoiceSum | Kind::PolyMtof
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolyWt | Kind::PolyWtMorph => 1,
             // PolyOsc: port 0 = pitch, port 1 = PWM width (unconnected ⇒
@@ -309,6 +312,7 @@ impl Node {
         match &mut self.state {
             State::PolyAr(a) => a.trigger_voice(v),
             State::PolyAdsr(a) => a.trigger_voice(v),
+            State::PolySlew(s) => s.trigger_voice(v),
             _ => {}
         }
     }
@@ -319,6 +323,7 @@ impl Node {
             State::Osc(o) if param == 0 => o.set_feedback(value),
             State::Adsr(a) if param == 0 => a.set_sustain(value),
             State::PolyAdsr(a) if param == 0 => a.set_sustain(value),
+            State::PolySlew(s) if param == 0 => s.set_time(value),
             State::Moog4(m) if param == 0 => m.set_drive(value),
             State::Moog2(m) if param == 0 => m.set_drive(value),
             State::Ms20(m) if param == 0 => m.set_drive(value),
@@ -765,7 +770,7 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
                 | Kind::PolyWt | Kind::PolyWtMorph => {
@@ -816,6 +821,11 @@ impl Node {
             Kind::PolySvf => {
                 if let (State::PolySvf(s), Some(audio)) = (&mut self.state, poly_in[0]) {
                     s.process(audio, ins[1], ins[2], dt, out);
+                }
+            }
+            Kind::PolySlew => {
+                if let (State::PolySlew(s), Some(target)) = (&mut self.state, poly_in[0]) {
+                    s.process(target, dt, out);
                 }
             }
             Kind::PolyMul => {
@@ -1661,6 +1671,56 @@ mod tests {
         let mut out = [0.0f32; VOICES * 2];
         n.poly_process(&dummy, [Some(&semis), None], 1.0 / 48_000.0, &mut out, None);
         assert!((out[0] - 440.0).abs() < 1e-2 && (out[1] - 880.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn polyslew_node_glides_and_snaps() {
+        assert_eq!(Node::poly_in_count(Kind::PolySlew), 1);
+        assert_eq!(Node::out_width(Kind::PolySlew), VOICES);
+        assert!(Node::is_poly(Kind::PolySlew));
+
+        let mut n = Node::new(Kind::PolySlew, 0);
+        n.set_param(0, 0.05); // 50ms glide time
+        let dt = 1.0 / 48_000.0;
+        let dummy = [In::K(0.0); MAX_INPUTS];
+
+        // Lane 0's target jumps from the initial 0.0 state to 1.0, held for
+        // the whole block; the one-pole lag means it should move toward 1.0
+        // without arriving there in a single 8-sample block.
+        let n_samples = 8;
+        let mut target = [0.0f32; VOICES * 8];
+        for i in 0..n_samples {
+            target[i * VOICES] = 1.0;
+        }
+        let mut out = [0.0f32; VOICES * 8];
+        n.poly_process(&dummy, [Some(&target), None], dt, &mut out, None);
+        let last = out[(n_samples - 1) * VOICES];
+        assert!(last > 0.0 && last < 1.0, "lane 0 glides partway toward target, got {last}");
+
+        // trigger_voice(0) arms a snap: the very next processed sample for
+        // lane 0 must equal the (new) target exactly, no swoop from 0.72ish.
+        n.trigger_voice(0);
+        let mut target2 = [0.0f32; VOICES * 4];
+        for i in 0..4 {
+            target2[i * VOICES] = -0.5;
+        }
+        let mut out2 = [0.0f32; VOICES * 4];
+        n.poly_process(&dummy, [Some(&target2), None], dt, &mut out2, None);
+        assert!((out2[0] - (-0.5)).abs() < 1e-6, "lane 0 snaps to target, got {}", out2[0]);
+
+        // Snap isn't sticky across calls: a later target change without a
+        // fresh trigger_voice must glide again, not re-snap.
+        let mut target3 = [0.0f32; VOICES * 4];
+        for i in 0..4 {
+            target3[i * VOICES] = 0.5;
+        }
+        let mut out3 = [0.0f32; VOICES * 4];
+        n.poly_process(&dummy, [Some(&target3), None], dt, &mut out3, None);
+        assert!(
+            out3[0] > -0.5 && out3[0] < 0.5,
+            "no snap-stick: lane 0 glides toward new target, got {}",
+            out3[0]
+        );
     }
 
     #[test]
