@@ -15,12 +15,20 @@ const A440_NOTE: f32 = 69.0;
 /// envelopes sharing one voice-allocation lane).
 pub const MAX_GATES: usize = 4;
 
+/// Per-lane lifecycle for release-tail-aware allocation.
+#[derive(Clone, Copy, PartialEq)]
+enum LaneState {
+    Free,      // never used (never reclaimed — the allocator has no time source)
+    Held(u8),  // sounding a held note (the MIDI note)
+    Releasing, // note-off fired, gate off, tail still ringing — lane stays occupied
+}
+
 pub struct VoiceAllocator {
     pitch_node: NodeId,           // a PolyCtrl: SetParam(pitch_node, lane, note - 69)
     gates: [NodeId; MAX_GATES],   // PolyAr/PolyAdsr nodes: GateVoice(gates[i], lane, on/off)
     n_gates: usize,                // number of valid entries in `gates`
     vel_node: Option<NodeId>, // a PolyCtrl carrying per-voice velocity, or None
-    lane_note: [Option<u8>; VOICES],
+    lane_state: [LaneState; VOICES],
     lane_age: [u32; VOICES],
     clock: u32,
 }
@@ -37,7 +45,7 @@ impl VoiceAllocator {
             gates,
             n_gates,
             vel_node,
-            lane_note: [None; VOICES],
+            lane_state: [LaneState::Free; VOICES],
             lane_age: [0; VOICES],
             clock: 0,
         }
@@ -50,15 +58,42 @@ impl VoiceAllocator {
         }
     }
 
+    /// Choose a lane for a new note: a never-used lane first, else the lane released
+    /// longest ago (most decayed), else steal the oldest-allocated held lane.
+    fn pick_lane(&self) -> usize {
+        // 1. a Free lane
+        if let Some(v) = (0..VOICES).find(|&v| self.lane_state[v] == LaneState::Free) {
+            return v;
+        }
+        // 2. the oldest Releasing lane (min lane_age among Releasing)
+        let mut best: Option<usize> = None;
+        for v in 0..VOICES {
+            if self.lane_state[v] == LaneState::Releasing
+                && best.map_or(true, |b| self.lane_age[v] < self.lane_age[b])
+            {
+                best = Some(v);
+            }
+        }
+        if let Some(v) = best {
+            return v;
+        }
+        // 3. all Held → steal the oldest-allocated (min lane_age overall)
+        let mut best = 0;
+        for v in 1..VOICES {
+            if self.lane_age[v] < self.lane_age[best] {
+                best = v;
+            }
+        }
+        best
+    }
+
     pub fn note_on(&mut self, note: u8, vel: u8, emit: &mut impl FnMut(Cmd)) {
         if vel == 0 {
             self.note_off(note, emit); // MIDI: note-on vel 0 == note-off
             return;
         }
-        // A free lane, else steal the oldest (lowest age). Reassigning +
-        // GateVoice(on) re-attacks the stolen lane — no separate gate-off needed.
-        let lane = self.free_lane().unwrap_or_else(|| self.oldest_lane());
-        self.lane_note[lane] = Some(note);
+        let lane = self.pick_lane();
+        self.lane_state[lane] = LaneState::Held(note);
         self.lane_age[lane] = self.clock;
         self.clock = self.clock.wrapping_add(1);
         emit(Cmd::SetParam {
@@ -76,7 +111,7 @@ impl VoiceAllocator {
         // Release the most-recently-allocated lane playing `note`.
         let mut best: Option<usize> = None;
         for v in 0..VOICES {
-            if self.lane_note[v] == Some(note)
+            if self.lane_state[v] == LaneState::Held(note)
                 && best.map_or(true, |b| self.lane_age[v] > self.lane_age[b])
             {
                 best = Some(v);
@@ -84,32 +119,22 @@ impl VoiceAllocator {
         }
         if let Some(lane) = best {
             self.gate_all(lane, false, emit);
-            self.lane_note[lane] = None;
+            self.lane_state[lane] = LaneState::Releasing;
+            self.lane_age[lane] = self.clock;
+            self.clock = self.clock.wrapping_add(1);
         }
         // Unheld note → no-op.
     }
 
     pub fn all_notes_off(&mut self, emit: &mut impl FnMut(Cmd)) {
         for v in 0..VOICES {
-            if self.lane_note[v].is_some() {
+            if matches!(self.lane_state[v], LaneState::Held(_)) {
                 self.gate_all(v, false, emit);
-                self.lane_note[v] = None;
+                self.lane_state[v] = LaneState::Releasing;
+                self.lane_age[v] = self.clock;
+                self.clock = self.clock.wrapping_add(1);
             }
         }
-    }
-
-    fn free_lane(&self) -> Option<usize> {
-        (0..VOICES).find(|&v| self.lane_note[v].is_none())
-    }
-
-    fn oldest_lane(&self) -> usize {
-        let mut best = 0;
-        for v in 1..VOICES {
-            if self.lane_age[v] < self.lane_age[best] {
-                best = v;
-            }
-        }
-        best
     }
 }
 
@@ -209,6 +234,13 @@ mod tests {
         (arr, 1)
     }
 
+    // 1-gate VoiceAllocator: pitch=NodeId(10), gate=NodeId(20), no vel node.
+    fn mk() -> VoiceAllocator {
+        let mut g = [NodeId(0); MAX_GATES];
+        g[0] = NodeId(20);
+        VoiceAllocator::new(NodeId(10), g, 1, None)
+    }
+
     // Capture the Cmds emitted by one note event.
     fn on(a: &mut VoiceAllocator, note: u8, vel: u8) -> Vec<Cmd> {
         let mut c: Vec<Cmd> = Vec::new();
@@ -298,9 +330,96 @@ mod tests {
         let c = off(&mut a, 60);
         assert_eq!(c.len(), 1);
         assert!(matches!(c[0], Cmd::GateVoice { voice: 0, on: false, .. }));
-        // Lane 0 is free again → next note-on reuses it.
+        // Lane 0 is Releasing (tail protected), not free → next note-on takes
+        // a FREE lane (2; lanes 0 and 1 were used) instead of reusing lane 0.
         let c2 = on(&mut a, 67, 100);
-        assert!(matches!(c2[0], Cmd::SetParam { param: 0, .. }));
+        assert!(matches!(c2[0], Cmd::SetParam { param: 2, .. }));
+    }
+
+    #[test]
+    fn released_lane_is_protected_new_note_takes_a_free_lane() {
+        let mut a = mk();
+        on(&mut a, 60, 100); // A → lane 0
+        off(&mut a, 60); // lane 0 → Releasing (tail ringing)
+        let c = on(&mut a, 64, 100); // B → should take a FREE lane (1), NOT reuse lane 0
+        match c[0] {
+            Cmd::SetParam { param, .. } => assert_eq!(param, 1, "new note protects lane 0's tail → lane 1"),
+            _ => panic!("expected pitch SetParam"),
+        }
+    }
+
+    #[test]
+    fn reuse_oldest_releasing_before_stealing_held() {
+        let mut a = mk();
+        for k in 0..VOICES {
+            on(&mut a, 60 + k as u8, 100);
+        } // lanes 0..7 all Held
+        off(&mut a, 62); // lane 2 → Releasing (released first)
+        off(&mut a, 65); // lane 5 → Releasing (released second)
+        // new note reuses the OLDEST releasing lane (2), not a held lane, not lane 5
+        let c1 = on(&mut a, 80, 100);
+        match c1[0] {
+            Cmd::SetParam { param, .. } => assert_eq!(param, 2, "oldest releasing"),
+            _ => panic!(),
+        }
+        // next new note reuses the remaining releasing lane (5)
+        let c2 = on(&mut a, 81, 100);
+        match c2[0] {
+            Cmd::SetParam { param, .. } => assert_eq!(param, 5, "next releasing"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn all_held_steals_oldest_held_unchanged() {
+        let mut a = mk();
+        for k in 0..VOICES {
+            on(&mut a, 60 + k as u8, 100);
+        } // lanes 0..7 Held, lane 0 oldest
+        let c = on(&mut a, 72, 100); // no free/releasing → steal oldest held (lane 0)
+        match c[0] {
+            Cmd::SetParam { param, .. } => assert_eq!(param, 0, "steal oldest held"),
+            _ => panic!(),
+        }
+        assert!(c.iter().any(|cmd| matches!(cmd, Cmd::GateVoice { voice: 0, on: true, .. })));
+    }
+
+    #[test]
+    fn reusing_a_releasing_lane_re_gates_it() {
+        let mut a = mk();
+        on(&mut a, 60, 100); // lane 0
+        off(&mut a, 60); // lane 0 Releasing
+        // fill lanes 1..7 so the next note has no Free lane → must reuse releasing lane 0
+        for k in 1..VOICES {
+            on(&mut a, 61 + k as u8, 100);
+        }
+        let c = on(&mut a, 90, 100); // only lane 0 is Releasing (rest Held) → reuse lane 0, re-attack
+        assert!(matches!(c[0], Cmd::SetParam { param: 0, .. }));
+        assert!(
+            c.iter().any(|cmd| matches!(cmd, Cmd::GateVoice { voice: 0, on: true, .. })),
+            "re-gate on reuse"
+        );
+    }
+
+    #[test]
+    fn all_notes_off_marks_releasing_and_gates_off() {
+        let mut a = mk();
+        on(&mut a, 60, 100);
+        on(&mut a, 64, 100);
+        let mut c: Vec<Cmd> = Vec::new();
+        {
+            let mut e = |x: Cmd| c.push(x);
+            a.all_notes_off(&mut e);
+        }
+        assert_eq!(c.len(), 2); // gate-off for the two held lanes
+        assert!(c.iter().all(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. })));
+        // after all-notes-off, the two lanes are Releasing (occupied), so a new note
+        // still prefers the remaining Free lanes:
+        let c2 = on(&mut a, 67, 100);
+        match c2[0] {
+            Cmd::SetParam { param, .. } => assert!(param >= 2, "new note avoids the two releasing lanes"),
+            _ => panic!(),
+        }
     }
 
     #[test]
