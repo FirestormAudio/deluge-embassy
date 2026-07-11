@@ -1587,3 +1587,70 @@ fn synth_mono_two_envelopes_builds_and_renders() {
         "var s = Synth.mono { |p| Osc.saw(p).lpf(Env.adsr(0.01,0.2,0.3,0.4).to(400,4000)) * Env.adsr(0.005,0.1,0.7,0.2) }\nOut.patch(s.out)\ns.noteOn(60,100)"
     ));
 }
+
+// Sy-5e Task 5: e2e proof that `synth.unison = N` / `synth.detune = cents`
+// (Task 4 setters) actually render — poly and mono fat detuned voices, plus
+// the 1/sqrt(N) VoiceSum normalization (Task 1/2) taking effect end-to-end.
+
+#[test]
+fn synth_poly_unison_builds_and_renders() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 12\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "poly unison voice sounds");
+}
+
+#[test]
+fn synth_mono_unison_builds_and_renders() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 3\ns.detune = 20\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "mono unison voice sounds");
+}
+
+#[test]
+fn synth_unison_one_behaves_as_before() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 1\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "unison=1 still sounds");
+}
+
+#[test]
+fn synth_unison_normalization_reduces_level() {
+    // Render the SAME patch/note with unison=1 vs unison=4, detune=0 in BOTH
+    // (identical voices, no detune-induced phase cancellation) so the level
+    // relationship isolates the VoiceSum gain. With 4 identical voices summed
+    // and a 1/sqrt(4) = 0.5 normalization gain, unison=4's peak should be
+    // ~2x unison=1's peak, NOT ~4x (which is what an un-normalized sum would
+    // give). Assert the normalization took effect (peak4 < 4*peak1) and that
+    // more voices are still louder (peak4 > peak1).
+    let mut out1 = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 1\ns.detune = 0\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out1,
+    );
+    let mut out4 = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 0\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out4,
+    );
+
+    let peak1 = out1.iter().map(|f| f.l.abs()).fold(0.0f32, f32::max);
+    let peak4 = out4.iter().map(|f| f.l.abs()).fold(0.0f32, f32::max);
+
+    assert!(out1.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "unison=1 bounded");
+    assert!(out4.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "unison=4 bounded");
+    assert!(peak1 > 1e-3, "unison=1 peak nonzero (peak1={peak1})");
+    assert!(peak4 < 4.0 * peak1, "1/sqrt(N) normalization took effect (peak1={peak1}, peak4={peak4})");
+    assert!(peak4 > peak1, "4 unison voices louder than 1 (peak1={peak1}, peak4={peak4})");
+}
