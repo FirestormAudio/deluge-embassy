@@ -113,18 +113,18 @@ impl SynthAlloc {
     }
     /// `synth.detune = cents` — set the unison detune spread on whichever
     /// allocator this `Synth` holds.
-    fn set_detune(&mut self, cents: f32) {
+    fn set_detune(&mut self, cents: f32, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
         match self {
-            SynthAlloc::Poly(a) => a.set_detune(cents),
-            SynthAlloc::Mono(m) => m.set_detune(cents),
+            SynthAlloc::Poly(a) => a.set_detune(cents, emit),
+            SynthAlloc::Mono(m) => m.set_detune(cents, emit),
         }
     }
     /// `synth.width = amount` — set the unison stereo spread on whichever
     /// allocator this `Synth` holds.
-    fn set_width(&mut self, amount: f32) {
+    fn set_width(&mut self, amount: f32, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
         match self {
-            SynthAlloc::Poly(a) => a.set_width(amount),
-            SynthAlloc::Mono(m) => m.set_width(amount),
+            SynthAlloc::Poly(a) => a.set_width(amount, emit),
+            SynthAlloc::Mono(m) => m.set_width(amount, emit),
         }
     }
 }
@@ -1599,7 +1599,7 @@ pub(crate) unsafe extern "C" fn synth_set_unison(raw: *mut WrenVM) {
 /// allocator. Works on both `Synth.new` (poly) and `Synth.mono`.
 pub(crate) fn synth_set_detune_impl<S: SlotApi>(vm: &S) {
     let cents = vm.get_f(1) as f32;
-    self_synth(vm).alloc.set_detune(cents);
+    self_synth(vm).alloc.set_detune(cents, &mut |c| crate::host::host().audio_cmd(c));
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
@@ -1611,7 +1611,7 @@ pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
 /// allocator. Pan rides the next note-on (no immediate SetParam).
 pub(crate) fn synth_set_width_impl<S: SlotApi>(vm: &S) {
     let amount = vm.get_f(1) as f32;
-    self_synth(vm).alloc.set_width(amount);
+    self_synth(vm).alloc.set_width(amount, &mut |c| crate::host::host().audio_cmd(c));
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_set_width(raw: *mut WrenVM) {
