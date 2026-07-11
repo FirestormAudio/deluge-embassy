@@ -1510,15 +1510,31 @@ pub(crate) unsafe extern "C" fn synth_out(raw: *mut WrenVM) {
     synth_out_impl(&vm);
 }
 
-/// `synth.glide = seconds` — set the mono build's PolySlew glide time (param 0
-/// of the `PolySlew` node recorded by `mono_begin`/`mono_end`). On a poly
-/// synth there is no slew node, so this is a NO-OP: `SlotApi` has no
-/// Rust-side "abort the fiber" primitive (no `wrenAbortFiber`/error-slot
-/// call anywhere in this crate or `slotapi.rs` — every existing misuse check,
-/// e.g. the `Env.ar`-count and amp-source guards, is done in the *prelude*
-/// (Wren-side `Fiber.abort`) before the foreign is ever called). Silently
-/// ignoring `glide=` on a poly synth is consistent with "glide has no
-/// meaning without a single mono voice" rather than a bug to signal.
+/// `synth.isMono_` — true if this `Synth` was built via `Synth.mono` (i.e.
+/// `self_synth(vm).alloc` is `SynthAlloc::Mono`, which owns a PolySlew node).
+/// Used by the prelude `glide=` wrapper (M1) to `Fiber.abort` glide on a poly
+/// `Synth.new` instead of silently no-oping.
+pub(crate) fn synth_is_mono_impl<S: SlotApi>(vm: &S) {
+    let is_mono = self_synth(vm).alloc.mono_slew().is_some();
+    vm.set_f(0, if is_mono { 1.0 } else { 0.0 });
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_is_mono(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_is_mono_impl(&vm);
+}
+
+/// `synth.setGlide_(seconds)` — set the mono build's PolySlew glide time
+/// (param 0 of the `PolySlew` node recorded by `mono_begin`/`mono_end`).
+/// Registered under `setGlide_` (not the public `glide=`) because the
+/// prelude's `glide=(seconds)` wrapper `Fiber.abort`s on a poly `Synth.new`
+/// (M1: "glide has no meaning on a poly Synth") before ever reaching here —
+/// see the `Synth` foreign class in `prelude.wren`, mirroring the Sy-2e
+/// `Bus.write`/`write_` guard pattern. `SlotApi` has no Rust-side "abort the
+/// fiber" primitive (no `wrenAbortFiber`/error-slot call anywhere in this
+/// crate or `slotapi.rs`), so all misuse checks are Wren-side. This still
+/// no-ops on a poly synth as defense-in-depth (`mono_slew()` returns `None`),
+/// in case a caller ever reaches `setGlide_` directly.
 pub(crate) fn synth_set_glide_impl<S: SlotApi>(vm: &S) {
     let t = vm.get_f(1) as f32;
     if let Some(slew) = self_synth(vm).alloc.mono_slew() {
@@ -1872,7 +1888,8 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Synth", false, "noteOn(_,_)", synth_note_on_impl::<S>);
     method("main", "Synth", false, "noteOff(_)", synth_note_off_impl::<S>);
     method("main", "Synth", false, "out", synth_out_impl::<S>);
-    method("main", "Synth", false, "glide=(_)", synth_set_glide_impl::<S>);
+    method("main", "Synth", false, "isMono_", synth_is_mono_impl::<S>);
+    method("main", "Synth", false, "setGlide_(_)", synth_set_glide_impl::<S>);
     method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);

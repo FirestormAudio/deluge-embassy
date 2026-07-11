@@ -1531,14 +1531,14 @@ fn synth_mono_renders_finite_nonsilent() {
 }
 
 #[test]
-fn synth_poly_glide_is_harmless_noop() {
+fn synth_poly_glide_aborts() {
     // `.glide` targets the mono build's PolySlew node (recorded by
     // `mono_begin`/`mono_end`); a `Synth.new` (poly) voice has no such node.
-    // There is no Rust-side "abort the fiber" primitive available to
-    // `SlotApi` (see `synth_set_glide_impl`'s doc comment), so `glide=` on a
-    // poly synth is a deliberate silent no-op, not a misuse to reject —
-    // this must build and run harmlessly.
-    assert!(run_script_ok(
+    // M1: this is a misuse to reject, not a silent no-op — the prelude's
+    // `glide=(seconds)` wrapper checks `isMono_` and `Fiber.abort`s before
+    // ever calling the native `setGlide_` (mirrors the Sy-2e `Bus.write`
+    // guard pattern), so this script must fail to run.
+    assert!(!run_script_ok(
         "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }\ns.glide = 0.1"
     ));
 }

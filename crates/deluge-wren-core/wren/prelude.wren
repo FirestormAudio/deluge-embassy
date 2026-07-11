@@ -266,7 +266,15 @@ foreign class Synth {
   foreign noteOn(note, vel)
   foreign noteOff(note)
   foreign out
-  foreign glide=(seconds)
+  foreign isMono_               // true if built via Synth.mono (has a PolySlew node)
+  foreign setGlide_(seconds)    // native glide set (renamed; guarded by `glide=` below)
+  // Guard the M1 poly-glide footgun: `Synth.new` (poly) has no per-voice slew
+  // node, so `glide=` on a poly synth would otherwise be a silent no-op.
+  // Mirrors the Sy-2e `Bus.write_`/`write` guard pattern above.
+  glide=(seconds) {
+    if (isMono_ != 1) Fiber.abort("glide has no meaning on a poly Synth — use Synth.mono")
+    setGlide_(seconds)
+  }
   bindMidi() {
     Midi.onNoteOn = Fn.new { |ch, note, vel| this.noteOn(note, vel) }
     Midi.onNoteOff = Fn.new { |ch, note, vel| this.noteOff(note) }
@@ -288,8 +296,8 @@ foreign class Synth {
   // A single mono/legato voice with true glide between overlapping notes:
   // the last-note-priority allocator gates ON only from silence and glides
   // the pitch (via `.glide = seconds`) on legato note-ons instead of
-  // re-triggering the envelope. `.glide` is a no-op on `Synth.new` (poly) —
-  // there is no per-voice slew node to affect.
+  // re-triggering the envelope. `.glide` ABORTS on `Synth.new` (poly) — there
+  // is no per-voice slew node to affect (M1).
   //   var s = Synth.mono { |p| Osc.saw(p).lpf(1500) * Env.adsr(0.005,0.1,0.7,0.2) }
   //   s.glide = 0.08
   //   Out.patch(s.out)
