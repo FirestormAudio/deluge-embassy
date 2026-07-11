@@ -156,6 +156,7 @@ foreign class Node {
   foreign static polyMode_
   foreign static polyGateCount_
   foreign static polyBegin_()
+  foreign static polyVelBegin_()
   foreign static polyosc_(pitch, shape)
   foreign static polysvf_(audio, cutoff, res)
   foreign static polymoog_(audio, cutoff, res, poles)
@@ -270,7 +271,13 @@ foreign class Synth {
   static new(builder) {
     if (Node.polyMode_ == 1) Fiber.abort("nested Synth not supported")
     var pitch = Node.polyBegin_()
-    var out = builder.call(pitch)
+    var out
+    if (builder.arity >= 2) {
+      var vel = Node.polyVelBegin_()
+      out = builder.call(pitch, vel)
+    } else {
+      out = builder.call(pitch)
+    }
     if (Node.polyGateCount_ == 0) Fiber.abort("a Synth voice needs an Env.ar (the amp gate)")
     if (Node.polyGateCount_ > 1) Fiber.abort("multiple Env.ar in a Synth isn't supported yet")
     return Node.polyEnd_(out)

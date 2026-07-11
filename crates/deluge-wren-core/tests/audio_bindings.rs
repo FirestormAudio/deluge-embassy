@@ -1440,3 +1440,54 @@ fn synth_adsr_counts_as_amp_gate() {
     assert!(run_script_ok("Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }"));
     assert!(!run_script_ok("Synth.new { |p| Osc.saw(p) }"));
 }
+
+#[test]
+fn synth_velocity_scales_amplitude() {
+    // Task 3: an arity-2 builder `{ |pitch, vel| ... }` gets a second,
+    // control-flagged carrier from `Node.polyVelBegin_()`; `noteOn`'s velocity
+    // (normalized vel/127 by the VoiceAllocator) multiplies the amp. A loud
+    // note-on must render a higher RMS than a quiet one. Two separate Synths
+    // (one per velocity), each rendered fresh via `run_and_render`, sidestep
+    // needing to reset a single VM between two note-ons.
+    let mut hi = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.new { |pitch, vel| Osc.saw(pitch) * Env.adsr(0.001,0.001,1,0.1) * vel }\nOut.patch(s.out)\ns.noteOn(60,127)",
+        &mut hi,
+    );
+    let mut lo = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.new { |pitch, vel| Osc.saw(pitch) * Env.adsr(0.001,0.001,1,0.1) * vel }\nOut.patch(s.out)\ns.noteOn(60,20)",
+        &mut lo,
+    );
+    assert!(hi.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "hi bounded");
+    assert!(lo.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "lo bounded");
+    let rms_hi = (hi.iter().map(|f| f.l * f.l).sum::<f32>() / hi.len() as f32).sqrt();
+    let rms_lo = (lo.iter().map(|f| f.l * f.l).sum::<f32>() / lo.len() as f32).sqrt();
+    assert!(rms_hi > 0.0, "vel=127 voice sounds (rms_hi={rms_hi})");
+    assert!(rms_lo > 0.0, "vel=20 voice sounds (rms_lo={rms_lo})");
+    assert!(rms_hi > rms_lo, "vel=127 ({rms_hi}) louder than vel=20 ({rms_lo})");
+}
+
+#[test]
+fn synth_arity1_still_builds_without_velocity_node() {
+    // Backward-compat: an existing single-param `{ |p| ... }` synth (no
+    // velocity carrier) still builds and renders — the `builder.arity >= 2`
+    // branch in `Synth.new` must not disturb the arity-1 path.
+    assert!(run_script_ok(
+        "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }\nOut.patch(s.out)\ns.noteOn(60,100)"
+    ));
+}
+
+#[test]
+fn synth_velocity_composes_as_control_signal() {
+    // `vel` is control-flagged (isPoly_==0, per `node_poly_vel_begin_impl`),
+    // so it composes through the Sy-2d control-scaling path just like the
+    // voice pitch: routed to a filter cutoff via `.to(lo, hi)`, and scaled by
+    // a constant via `vel * 0.5 + 0.5` (sensitivity curve).
+    assert!(run_script_ok(
+        "var s = Synth.new { |p, vel| Osc.saw(p).lpf(vel.to(400, 4000)) * Env.adsr(0.01,0.1,0.6,0.3) }\nOut.patch(s.out)\ns.noteOn(60,100)"
+    ));
+    assert!(run_script_ok(
+        "var s = Synth.new { |p, vel| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) * (vel * 0.5 + 0.5) }\nOut.patch(s.out)\ns.noteOn(60,100)"
+    ));
+}
