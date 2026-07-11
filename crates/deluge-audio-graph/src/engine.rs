@@ -1067,7 +1067,9 @@ mod tests {
         type PE = Engine<64, 8, 56, 4, 45056, 2048>;
         let mut e = PE::new(48_000.0);
         build_voice(&mut e);
-        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), NodeId(5), None);
+        let mut gates = [NodeId(0); crate::voice::MAX_GATES];
+        gates[0] = NodeId(5);
+        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), gates, 1, None);
 
         { let mut emit = |c: Cmd| e.apply(c); alloc.note_on(69, 100, &mut emit); }
         for _ in 0..8 { e.render_block(); } // let the fast envelope attack
@@ -1086,7 +1088,9 @@ mod tests {
         type PE = Engine<64, 8, 56, 4, 45056, 2048>;
         let mut e = PE::new(48_000.0);
         build_voice(&mut e);
-        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), NodeId(5), None);
+        let mut gates = [NodeId(0); crate::voice::MAX_GATES];
+        gates[0] = NodeId(5);
+        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), gates, 1, None);
         {
             let mut emit = |c: Cmd| e.apply(c);
             for k in 0..9u8 {
