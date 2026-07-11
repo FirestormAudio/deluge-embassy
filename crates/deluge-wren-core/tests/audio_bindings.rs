@@ -1828,7 +1828,7 @@ fn gate_closes_below_threshold() {
     let mut dry = [StereoFrame::default(); 128];
     run_and_render("Out.patch(Osc.saw(110))", &mut dry);
     let mut gated = [StereoFrame::default(); 128];
-    run_and_render("Out.patch(NoiseGate.new(Osc.saw(110), 6, 0.001, 0.05, 0.001))", &mut gated);
+    run_and_render("Out.patch(NoiseGate.new(Osc.saw(110), 6, 0.001, 0.002, 0.001))", &mut gated);
     assert!(gated.iter().all(|f| f.l.is_finite()), "gated finite");
     assert!(peak(&gated) < peak(&dry), "gate closed below threshold lowers peak (dry {} vs gated {})", peak(&dry), peak(&gated));
 }
