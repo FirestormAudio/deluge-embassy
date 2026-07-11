@@ -8,7 +8,7 @@ use crate::Input;
 use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
     drive::{Drive, Shape},
-    dynamics::{Comp, Detector},
+    dynamics::{Comp, Detector, Gate},
     env::{Adsr, Ar}, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
@@ -72,6 +72,7 @@ pub enum Kind {
     Plate,
     Drive,
     Comp,
+    Gate,
     Eq,
     Lfo,
     SampleHold,
@@ -134,6 +135,7 @@ enum State {
     Plate(Dattorro),
     Drive(Drive),
     Comp(Comp),
+    Gate(Gate),
     Eq(Eq),
     Lfo(Lfo),
     SampleHold(SampleHold),
@@ -214,6 +216,7 @@ impl Node {
             Kind::Plate => State::Plate(Dattorro::new()),
             Kind::Drive => State::Drive(Drive::new(Shape::Soft)),
             Kind::Comp => State::Comp(Comp::new(-20.0, 4.0, 0.01, 0.1, 6.0, 0.0, Detector::Rms)),
+            Kind::Gate => State::Gate(Gate::new(-40.0, 2.0, 0.001, 0.1, 0.0, 20.0, Detector::Peak)),
             Kind::Eq => State::Eq(Eq::new(EqType::Peak)),
             Kind::Lfo => State::Lfo(Lfo::new()),
             Kind::SampleHold => State::SampleHold(SampleHold::new()),
@@ -404,6 +407,16 @@ impl Node {
                 4 => c.set_knee(value),
                 5 => c.set_makeup(value),
                 6 => c.set_detector(if value == 0.0 { Detector::Peak } else { Detector::Rms }),
+                _ => {}
+            },
+            State::Gate(g) => match param {
+                0 => g.set_threshold(value),
+                1 => g.set_ratio(value),
+                2 => g.set_attack(value),
+                3 => g.set_release(value),
+                4 => g.set_hold(value),
+                5 => g.set_range(value),
+                6 => g.set_detector(if value == 0.0 { Detector::Peak } else { Detector::Rms }),
                 _ => {}
             },
             State::Eq(e) => match param {
@@ -753,6 +766,11 @@ impl Node {
             Kind::Comp => {
                 if let State::Comp(c) = &mut self.state {
                     c.process(ins[0], dt, outs.port(0));
+                }
+            }
+            Kind::Gate => {
+                if let State::Gate(g) = &mut self.state {
+                    g.process(ins[0], dt, outs.port(0));
                 }
             }
             Kind::Eq => {
@@ -1456,6 +1474,29 @@ mod tests {
         assert!(buf.iter().all(|s| s.is_finite()), "finite");
         // 0 dB through thr=-20/ratio=8 → ~15 dB GR → settled magnitude ≈ 0.18, well < 1.0.
         assert!(buf[buf.len() - 1].abs() < 0.5, "compressed well below input, got {}", buf[buf.len() - 1]);
+    }
+
+    #[test]
+    fn gate_node_wires_params_and_gates() {
+        assert_eq!(Node::out_width(Kind::Gate), 1);
+        let mut n = Node::new(Kind::Gate, 0);
+        n.set_param(0, 0.0);   // threshold 0 dB
+        n.set_param(1, 4.0);   // ratio
+        n.set_param(2, 0.001); // attack
+        n.set_param(3, 0.01);  // release
+        n.set_param(4, 0.0);   // hold
+        n.set_param(5, 40.0);  // range
+        n.set_param(6, 0.0);   // Peak
+        // Constant 0.1 (-20 dB, below the 0 dB threshold) → gate closes → attenuated.
+        let input = [0.1f32; 64];
+        let ins = [In::A(&input), In::A(&[0.0; 64]), In::A(&[0.0; 64])];
+        let mut buf = [0.0f32; 64];
+        for _ in 0..20 {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf.iter().all(|s| s.is_finite()), "finite");
+        assert!(buf[buf.len() - 1].abs() < 0.05, "below-threshold input gated down, got {}", buf[buf.len() - 1]);
     }
 
     #[test]
