@@ -1812,3 +1812,32 @@ fn comp_unity_ratio_is_transparent_ish() {
     // ratio 1:1 → no compression; a quiet source passes essentially unchanged in level.
     assert!(run_script_ok("Out.patch(Comp.new(Osc.sine(220), -20, 1, 0.005, 0.1))"), "ratio 1 builds/runs");
 }
+
+#[test]
+fn expander_renders_finite_nonsilent() {
+    let mut out = [StereoFrame::default(); 128];
+    run_and_render("Out.patch(Expander.new(Osc.saw(110), -6, 2, 0.001, 0.1))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "expander passes signal above threshold");
+}
+
+#[test]
+fn gate_closes_below_threshold() {
+    // High threshold (+6 dB, above the ~0 dB saw peak) → gate stays closed → attenuated.
+    let peak = |buf: &[StereoFrame]| buf.iter().map(|f| f.l.abs()).fold(0.0f32, f32::max);
+    let mut dry = [StereoFrame::default(); 128];
+    run_and_render("Out.patch(Osc.saw(110))", &mut dry);
+    let mut gated = [StereoFrame::default(); 128];
+    run_and_render("Out.patch(NoiseGate.new(Osc.saw(110), 6, 0.001, 0.05, 0.001))", &mut gated);
+    assert!(gated.iter().all(|f| f.l.is_finite()), "gated finite");
+    assert!(peak(&gated) < peak(&dry), "gate closed below threshold lowers peak (dry {} vs gated {})", peak(&dry), peak(&gated));
+}
+
+#[test]
+fn gate_low_threshold_passes() {
+    // Low threshold (-40, below the source) → gate stays open → non-silent.
+    let mut out = [StereoFrame::default(); 128];
+    run_and_render("Out.patch(NoiseGate.new(Osc.saw(110), -40, 0.001, 0.05, 0.001))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "open gate passes loud source");
+}
