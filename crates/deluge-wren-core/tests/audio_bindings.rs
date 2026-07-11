@@ -1654,3 +1654,51 @@ fn synth_unison_normalization_reduces_level() {
     assert!(peak4 < 4.0 * peak1, "1/sqrt(N) normalization took effect (peak1={peak1}, peak4={peak4})");
     assert!(peak4 > peak1, "4 unison voices louder than 1 (peak1={peak1}, peak4={peak4})");
 }
+
+// Sy-6a Task 5: e2e proof that `synth.width = amount` (Task 4 setter) renders
+// a real stereo image end-to-end — poly and mono unison voices spread across
+// L/R via StereoVoiceSum per-lane pan (Tasks 1-3) — and that `width=0` (or no
+// width call at all) stays exactly today's dual-mono, byte-identical output.
+
+#[test]
+fn synth_poly_width_renders_stereo_image() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 12\ns.width = 1\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 8.0 && f.r.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3 || f.r.abs() > 1e-3), "sounds");
+    assert!(out.iter().any(|f| (f.l - f.r).abs() > 1e-4), "stereo image: L != R somewhere");
+}
+
+#[test]
+fn synth_mono_width_renders_stereo_image() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 3\ns.detune = 20\ns.width = 1\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 8.0 && f.r.abs() <= 8.0), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3 || f.r.abs() > 1e-3), "sounds");
+    assert!(out.iter().any(|f| (f.l - f.r).abs() > 1e-4), "mono unison spread: L != R");
+}
+
+#[test]
+fn synth_width_zero_is_mono_and_byte_identical() {
+    // Same patch/note rendered twice: once with `s.width = 0`, once with no width call.
+    let patch_width0 = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 0\ns.width = 0\nOut.patch(s.out)\ns.noteOn(60,100)";
+    let patch_none   = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 0\nOut.patch(s.out)\ns.noteOn(60,100)";
+    let mut a = [StereoFrame::default(); 32];
+    let mut b = [StereoFrame::default(); 32];
+    run_and_render(patch_width0, &mut a);
+    run_and_render(patch_none, &mut b);
+    // width=0 => L == R (dual-mono) ...
+    assert!(a.iter().all(|f| (f.l - f.r).abs() < 1e-9), "width=0 is dual-mono (L==R)");
+    // ... and byte-identical to the no-width render, frame by frame.
+    for (fa, fb) in a.iter().zip(b.iter()) {
+        assert_eq!(fa.l, fb.l, "width=0 L byte-identical to no-width");
+        assert_eq!(fa.r, fb.r, "width=0 R byte-identical to no-width");
+    }
+    assert!(a.iter().any(|f| f.l.abs() > 1e-3), "still sounds");
+}
