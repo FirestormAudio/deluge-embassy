@@ -150,6 +150,7 @@ enum State {
     PolyMs20(PolyMs20),
     PolySync(PolySync),
     PolyWt(PolyWt),
+    VoiceSum(f32),
     Stateless,
 }
 
@@ -194,7 +195,8 @@ impl Node {
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
-            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve | Kind::VoiceSum | Kind::PolyMul | Kind::PolyAdd => State::Stateless,
+            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve | Kind::PolyMul | Kind::PolyAdd => State::Stateless,
+            Kind::VoiceSum => State::VoiceSum(1.0),
             Kind::Wavetable => State::Wt(WtOsc::new()),
             Kind::Delay => State::Delay(Delay::new()),
             Kind::Chorus => State::Chorus(ModDelay::<3>::new(0.020)),
@@ -324,6 +326,7 @@ impl Node {
             State::Adsr(a) if param == 0 => a.set_sustain(value),
             State::PolyAdsr(a) if param == 0 => a.set_sustain(value),
             State::PolySlew(s) if param == 0 => s.set_time(value),
+            State::VoiceSum(g) if param == 0 => *g = value,
             State::Moog4(m) if param == 0 => m.set_drive(value),
             State::Moog2(m) if param == 0 => m.set_drive(value),
             State::Ms20(m) if param == 0 => m.set_drive(value),
@@ -806,7 +809,9 @@ impl Node {
                 }
             }
             Kind::VoiceSum => {
-                if let Some(pin) = poly_in[0] { voice_sum(pin, out); }
+                if let (State::VoiceSum(gain), Some(pin)) = (&self.state, poly_in[0]) {
+                    voice_sum(pin, out, *gain);
+                }
             }
             Kind::PolyAr => {
                 if let State::PolyAr(a) = &mut self.state {
@@ -1654,6 +1659,33 @@ mod tests {
         sum.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono, None);
         let want: f32 = (1..=VOICES).map(|x| x as f32).sum(); // 36
         assert!(mono.iter().all(|&s| (s - want).abs() < 1e-4), "each sample sums to {want}");
+    }
+
+    #[test]
+    fn voicesum_node_gain_defaults_unity_and_set_param_scales() {
+        // PolyCtrl(set voices) → tile → VoiceSum → mono sum, mirroring
+        // `polyctrl_node_fills_and_voicesum_collapses`.
+        let mut ctrl = Node::new(Kind::PolyCtrl, 0);
+        for v in 0..VOICES {
+            ctrl.set_param(v as u8, (v + 1) as f32); // 1..=8
+        }
+        let mut tile = [0.0f32; VOICES * 4];
+        let dummy: [In; MAX_INPUTS] = [In::K(0.0); MAX_INPUTS];
+        ctrl.poly_process(&dummy, [None, None], 1.0 / 48_000.0, &mut tile, None);
+
+        // Default gain 1.0 → plain sum.
+        let mut n1 = Node::new(Kind::VoiceSum, 0);
+        let mut mono1 = [0.0f32; 4];
+        n1.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono1, None);
+        let want: f32 = (1..=VOICES).map(|x| x as f32).sum(); // 36
+        assert!(mono1.iter().all(|&s| (s - want).abs() < 1e-4), "default gain 1.0 = plain sum, got {mono1:?}");
+
+        // set_param(0, 0.5) halves the summed output.
+        let mut n2 = Node::new(Kind::VoiceSum, 0);
+        n2.set_param(0, 0.5);
+        let mut mono2 = [0.0f32; 4];
+        n2.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono2, None);
+        assert!(mono2.iter().all(|&s| (s - want * 0.5).abs() < 1e-4), "gain 0.5 halves the sum, got {mono2:?}");
     }
 
     #[test]

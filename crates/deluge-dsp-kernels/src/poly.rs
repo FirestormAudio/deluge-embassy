@@ -245,15 +245,16 @@ impl Default for PolySlew {
     fn default() -> Self { Self::new() }
 }
 
-/// Collapse a voice-interleaved tile to mono: `out[i] = Σ_v tile[i*VOICES + v]`.
+/// Collapse the `VOICES`-lane tile to mono, scaled by `gain` (1.0 = plain sum;
+/// unison sets 1/√U to keep level ~constant across U stacked voices).
 /// `tile.len() == VOICES * out.len()`.
-pub fn voice_sum(tile: &[f32], out: &mut [f32]) {
+pub fn voice_sum(tile: &[f32], out: &mut [f32], gain: f32) {
     for i in 0..out.len() {
         let mut s = 0.0;
         for v in 0..VOICES {
             s += tile[i * VOICES + v];
         }
-        out[i] = s;
+        out[i] = gain * s;
     }
 }
 
@@ -1027,11 +1028,29 @@ mod tests {
             }
         }
         let mut out = std::vec![0.0f32; n];
-        voice_sum(&tile, &mut out);
+        voice_sum(&tile, &mut out, 1.0);
         for i in 0..n {
             let want: f32 = (0..VOICES).map(|v| (i * VOICES + v) as f32).sum();
             assert_eq!(out[i], want, "sample {i}");
         }
+    }
+
+    #[test]
+    fn voice_sum_gain_scales_and_unity_is_plain_sum() {
+        let n = 4usize;
+        // tile: lane v of sample i = (i+1)*(v+1) as a simple pattern
+        let tile: std::vec::Vec<f32> = (0..n * VOICES).map(|j| { let i = j / VOICES; let v = j % VOICES; ((i + 1) * (v + 1)) as f32 }).collect();
+        // unity gain == plain sum
+        let mut out1 = std::vec![0.0f32; n];
+        voice_sum(&tile, &mut out1, 1.0);
+        for i in 0..n {
+            let want: f32 = (0..VOICES).map(|v| tile[i * VOICES + v]).sum();
+            assert_eq!(out1[i], want, "unity gain = plain sum");
+        }
+        // gain 0.5 scales
+        let mut out2 = std::vec![0.0f32; n];
+        voice_sum(&tile, &mut out2, 0.5);
+        for i in 0..n { assert_eq!(out2[i], out1[i] * 0.5, "gain scales the sum"); }
     }
 
     use proptest::prelude::*;
