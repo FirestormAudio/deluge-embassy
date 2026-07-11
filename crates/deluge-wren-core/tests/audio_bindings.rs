@@ -1029,6 +1029,8 @@ fn synth_error_cases_abort() {
     // A no-env voice aborts; two envs abort.
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) }"), "no Env.ar aborts");
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar aborts");
+    // Audio-voice signal * scalar still aborts — the negative half of the
+    // control-scaling rule locked positively by `synth_env_scaled_by_constant`.
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * 0.5 }"), "poly * scalar aborts");
     // Nested Synth aborts (the inner polyBegin sees poly_mode already set).
     assert!(!run_script_ok("Synth.new { |p| Synth.new { |q| Osc.sine(q) * Env.ar(0.01,0.3) } }"), "nested Synth aborts");
@@ -1038,6 +1040,30 @@ fn synth_error_cases_abort() {
     assert!(run_script_ok("Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }"), "Noise.brown ok in Synth (Sy-2d)");
     // Sanity: a valid Synth interprets fine.
     assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"), "valid Synth ok");
+}
+
+#[test]
+fn synth_env_scaled_by_constant_renders() {
+    // Task-6 review gap, now locked intentionally: `Env.ar(...)` is a
+    // CONTROL/amp signal, not an audio-voice signal (`node_polyar_impl` uses
+    // `return_node`, not `return_poly_node` — see its doc comment), so scaling
+    // the envelope by a constant is a legitimate control-rate op that
+    // broadcasts a `Ctrl(k)` per voice via `PolyMul` (same mechanism as PWM's
+    // `.to`/`.atten`/`.offset` on a mono LFO) — it must NOT abort, unlike
+    // scaling an actual audio-voice signal (`Osc.sine(p) * 0.5`, asserted to
+    // abort in `synth_error_cases_abort`).
+    assert!(
+        run_script_ok("Synth.new { |p| Osc.sine(p) * (Env.ar(0.01, 0.3) * 0.7) }"),
+        "Env.ar * scalar is a control op, doesn't abort"
+    );
+
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.sine(p) * (Env.ar(0.01, 0.3) * 0.7) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "envelope-scaled voice sounds");
 }
 
 #[test]

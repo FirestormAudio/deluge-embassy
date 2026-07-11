@@ -232,6 +232,14 @@ unsafe fn return_poly_node<S: SlotApi>(vm: &S, id: u16) {
 /// Read the `poly` flag off a `Node` argument at `slot` (see `NodeObj::poly`).
 /// Non-`Node` args (a bare number, `Port`, `Bus` — none reachable here today
 /// since `PolyMul`/`PolyAdd`'s operands are always `Node`s) default to `false`.
+///
+/// The rule this flag enforces (prelude `*`/`+` operators, Task 6): a bare
+/// scalar `Num` may scale/offset a control-rate signal (LFO/Env/Ctrl/pitch)
+/// but not an audio-voice signal (Osc/filter/noise/sync/wavetable output) —
+/// `Env.ar(...) * k` broadcasts fine, `Osc.sine(p) * k` aborts. `poly`-ness
+/// propagates through `*`/`+` (`arg_is_poly` below is OR'd in `node_polymul_impl`/
+/// `node_polyadd_impl`), so any chain that has touched real audio still aborts
+/// on a bare scalar even several ops downstream.
 fn arg_is_poly<S: SlotApi>(vm: &S, slot: i32) -> bool {
     if vm.slot_type(slot) == WrenType::Foreign {
         // SAFETY: same tag-byte-then-typed-read discipline as `arg_input`.
@@ -1128,6 +1136,16 @@ pub(crate) unsafe extern "C" fn node_polyms20(raw: *mut WrenVM) {
 
 /// `Node.polyar_(attack, release)` — poly AR envelope (the amp gate). Ports
 /// 0/1 = attack/release (mono). Records itself as the voice's gate.
+///
+/// Deliberately uses `return_node` (unflagged), not `return_poly_node`: for
+/// operator-guard purposes `Env.ar(...)` is a CONTROL/amp signal, not an
+/// audio-voice signal, even though it drives per-voice `PolyAr`. That makes
+/// `Env.ar(...) * k` (scaling the envelope's shape by a constant) a legitimate
+/// control-rate op — it broadcasts a `Ctrl(k)` per voice via `PolyMul` exactly
+/// like any other control chain (Task 6) — while `Osc.sine(p) * k` (an actual
+/// audio-voice signal) still `Fiber.abort`s, preserving the "amp comes from
+/// Env.ar" UX rule. This is intentional and coherent, not an oversight: see
+/// `crates/deluge-wren-core/tests/audio_bindings.rs` for the locking tests.
 pub(crate) fn node_polyar_impl<S: SlotApi>(vm: &S) {
     let attack = arg_input(vm, 1);
     let release = arg_input(vm, 2);
