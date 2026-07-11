@@ -201,6 +201,45 @@ pub fn new_wavetable_pooled(id: u16, handle: deluge_audio_graph::PoolHandle, fre
     });
 }
 
+/// Create a poly wavetable node (`Kind::PolyWt`/`PolyWtMorph`, selected by the
+/// caller from the table's frame count — see `bindings_audio::poly_wt_kind`)
+/// and bind it to a named static table. Mirrors `new_wavetable`, parameterized
+/// by `kind` since (unlike the mono path) a poly node's Kind is fixed at
+/// creation. Used by `Node.polywt_(table, freq)`.
+pub fn new_polywt(id: u16, kind: Kind, table_id: u16, freq: Input) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind,
+        args: [freq, Input::Const(0.0), Input::Const(0.0)],
+    });
+    host().audio_cmd(Cmd::BindTable {
+        node: NodeId(id),
+        src: deluge_audio_graph::node::TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(
+            table_id,
+        )),
+    });
+}
+/// Poly counterpart of `new_wavetable_pooled`: creates a `PolyWt`/`PolyWtMorph`
+/// node bound to a pooled (dynamically-uploaded) table. Used by
+/// `Node.polywt_pooled_(wt, freq)`.
+pub fn new_polywt_pooled(id: u16, kind: Kind, handle: deluge_audio_graph::PoolHandle, freq: Input) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind,
+        args: [freq, Input::Const(0.0), Input::Const(0.0)],
+    });
+    host().audio_cmd(Cmd::BindTable {
+        node: NodeId(id),
+        src: deluge_audio_graph::node::TableSrc::Pooled(handle),
+    });
+}
+
 /// Allocate a zeroed effect ring buffer in the host pool (`None` on a host with
 /// no pool, e.g. the Cmd-capture test host, or on exhaustion). Used by
 /// `Node.delay_`.

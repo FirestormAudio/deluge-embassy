@@ -1032,9 +1032,10 @@ fn synth_error_cases_abort() {
     assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * 0.5 }"), "poly * scalar aborts");
     // Nested Synth aborts (the inner polyBegin sees poly_mode already set).
     assert!(!run_script_ok("Synth.new { |p| Synth.new { |q| Osc.sine(q) * Env.ar(0.01,0.3) } }"), "nested Synth aborts");
-    // Poly pink/brown noise still deferred (Sy-2c).
-    assert!(!run_script_ok("Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }"), "Noise.pink aborts");
-    assert!(!run_script_ok("Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }"), "Noise.brown aborts");
+    // Poly pink/brown noise now work in a Synth (Sy-2d) — see
+    // `synth_sources_render_sound` for the positive case.
+    assert!(run_script_ok("Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }"), "Noise.pink ok in Synth (Sy-2d)");
+    assert!(run_script_ok("Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }"), "Noise.brown ok in Synth (Sy-2d)");
     // Sanity: a valid Synth interprets fine.
     assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"), "valid Synth ok");
 }
@@ -1127,6 +1128,127 @@ fn synth_moog_and_ms20_render_sound() {
     );
     assert!(ms20.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "Ms20.hp bounded");
     assert!(ms20.iter().any(|f| f.l.abs() > 1e-4), "Ms20.hp voice sounds");
+}
+
+#[test]
+fn synth_sources_build_correct_kinds() {
+    // Sy-2d: each flipped source route emits the poly Kind, not the mono one.
+    let sync = run_and_capture_cmds(
+        "var b = Synth.new { |p| Osc.syncSaw(p, p*1.5) * Env.ar(0.01,0.3) }",
+    );
+    assert!(sync.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolySyncSaw, .. })), "PolySyncSaw");
+    assert!(!sync.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::SyncSaw, .. })), "no mono SyncSaw");
+
+    let wt = run_and_capture_cmds(
+        "var b = Synth.new { |p| Osc.wavetable(WT.Saw, p) * Env.ar(0.01,0.3) }",
+    );
+    assert!(wt.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyWt, .. })), "PolyWt");
+    assert!(!wt.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Wavetable, .. })), "no mono Wavetable");
+
+    let morph = run_and_capture_cmds(
+        "var b = Synth.new { |p| Osc.wavetable(WT.HarmonicSweep, p) * Env.ar(0.01,0.3) }",
+    );
+    assert!(morph.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyWtMorph, .. })), "PolyWtMorph");
+
+    let pink = run_and_capture_cmds("var b = Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }");
+    assert!(pink.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyPink, .. })), "PolyPink");
+
+    let brown = run_and_capture_cmds("var b = Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }");
+    assert!(brown.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyBrown, .. })), "PolyBrown");
+
+    // `.width =` in poly mode targets the PolyOsc's poly width port (1), not
+    // the mono port (2).
+    // NOTE: a multi-statement Wren block needs an explicit `return` for its
+    // value to reach `builder.call(pitch)` in `Synth.new` — only a
+    // single-expression block implicitly returns its value.
+    let pwm = run_and_capture_cmds(
+        "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = LFO.sine(4).to(0.2,0.8)\n  return o * Env.ar(0.01,0.3)\n}",
+    );
+    assert!(pwm.iter().any(|c| matches!(c, Cmd::SetInput { port: 1, .. })), "width= sets poly port 1");
+    assert!(!pwm.iter().any(|c| matches!(c, Cmd::SetInput { port: 2, .. })), "width= does not touch mono port 2");
+}
+
+#[test]
+fn synth_sources_render_sound() {
+    // Sy-2d: poly sync/wavetable(single+morph)/pink/brown/PWM all render
+    // finite, bounded, non-silent audio end-to-end through Synth → VoiceSum.
+    let mut sync = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.syncSaw(p, p*1.5).lpf(2000) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut sync,
+    );
+    assert!(sync.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "sync bounded");
+    assert!(sync.iter().any(|f| f.l.abs() > 1e-4), "sync voice sounds");
+
+    let mut wt = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.wavetable(WT.Saw, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut wt,
+    );
+    assert!(wt.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "wavetable bounded");
+    assert!(wt.iter().any(|f| f.l.abs() > 1e-4), "wavetable voice sounds");
+
+    // 2D morph table (WT.HarmonicSweep, a named static bank — Task 5).
+    let mut morph = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.wavetable(WT.HarmonicSweep, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut morph,
+    );
+    assert!(morph.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "wavetable morph bounded");
+    assert!(morph.iter().any(|f| f.l.abs() > 1e-4), "wavetable morph voice sounds");
+
+    let mut pink = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut pink,
+    );
+    assert!(pink.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "pink bounded");
+    assert!(pink.iter().any(|f| f.l.abs() > 1e-4), "pink voice sounds");
+
+    let mut brown = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut brown,
+    );
+    assert!(brown.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "brown bounded");
+    assert!(brown.iter().any(|f| f.l.abs() > 1e-4), "brown voice sounds");
+
+    // PWM: a mono LFO drives the width port via the Task-1 mono→poly broadcast.
+    let mut pwm = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = LFO.sine(4).to(0.2,0.8)\n  return o * Env.ar(0.01,0.3)\n}\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut pwm,
+    );
+    assert!(pwm.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "PWM bounded");
+    assert!(pwm.iter().any(|f| f.l.abs() > 1e-4), "PWM voice sounds");
+}
+
+#[test]
+fn polyosc_no_width_unchanged_no_setinput_port1() {
+    // Backward-compat (Task 3 gate): a PolyOsc voice that never sets `.width`
+    // must not emit any SetInput on port 1 (the poly width port) — it stays
+    // at its NewNode-time default (Const(0.0) ⇒ 0.5 duty), bit-identical to
+    // the pre-Sy-2d PolyOsc (proven bit-exact at the engine level — see
+    // deluge-audio-graph's node.rs tests).
+    let cmds = run_and_capture_cmds(
+        "var b = Synth.new { |p| Osc.square(p) * Env.ar(0.01, 0.3) }",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyOsc, .. })), "PolyOsc built");
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 1, .. })),
+        "no SetInput on PolyOsc's width port when .width wasn't set"
+    );
+
+    // Sanity: the render is non-silent and bounded (same as the pre-existing
+    // `synth_saw_renders_sound`-style checks), i.e. the width-port addition
+    // didn't silently break the default 0.5-duty square.
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.square(p) * Env.ar(0.001, 0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "square voice sounds");
 }
 
 #[test]

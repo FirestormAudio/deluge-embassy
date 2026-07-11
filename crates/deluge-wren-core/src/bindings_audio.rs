@@ -44,6 +44,18 @@ pub(crate) const PLATE_BUF_SAMPLES: usize = 22_494;
 pub(crate) struct NodeObj {
     pub tag: u8,
     pub width: u8, // 1 = mono, 2 = stereo (port0=L, port1=R). Read by width-aware routing.
+    // 1 = wraps a per-voice AUDIO-rate poly signal (an oscillator/filter/noise/
+    // sync/wavetable output, or a PolyMul/PolyAdd combining one) — the `*`/`+`
+    // operators (prelude.wren) abort a scalar `Num` operand on these (amp must
+    // come from Env.ar). 0 = control-rate (the voice `pitch`, a mono LFO/Ctrl,
+    // or a PolyMul/PolyAdd chain built purely from those) — a scalar operand
+    // is instead folded in via a broadcast `Ctrl` node. Purely a Wren-level UX
+    // guard: unrelated to the engine's own `Node::is_poly`/broadcast mechanics
+    // (`p`/`PolyMtof` IS engine-poly but is unflagged here, since pitch ratios
+    // like `p * 1.5` for a sync slave are a legitimate control-rate op). Read
+    // by `node_is_poly_impl` (`Node.isPoly_`); set by [`return_poly_node`] and
+    // propagated by `node_polymul_impl`/`node_polyadd_impl` via `arg_is_poly`.
+    pub poly: u8,
     pub id: u16,
 }
 impl WrenForeign for NodeObj {
@@ -114,6 +126,15 @@ impl WrenForeign for BusObj {
 pub(crate) struct WtObj {
     pub tag: u8,
     pub handle: Option<deluge_audio_graph::PoolHandle>,
+    // 1 for a single-cycle table (`from`), the frame count for a 2D morph
+    // table (`from2d`). Set at upload time (Rust already knows this without
+    // querying the pool — `PoolHandle`'s fields are private to `pool.rs`).
+    // Read by `node_polywt_pooled_impl` to select `Kind::PolyWt` vs
+    // `PolyWtMorph` at construction time (a poly node's Kind is fixed at
+    // creation — see `poly_wt_kind`'s doc comment). The mono path
+    // (`node_wavetable_pooled_impl`) ignores this field; it branches on frame
+    // count at render time instead.
+    pub frames: u16,
 }
 impl WrenForeign for WtObj {
     fn module_name() -> &'static str {
@@ -189,11 +210,37 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
 fn self_id<S: SlotApi>(vm: &S) -> u16 {
     unsafe { vm.foreign_mut::<NodeObj>(0) }.id
 }
+unsafe fn return_node_ex<S: SlotApi>(vm: &S, id: u16, width: u8, poly: bool) {
+    unsafe { vm.new_foreign_in(0, NodeObj { tag: TAG_NODE, width, poly: poly as u8, id }) };
+}
 unsafe fn return_node_w<S: SlotApi>(vm: &S, id: u16, width: u8) {
-    unsafe { vm.new_foreign_in(0, NodeObj { tag: TAG_NODE, width, id }) };
+    unsafe { return_node_ex(vm, id, width, false) };
 }
 unsafe fn return_node<S: SlotApi>(vm: &S, id: u16) {
     unsafe { return_node_w(vm, id, 1) };
+}
+/// Like `return_node`, but flags the returned `Node` as a per-voice AUDIO-rate
+/// poly signal (see `NodeObj::poly`'s doc comment) — used by every poly
+/// factory whose output is a genuine voice signal (oscillator, filter, noise,
+/// sync, wavetable). NOT used by `polyBegin_`'s pitch node or `polyar_`'s
+/// envelope (both control-rate); `polymul_`/`polyadd_` compute their flag by
+/// propagation instead (`arg_is_poly`), since they're also used to fold a
+/// scalar into a control-rate chain (see the prelude `*`/`+` operators).
+unsafe fn return_poly_node<S: SlotApi>(vm: &S, id: u16) {
+    unsafe { return_node_ex(vm, id, 1, true) };
+}
+/// Read the `poly` flag off a `Node` argument at `slot` (see `NodeObj::poly`).
+/// Non-`Node` args (a bare number, `Port`, `Bus` — none reachable here today
+/// since `PolyMul`/`PolyAdd`'s operands are always `Node`s) default to `false`.
+fn arg_is_poly<S: SlotApi>(vm: &S, slot: i32) -> bool {
+    if vm.slot_type(slot) == WrenType::Foreign {
+        // SAFETY: same tag-byte-then-typed-read discipline as `arg_input`.
+        let tag = unsafe { *vm.foreign_mut::<u8>(slot) };
+        if tag == TAG_NODE {
+            return unsafe { vm.foreign_mut::<NodeObj>(slot) }.poly != 0;
+        }
+    }
+    false
 }
 
 // ── Factory statics (return a Node) ──────────────────────────────────────────
@@ -448,7 +495,7 @@ pub(crate) fn wavetable_from_impl<S: SlotApi>(vm: &S) {
         base[i] = vm.get_f(2) as f32;
     }
     let handle = audio::upload_table(&base[..n.max(1)]);
-    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle }) };
+    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle, frames: 1 }) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn wavetable_from(raw: *mut WrenVM) {
@@ -492,7 +539,8 @@ pub(crate) fn wavetable_from2d_impl<S: SlotApi>(vm: &S) {
             base[i] = vm.get_f(3) as f32;
         }
     });
-    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle }) };
+    let frames = nframes.min(u16::MAX as usize) as u16;
+    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle, frames }) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn wavetable_from2d(raw: *mut WrenVM) {
@@ -1016,7 +1064,7 @@ pub(crate) fn node_polyosc_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node_id();
     audio::new_node(id, Kind::PolyOsc, [pitch, Input::Const(0.0), Input::Const(0.0)]);
     audio::set_param(id, 0, shape);
-    unsafe { return_node(vm, id) };
+    unsafe { return_poly_node(vm, id) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_polyosc(raw: *mut WrenVM) {
@@ -1032,7 +1080,7 @@ pub(crate) fn node_polysvf_impl<S: SlotApi>(vm: &S) {
     let res = arg_input(vm, 3);
     let id = audio::alloc_node_id();
     audio::new_node(id, Kind::PolySvf, [audio_in, cutoff, res]);
-    unsafe { return_node(vm, id) };
+    unsafe { return_poly_node(vm, id) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_polysvf(raw: *mut WrenVM) {
@@ -1051,7 +1099,7 @@ pub(crate) fn node_polymoog_impl<S: SlotApi>(vm: &S) {
     let kind = if poles == 2 { Kind::PolyMoogLp2 } else { Kind::PolyMoogLp4 };
     let id = audio::alloc_node_id();
     audio::new_node(id, kind, [audio_in, cutoff, res]);
-    unsafe { return_node(vm, id) };
+    unsafe { return_poly_node(vm, id) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_polymoog(raw: *mut WrenVM) {
@@ -1070,7 +1118,7 @@ pub(crate) fn node_polyms20_impl<S: SlotApi>(vm: &S) {
     let kind = if resp == 1 { Kind::PolyMs20Hp } else { Kind::PolyMs20Lp };
     let id = audio::alloc_node_id();
     audio::new_node(id, kind, [audio_in, cutoff, res]);
-    unsafe { return_node(vm, id) };
+    unsafe { return_poly_node(vm, id) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_polyms20(raw: *mut WrenVM) {
@@ -1094,13 +1142,18 @@ pub(crate) unsafe extern "C" fn node_polyar(raw: *mut WrenVM) {
     node_polyar_impl(&vm);
 }
 
-/// `Node.polymul_(a, b)` — poly × poly (the VCA). Ports 0/1 = both poly.
+/// `Node.polymul_(a, b)` — poly × poly (the VCA, or a scalar folded into a
+/// control-rate chain via the prelude `*` operator). Ports 0/1 = both poly.
+/// The returned Node's `poly` flag (see `NodeObj`) is the OR of its operands'
+/// flags — real audio-signal multiplication stays guarded, while a chain
+/// built purely from control-rate nodes (pitch, LFO, Ctrl) stays unguarded.
 pub(crate) fn node_polymul_impl<S: SlotApi>(vm: &S) {
+    let poly = arg_is_poly(vm, 1) || arg_is_poly(vm, 2);
     let a = arg_input(vm, 1);
     let b = arg_input(vm, 2);
     let id = audio::alloc_node_id();
     audio::new_node(id, Kind::PolyMul, [a, b, Input::Const(0.0)]);
-    unsafe { return_node(vm, id) };
+    unsafe { return_node_ex(vm, id, 1, poly) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_polymul(raw: *mut WrenVM) {
@@ -1108,13 +1161,16 @@ pub(crate) unsafe extern "C" fn node_polymul(raw: *mut WrenVM) {
     node_polymul_impl(&vm);
 }
 
-/// `Node.polyadd_(a, b)` — poly + poly (voice mixing). Ports 0/1 = both poly.
+/// `Node.polyadd_(a, b)` — poly + poly (voice mixing, or a scalar folded into
+/// a control-rate chain via the prelude `+` operator). Ports 0/1 = both poly.
+/// `poly` flag propagation mirrors `node_polymul_impl`.
 pub(crate) fn node_polyadd_impl<S: SlotApi>(vm: &S) {
+    let poly = arg_is_poly(vm, 1) || arg_is_poly(vm, 2);
     let a = arg_input(vm, 1);
     let b = arg_input(vm, 2);
     let id = audio::alloc_node_id();
     audio::new_node(id, Kind::PolyAdd, [a, b, Input::Const(0.0)]);
-    unsafe { return_node(vm, id) };
+    unsafe { return_node_ex(vm, id, 1, poly) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_polyadd(raw: *mut WrenVM) {
@@ -1126,12 +1182,136 @@ pub(crate) unsafe extern "C" fn node_polyadd(raw: *mut WrenVM) {
 pub(crate) fn node_polynoise_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node_id();
     audio::new_node(id, Kind::PolyNoise, [Input::Const(0.0); 3]);
-    unsafe { return_node(vm, id) };
+    unsafe { return_poly_node(vm, id) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_polynoise(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_polynoise_impl(&vm);
+}
+
+/// `Node.isPoly_` — instance getter for `NodeObj::poly` (see its doc comment).
+/// Used by the prelude `*`/`+` operators to decide whether a scalar `Num`
+/// operand must abort (audio-rate) or may be folded in via a broadcast `Ctrl`
+/// node (control-rate).
+pub(crate) fn node_is_poly_impl<S: SlotApi>(vm: &S) {
+    let p = unsafe { vm.foreign_mut::<NodeObj>(0) }.poly;
+    vm.set_f(0, if p != 0 { 1.0 } else { 0.0 });
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_is_poly(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_is_poly_impl(&vm);
+}
+
+/// `Node.polypink_()` — poly pink noise source (per-voice pink-filtered).
+pub(crate) fn node_polypink_impl<S: SlotApi>(vm: &S) {
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyPink, [Input::Const(0.0); 3]);
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polypink(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polypink_impl(&vm);
+}
+
+/// `Node.polybrown_()` — poly brown noise source (per-voice, integrated).
+pub(crate) fn node_polybrown_impl<S: SlotApi>(vm: &S) {
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyBrown, [Input::Const(0.0); 3]);
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polybrown(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polybrown_impl(&vm);
+}
+
+/// Map a prelude sync-waveform code to a poly hard-sync `Kind`, mirroring
+/// `sync_kind`'s ordering.
+fn poly_sync_kind(code: u8) -> Kind {
+    match code {
+        0 => Kind::PolySyncSine,
+        1 => Kind::PolySyncSaw,
+        2 => Kind::PolySyncSquare,
+        _ => Kind::PolySyncTri,
+    }
+}
+
+/// `Node.polysync_(wave, master, slave)` — poly hard-sync oscillator. Both
+/// `master` (port 0) and `slave` (port 1) are poly edges, mirroring
+/// `node_sync_impl`; a mono source on either broadcasts (Task 1/§0).
+pub(crate) fn node_polysync_impl<S: SlotApi>(vm: &S) {
+    let kind = poly_sync_kind(vm.get_f(1) as u8);
+    let master = arg_input(vm, 2);
+    let slave = arg_input(vm, 3);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, kind, [master, slave, Input::Const(0.0)]);
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polysync(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polysync_impl(&vm);
+}
+
+/// Frame count of a table bound via a static `TableId` — 1 for a single-cycle
+/// table, >1 for a named 2D morph bank (`WT.HarmonicSweep`/`FormantMorph`).
+/// Used to select `Kind::PolyWt` vs `PolyWtMorph` at construction time: unlike
+/// the mono `Kind::Wavetable` (which branches on frame count at render time),
+/// a poly node's Kind is fixed at creation (`poly_process` dispatches on
+/// `self.kind`, not a runtime check) — see node.rs's `PolyWt` arm.
+fn static_table_frames(table_id: u16) -> usize {
+    deluge_dsp_kernels::wavetable::static_table_flat(deluge_dsp_kernels::wavetable::TableId(table_id))
+        .map(|r| r.len() / deluge_dsp_kernels::wavetable::COMPACT_LEN)
+        .unwrap_or(1)
+}
+/// Select `PolyWt` (single-cycle) vs `PolyWtMorph` (2D) by frame count.
+fn poly_wt_kind(frames: usize) -> Kind {
+    if frames > 1 { Kind::PolyWtMorph } else { Kind::PolyWt }
+}
+
+/// `Node.polywt_(table, freq)` — poly wavetable oscillator bound to a named
+/// static table. Mirrors `node_wavetable_impl`; `pmod`/`position` (ports 1/2,
+/// shared mono controls, matching mono `Kind::Wavetable`'s port order) are set
+/// afterward via the existing `.pm=`/`.position=` setters, unchanged by Kind.
+pub(crate) fn node_polywt_impl<S: SlotApi>(vm: &S) {
+    let table_id = vm.get_f(1) as u16;
+    let freq = arg_input(vm, 2);
+    let kind = poly_wt_kind(static_table_frames(table_id));
+    let id = audio::alloc_node_id();
+    audio::new_polywt(id, kind, table_id, freq);
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polywt(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polywt_impl(&vm);
+}
+
+/// `Node.polywt_pooled_(wt, freq)` — poly wavetable oscillator bound to a
+/// pooled (dynamically-uploaded) table. Mirrors `node_wavetable_pooled_impl`:
+/// an unbound handle (upload failed) still creates the node but skips the
+/// bind, rendering silent rather than panicking. Frame count (single vs 2D
+/// morph) comes from the `Wavetable`'s `frames` field, set at upload time by
+/// `wavetable_from_impl`/`wavetable_from2d_impl`.
+pub(crate) fn node_polywt_pooled_impl<S: SlotApi>(vm: &S) {
+    let wt = unsafe { vm.foreign_mut::<WtObj>(1) };
+    let handle = wt.handle;
+    let kind = poly_wt_kind(wt.frames as usize);
+    let freq = arg_input(vm, 2);
+    let id = audio::alloc_node_id();
+    match handle {
+        Some(h) => audio::new_polywt_pooled(id, kind, h, freq),
+        None => audio::new_node(id, kind, [freq, Input::Const(0.0), Input::Const(0.0)]),
+    }
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polywt_pooled(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polywt_pooled_impl(&vm);
 }
 
 /// `Node.polyEnd_(out)` — finish a voice: VoiceSum(out) → build a VoiceAllocator
@@ -1342,9 +1522,15 @@ pub(crate) unsafe extern "C" fn node_set_pm(raw: *mut WrenVM) {
     node_set_pm_impl(&vm);
 }
 
+/// `osc.width = v` — mono Osc: port 2 (PWM width). In poly mode (a Synth
+/// build), `this` is always a `PolyOsc` (`poly_in_count 2`: pitch/width both
+/// poly edges), so it must instead write port 1, the poly width port — a mono
+/// source (e.g. `LFO.sine(4).to(0.2,0.8)`) broadcasts to every voice lane
+/// (Task 1/§0); a poly source drives true per-voice PWM.
 pub(crate) fn node_set_width_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
-    audio::set_input(self_id(vm), 2, v); // port 2 = PWM width
+    let port = if audio::poly_mode() { 1 } else { 2 };
+    audio::set_input(self_id(vm), port, v);
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_set_width(raw: *mut WrenVM) {
@@ -1504,6 +1690,12 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polymul_(_,_)", node_polymul_impl::<S>);
     method("main", "Node", true, "polyadd_(_,_)", node_polyadd_impl::<S>);
     method("main", "Node", true, "polynoise_()", node_polynoise_impl::<S>);
+    method("main", "Node", false, "isPoly_", node_is_poly_impl::<S>);
+    method("main", "Node", true, "polypink_()", node_polypink_impl::<S>);
+    method("main", "Node", true, "polybrown_()", node_polybrown_impl::<S>);
+    method("main", "Node", true, "polysync_(_,_,_)", node_polysync_impl::<S>);
+    method("main", "Node", true, "polywt_(_,_)", node_polywt_impl::<S>);
+    method("main", "Node", true, "polywt_pooled_(_,_)", node_polywt_pooled_impl::<S>);
     method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
     method("main", "Synth", false, "noteOn(_,_)", synth_note_on_impl::<S>);
     method("main", "Synth", false, "noteOff(_)", synth_note_off_impl::<S>);

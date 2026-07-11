@@ -163,6 +163,12 @@ foreign class Node {
   foreign static polymul_(a, b)
   foreign static polyadd_(a, b)
   foreign static polynoise_()
+  foreign isPoly_               // true if this Node wraps a per-voice audio signal (Sy-2d)
+  foreign static polypink_()
+  foreign static polybrown_()
+  foreign static polysync_(wave, master, slave)
+  foreign static polywt_(table, freq)
+  foreign static polywt_pooled_(wt, freq)
   foreign static polyEnd_(out)
   foreign value=(v)     // Ctrl (Macro) held value
   foreign size=(v)
@@ -186,16 +192,29 @@ foreign class Node {
   foreign trigger()
   foreign out(p)
   foreign free()
+  // `isPoly_` distinguishes a real per-voice AUDIO signal (an oscillator,
+  // filter, noise, sync, wavetable, or a `*`/`+` combining one — amp must
+  // come from Env.ar, so a scalar Num is refused) from a control-rate Node
+  // (the voice `pitch`, a mono LFO/Ctrl, or a chain built purely from those —
+  // e.g. `LFO.sine(4).to(0.2, 0.8)` for PWM, or `p * 1.5` for a sync ratio):
+  // a scalar operand on THOSE is folded in via a broadcast `Ctrl` node (Sy-2d
+  // §0) rather than refused.
   *(o) {
     if (Node.polyMode_ == 1) {
-      if (o is Num) Fiber.abort("multiply by a constant inside a Synth isn't supported yet — the amp comes from Env.ar")
+      if (o is Num) {
+        if (this.isPoly_ == 1) Fiber.abort("multiply by a constant inside a Synth isn't supported yet — the amp comes from Env.ar")
+        return Node.polymul_(this, Node.ctrl_(o))
+      }
       return Node.polymul_(this, o)
     }
     return Node.binop_(0, this, o)
   }
   +(o) {
     if (Node.polyMode_ == 1) {
-      if (o is Num) Fiber.abort("`+` a constant inside a Synth isn't supported yet")
+      if (o is Num) {
+        if (this.isPoly_ == 1) Fiber.abort("`+` a constant inside a Synth isn't supported yet")
+        return Node.polyadd_(this, Node.ctrl_(o))
+      }
       return Node.polyadd_(this, o)
     }
     return Node.binop_(1, this, o)
@@ -356,23 +375,26 @@ class Osc {
   // slave's pitch to the master's (a classic sync-lead timbre). `slave`
   // is the audible waveform; `master` sets the fundamental.
   static syncSine(master, slave) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncSine not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polysync_(0, master, slave)
     return Node.sync_(0, master, slave)
   }
   static syncSaw(master, slave) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncSaw not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polysync_(1, master, slave)
     return Node.sync_(1, master, slave)
   }
   static syncSquare(master, slave) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncSquare not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polysync_(2, master, slave)
     return Node.sync_(2, master, slave)
   }
   static syncTri(master, slave) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.syncTri not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polysync_(3, master, slave)
     return Node.sync_(3, master, slave)
   }
   static wavetable(t, f) {
-    if (Node.polyMode_ == 1) Fiber.abort("Osc.wavetable not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) {
+      if (t is Wavetable) return Node.polywt_pooled_(t, f)
+      return Node.polywt_(t, f) // WT.x numeric id (static table)
+    }
     if (t is Wavetable) return Node.wavetable_pooled_(t, f)
     return Node.wavetable_(t, f) // WT.x numeric id (static table)
   }
@@ -712,11 +734,11 @@ class Noise {
     return Node.noise_()
   }
   static pink() {
-    if (Node.polyMode_ == 1) Fiber.abort("pink not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polypink_()
     return Node.pink_()
   }
   static brown() {
-    if (Node.polyMode_ == 1) Fiber.abort("brown not usable in a Synth yet (Sy-2b)")
+    if (Node.polyMode_ == 1) return Node.polybrown_()
     return Node.brown_()
   }
 }
