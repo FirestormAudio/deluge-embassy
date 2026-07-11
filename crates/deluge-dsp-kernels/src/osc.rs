@@ -108,7 +108,7 @@ use core::simd::prelude::*;
 /// SIMD trunc-floor matching scalar `floorf` (handles negatives).
 #[cfg(feature = "simd")]
 #[inline]
-fn floor_x8(x: f32x8) -> f32x8 {
+pub(crate) fn floor_x8(x: f32x8) -> f32x8 {
     let t: f32x8 = x.cast::<i32>().cast::<f32>();
     t.simd_gt(x).select(t - f32x8::splat(1.0), t)
 }
@@ -126,7 +126,7 @@ fn blep_right_x8(x: f32x8) -> f32x8 {
 /// matching the scalar `if/else if`).
 #[cfg(feature = "simd")]
 #[inline]
-fn poly_blep_x8(t: f32x8, dtp: f32x8) -> f32x8 {
+pub(crate) fn poly_blep_x8(t: f32x8, dtp: f32x8) -> f32x8 {
     let one = f32x8::splat(1.0);
     let w = f32x8::splat(2.0) * dtp;
     let left = blep_right_x8(t / dtp);
@@ -188,6 +188,20 @@ fn naive_wave(wave: Wave, ph: f32) -> f32 {
         Wave::Saw => 2.0 * ph - 1.0,
         Wave::Square => if ph < 0.5 { 1.0 } else { -1.0 },
         Wave::Tri => 1.0 - 4.0 * (ph - 0.5).abs(),
+    }
+}
+
+/// f32x8 counterpart of `naive_wave` — used by `PolySync`'s branchless
+/// reset-BLEP step sizing.
+#[cfg(feature = "simd")]
+#[inline]
+pub(crate) fn naive_wave_x8(wave: Wave, ph: f32x8) -> f32x8 {
+    let one = f32x8::splat(1.0);
+    match wave {
+        Wave::Sine => crate::fast_sin_x8(ph),
+        Wave::Saw => f32x8::splat(2.0) * ph - one,
+        Wave::Square => ph.simd_lt(f32x8::splat(0.5)).select(one, -one),
+        Wave::Tri => one - f32x8::splat(4.0) * (ph - f32x8::splat(0.5)).abs(),
     }
 }
 
@@ -281,33 +295,41 @@ impl SyncOsc {
     /// see the measurements recorded on `sync_saw_is_band_limited`.
     pub fn process(&mut self, wave: Wave, master_freq: In, slave_freq: In, dt: f32, out: &mut [f32]) {
         for (i, s) in out.iter_mut().enumerate() {
-            let dtp_m = master_freq.at(i) * dt;
-            let dtp_s = slave_freq.at(i) * dt;
-
-            // Band-limited slave value at its current phase (natural-wrap BLEP included).
-            let mut y = wave_sample(wave, self.slave_phase, dtp_s, 0.5);
-
-            // Advance master; detect a wrap → hard-reset the slave with a BLEP.
-            let mp_before = self.master_phase;
-            let mp = self.master_phase + dtp_m;
-            if mp >= 1.0 && dtp_m > 0.0 {
-                let t_reset = (1.0 - mp_before) / dtp_m; // sub-sample position in [0,1)
-                // slave phase at the reset instant, and the naïve step across the reset:
-                let ph_at_reset = { let mut p = self.slave_phase + t_reset * dtp_s; p -= floorf(p); p };
-                let step = naive_wave(wave, 0.0) - naive_wave(wave, ph_at_reset);
-                // Reset-BLEP: see the doc comment above for the derivation.
-                y += 0.5 * step * poly_blep(mp_before, dtp_m);
-                self.master_phase = mp - floorf(mp);
-                // Slave restarts from 0, advanced by the remaining fraction of the sample.
-                self.slave_phase = (1.0 - t_reset) * dtp_s;
-                self.slave_phase -= floorf(self.slave_phase);
-            } else {
-                self.master_phase = mp - floorf(mp);
-                self.slave_phase += dtp_s;
-                self.slave_phase -= floorf(self.slave_phase);
-            }
-            *s = y;
+            *s = self.tick(wave, master_freq.at(i), slave_freq.at(i), dt);
         }
+    }
+
+    /// One hard-sync sample: advance master, hard-reset slave on master wrap with
+    /// a reset-BLEP. Shared by mono `process` and poly `PolySync`. (Same math as
+    /// the prior loop body — behavior-preserving extraction.)
+    #[inline]
+    pub(crate) fn tick(&mut self, wave: Wave, master_freq: f32, slave_freq: f32, dt: f32) -> f32 {
+        let dtp_m = master_freq * dt;
+        let dtp_s = slave_freq * dt;
+
+        // Band-limited slave value at its current phase (natural-wrap BLEP included).
+        let mut y = wave_sample(wave, self.slave_phase, dtp_s, 0.5);
+
+        // Advance master; detect a wrap → hard-reset the slave with a BLEP.
+        let mp_before = self.master_phase;
+        let mp = self.master_phase + dtp_m;
+        if mp >= 1.0 && dtp_m > 0.0 {
+            let t_reset = (1.0 - mp_before) / dtp_m; // sub-sample position in [0,1)
+            // slave phase at the reset instant, and the naïve step across the reset:
+            let ph_at_reset = { let mut p = self.slave_phase + t_reset * dtp_s; p -= floorf(p); p };
+            let step = naive_wave(wave, 0.0) - naive_wave(wave, ph_at_reset);
+            // Reset-BLEP: see the doc comment above for the derivation.
+            y += 0.5 * step * poly_blep(mp_before, dtp_m);
+            self.master_phase = mp - floorf(mp);
+            // Slave restarts from 0, advanced by the remaining fraction of the sample.
+            self.slave_phase = (1.0 - t_reset) * dtp_s;
+            self.slave_phase -= floorf(self.slave_phase);
+        } else {
+            self.master_phase = mp - floorf(mp);
+            self.slave_phase += dtp_s;
+            self.slave_phase -= floorf(self.slave_phase);
+        }
+        y
     }
 
     /// Test-only: same as `process` but with the reset-BLEP term omitted

@@ -14,6 +14,8 @@ use crate::filter::{
 };
 #[cfg(not(feature = "simd"))]
 use crate::osc::wave_sample;
+#[cfg(not(feature = "simd"))]
+use crate::osc::SyncOsc;
 use crate::osc::Wave;
 #[cfg(feature = "simd")]
 use crate::osc::wave_sample_x8;
@@ -471,6 +473,94 @@ impl PolyMs20 {
 }
 
 impl Default for PolyMs20 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Poly hard-sync oscillator. Two poly frequency inputs (master, slave); band-
+/// limited (natural-wrap BLEP + reset-BLEP). Scalar path holds `[SyncOsc; VOICES]`
+/// and reuses `SyncOsc::tick`; the SIMD path runs the sync sample across `f32x8`
+/// lanes branchlessly (master-wrap mask + select).
+#[derive(Clone, Copy)]
+pub struct PolySync {
+    #[cfg(not(feature = "simd"))]
+    voices: [SyncOsc; VOICES],
+    #[cfg(feature = "simd")]
+    master_phase: core::simd::f32x8,
+    #[cfg(feature = "simd")]
+    slave_phase: core::simd::f32x8,
+}
+impl PolySync {
+    #[cfg(not(feature = "simd"))]
+    pub fn new() -> Self {
+        PolySync { voices: [SyncOsc::new(); VOICES] }
+    }
+    #[cfg(feature = "simd")]
+    pub fn new() -> Self {
+        PolySync { master_phase: core::simd::f32x8::splat(0.0), slave_phase: core::simd::f32x8::splat(0.0) }
+    }
+
+    /// `master`/`slave` = voice-interleaved per-voice Hz tiles; writes a
+    /// voice-interleaved audio tile. Fixed 0.5 duty for the slave's own
+    /// waveshape (matching scalar `SyncOsc::tick`'s `wave_sample(..., 0.5)`).
+    pub fn process(&mut self, master: &[f32], slave: &[f32], wave: Wave, dt: f32, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        #[cfg(feature = "simd")]
+        {
+            use core::simd::prelude::*;
+            use crate::osc::{floor_x8, naive_wave_x8, poly_blep_x8, wave_sample_x8};
+            let dtv = f32x8::splat(dt);
+            let zero = f32x8::splat(0.0);
+            let one = f32x8::splat(1.0);
+            let half = f32x8::splat(0.5);
+            let width = half; // sync slave PWM fixed 0.5, matching scalar tick
+            let mut mp = self.master_phase;
+            let mut sp = self.slave_phase;
+            for i in 0..n {
+                let dtp_m = f32x8::from_slice(&master[i * VOICES..]) * dtv;
+                let dtp_s = f32x8::from_slice(&slave[i * VOICES..]) * dtv;
+                // slave natural-wrap value
+                let mut y = wave_sample_x8(wave, sp, dtp_s, width);
+                let mp_before = mp;
+                let mp_adv = mp + dtp_m;
+                // reset mask: wrapped AND advancing
+                let reset = mp_adv.simd_ge(one) & dtp_m.simd_gt(zero);
+                // reset-path quantities (safe to compute for all lanes; guard the
+                // divisor so non-reset lanes — where dtp_m == 0 — stay finite
+                // instead of inf/nan, even though `select` masks them away).
+                let t_reset = (one - mp_before) / dtp_m.simd_max(f32x8::splat(f32::MIN_POSITIVE));
+                let mut ph_at_reset = sp + t_reset * dtp_s;
+                ph_at_reset -= floor_x8(ph_at_reset);
+                let step = naive_wave_x8(wave, zero) - naive_wave_x8(wave, ph_at_reset);
+                let y_reset = y + half * step * poly_blep_x8(mp_before, dtp_m);
+                let mut sp_reset = (one - t_reset) * dtp_s;
+                sp_reset -= floor_x8(sp_reset);
+                // no-reset path (also the reset path's wrapped master phase — same expression)
+                let mp_next = mp_adv - floor_x8(mp_adv);
+                let mut sp_cont = sp + dtp_s;
+                sp_cont -= floor_x8(sp_cont);
+                // select
+                y = reset.select(y_reset, y);
+                mp = mp_next;
+                sp = reset.select(sp_reset, sp_cont);
+                y.copy_to_slice(&mut out[i * VOICES..]);
+            }
+            self.master_phase = mp;
+            self.slave_phase = sp;
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            for i in 0..n {
+                for v in 0..VOICES {
+                    out[i * VOICES + v] =
+                        self.voices[v].tick(wave, master[i * VOICES + v], slave[i * VOICES + v], dt);
+                }
+            }
+        }
+    }
+}
+impl Default for PolySync {
     fn default() -> Self {
         Self::new()
     }
@@ -1028,5 +1118,65 @@ mod tests {
         let mut out = std::vec![0.0f32; n * VOICES];
         poly.process(&audio, In::K(8000.0), In::K(0.99), Ms20Resp::Lp, dt, &mut out);
         for &s in &out { assert!(s.abs() <= 8.0001, "ms20 diverged: {s}"); }
+    }
+
+    #[test]
+    fn polysync_matches_scalar_oracle_all_waves() {
+        use crate::osc::SyncOsc;
+        let dt = 1.0 / 48_000.0;
+        let n = 300;
+        for (name, wave) in [("Sine", Wave::Sine), ("Saw", Wave::Saw), ("Square", Wave::Square), ("Tri", Wave::Tri)] {
+            let mut poly = PolySync::new();
+            let mut refs: [SyncOsc; VOICES] = core::array::from_fn(|_| SyncOsc::new());
+            // per-voice distinct master & slave freqs
+            let master: std::vec::Vec<f32> =
+                (0..n * VOICES).map(|j| 110.0 + 20.0 * ((j % VOICES) as f32)).collect();
+            let slave: std::vec::Vec<f32> =
+                (0..n * VOICES).map(|j| 165.0 + 30.0 * ((j % VOICES) as f32)).collect();
+            let mut out = std::vec![0.0f32; n * VOICES];
+            poly.process(&master, &slave, wave, dt, &mut out);
+            for v in 0..VOICES {
+                for i in 0..n {
+                    let want = refs[v].tick(wave, master[i * VOICES + v], slave[i * VOICES + v], dt);
+                    assert!(
+                        (out[i * VOICES + v] - want).abs() <= 1e-4,
+                        "{name} lane {v} i {i}: {} vs {}", out[i * VOICES + v], want
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn polysync_saw_is_band_limited() {
+        // Mirrors `osc::tests::sync_saw_is_band_limited`, but on a PolySync
+        // lane: one voice carries the master/slave sync pair, the other 7
+        // voices are silent (freq 0), and we alias-measure the live lane
+        // exactly as the mono test does.
+        let sr = 48_000.0f32;
+        let master_hz = 220.0f32;
+        for slave_mul in [1.5f32, 2.7, 4.3] {
+            let mut poly = PolySync::new();
+            let mut master = std::vec![0.0f32; VOICES * deluge_dsp_test::FFT_N];
+            let mut slave = std::vec![0.0f32; VOICES * deluge_dsp_test::FFT_N];
+            for i in 0..deluge_dsp_test::FFT_N {
+                master[i * VOICES] = master_hz;
+                slave[i * VOICES] = master_hz * slave_mul;
+            }
+            let mut out = std::vec![0.0f32; VOICES * deluge_dsp_test::FFT_N];
+            poly.process(&master, &slave, Wave::Saw, 1.0 / sr, &mut out);
+            let lane: std::vec::Vec<f32> = (0..deluge_dsp_test::FFT_N).map(|i| out[i * VOICES]).collect();
+            let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
+            buf.copy_from_slice(&lane);
+            let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
+                .worst_alias_db(master_hz, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+            std::eprintln!("polysync saw slave×{slave_mul}: worst_alias {wa} dB");
+            // Same reset-BLEP math as the mono `SyncOsc::tick` (PolySync's
+            // scalar path directly reuses it; the SIMD path is null-tested
+            // against it above), so the same floor applies: gate at -25 dB,
+            // matching `sync_saw_is_band_limited`'s margin below its
+            // measured -27.2 dB worst case (slave×4.3).
+            assert!(wa < -25.0, "polysync saw slave×{slave_mul}: worst_alias {wa} dB");
+        }
     }
 }
