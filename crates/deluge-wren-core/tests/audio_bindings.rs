@@ -1491,3 +1491,54 @@ fn synth_velocity_composes_as_control_signal() {
         "var s = Synth.new { |p, vel| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) * (vel * 0.5 + 0.5) }\nOut.patch(s.out)\ns.noteOn(60,100)"
     ));
 }
+
+// ── Task 5: Synth.mono + synth.glide ────────────────────────────────────────
+
+#[test]
+fn synth_mono_builds_and_renders() {
+    // `Synth.mono { |p| ... }` mirrors `Synth.new`'s arity-1 path but through
+    // `Node.monoBegin_()`/`Node.monoEnd_(_)` (the MonoAllocator build). Setting
+    // `.glide` (the PolySlew time on the mono pitch carrier) and firing a
+    // `noteOn` must build and render without aborting.
+    assert!(run_script_ok(
+        "var s = Synth.mono { |p| Osc.saw(p).lpf(1500) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.glide = 0.08\nOut.patch(s.out)\ns.noteOn(60,100)"
+    ));
+}
+
+#[test]
+fn synth_mono_velocity_parity() {
+    // Arity-2 `{ |p, vel| ... }` builders work the same way under `Synth.mono`
+    // as under `Synth.new` — `Node.polyVelBegin_()` is shared between the two
+    // constructors.
+    assert!(run_script_ok(
+        "var s = Synth.mono { |p, vel| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) * vel }\nOut.patch(s.out)\ns.noteOn(60,100)"
+    ));
+}
+
+#[test]
+fn synth_mono_renders_finite_nonsilent() {
+    // Stronger than build+run: actually render a block after `noteOn` and
+    // confirm it's finite/bounded and audibly non-silent — i.e. the
+    // MonoAllocator's `noteOn` really reaches the gate/slew nodes through the
+    // `Synth.mono` wiring, not just that the script doesn't abort.
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.001,0.001,1,0.1) }\nOut.patch(s.out)\ns.noteOn(60,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "finite/bounded");
+    assert!(out.iter().any(|f| f.l != 0.0), "non-silent");
+}
+
+#[test]
+fn synth_poly_glide_is_harmless_noop() {
+    // `.glide` targets the mono build's PolySlew node (recorded by
+    // `mono_begin`/`mono_end`); a `Synth.new` (poly) voice has no such node.
+    // There is no Rust-side "abort the fiber" primitive available to
+    // `SlotApi` (see `synth_set_glide_impl`'s doc comment), so `glide=` on a
+    // poly synth is a deliberate silent no-op, not a misuse to reject —
+    // this must build and run harmlessly.
+    assert!(run_script_ok(
+        "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }\ns.glide = 0.1"
+    ));
+}

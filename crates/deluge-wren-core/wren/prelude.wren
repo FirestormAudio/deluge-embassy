@@ -157,6 +157,8 @@ foreign class Node {
   foreign static polyGateCount_
   foreign static polyBegin_()
   foreign static polyVelBegin_()
+  foreign static monoBegin_()
+  foreign static monoEnd_(out)
   foreign static polyosc_(pitch, shape)
   foreign static polysvf_(audio, cutoff, res)
   foreign static polymoog_(audio, cutoff, res, poles)
@@ -264,6 +266,7 @@ foreign class Synth {
   foreign noteOn(note, vel)
   foreign noteOff(note)
   foreign out
+  foreign glide=(seconds)
   bindMidi() {
     Midi.onNoteOn = Fn.new { |ch, note, vel| this.noteOn(note, vel) }
     Midi.onNoteOff = Fn.new { |ch, note, vel| this.noteOff(note) }
@@ -281,6 +284,28 @@ foreign class Synth {
     if (Node.polyGateCount_ == 0) Fiber.abort("a Synth voice needs an Env.ar (the amp gate)")
     if (Node.polyGateCount_ > 1) Fiber.abort("multiple Env.ar in a Synth isn't supported yet")
     return Node.polyEnd_(out)
+  }
+  // A single mono/legato voice with true glide between overlapping notes:
+  // the last-note-priority allocator gates ON only from silence and glides
+  // the pitch (via `.glide = seconds`) on legato note-ons instead of
+  // re-triggering the envelope. `.glide` is a no-op on `Synth.new` (poly) —
+  // there is no per-voice slew node to affect.
+  //   var s = Synth.mono { |p| Osc.saw(p).lpf(1500) * Env.adsr(0.005,0.1,0.7,0.2) }
+  //   s.glide = 0.08
+  //   Out.patch(s.out)
+  static mono(builder) {
+    if (Node.polyMode_ == 1) Fiber.abort("nested Synth not supported")
+    var pitch = Node.monoBegin_()
+    var out
+    if (builder.arity >= 2) {
+      var vel = Node.polyVelBegin_()
+      out = builder.call(pitch, vel)
+    } else {
+      out = builder.call(pitch)
+    }
+    if (Node.polyGateCount_ == 0) Fiber.abort("a Synth voice needs an Env.ar (the amp gate)")
+    if (Node.polyGateCount_ > 1) Fiber.abort("multiple Env.ar in a Synth isn't supported yet")
+    return Node.monoEnd_(out)
   }
 }
 
