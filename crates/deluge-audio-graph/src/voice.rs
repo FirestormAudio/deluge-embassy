@@ -220,6 +220,7 @@ pub struct MonoAllocator {
     unison: usize,
     detune_cents: f32,
     width_amount: f32,
+    mono_active_u: usize, // the sounding note's U-at-play (unison is next-note)
 }
 
 impl MonoAllocator {
@@ -243,14 +244,39 @@ impl MonoAllocator {
             unison: 1,
             detune_cents: 0.0,
             width_amount: 0.0,
+            mono_active_u: 0,
         }
     }
 
     pub fn slew_node(&self) -> NodeId { self.slew_node }
 
     pub fn set_unison(&mut self, n: usize) { self.unison = n.clamp(1, VOICES); }
-    pub fn set_detune(&mut self, cents: f32) { self.detune_cents = cents; }
-    pub fn set_width(&mut self, amount: f32) { self.width_amount = amount; }
+
+    pub fn set_detune(&mut self, cents: f32, emit: &mut impl FnMut(Cmd)) {
+        self.detune_cents = cents;
+        if self.len > 0 {
+            let top = self.notes[self.len - 1];
+            let u_count = self.mono_active_u;
+            for u in 0..u_count {
+                let value = top as f32 - A440_NOTE + unison_offset(u, u_count, cents);
+                emit(Cmd::SetParam { node: self.pitch_node, param: u as u8, value });
+            }
+        }
+    }
+
+    pub fn set_width(&mut self, amount: f32, emit: &mut impl FnMut(Cmd)) {
+        self.width_amount = amount;
+        if self.len > 0 {
+            let u_count = self.mono_active_u;
+            for u in 0..u_count {
+                emit(Cmd::SetParam {
+                    node: self.sum_node,
+                    param: (u + 1) as u8,
+                    value: width_offset(u, u_count, amount),
+                });
+            }
+        }
+    }
 
     /// Fan a gate transition out to every configured envelope (mono lane is always 0).
     fn gate_all(&self, lane: usize, on: bool, emit: &mut impl FnMut(Cmd)) {
@@ -270,6 +296,7 @@ impl MonoAllocator {
         self.notes[self.len] = note;
         self.len += 1;
         let u_count = self.unison.min(VOICES);
+        self.mono_active_u = u_count;
         for u in 0..u_count {
             // pitch (always) → PolySlew glides toward it (or snaps, below)
             let value = note as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
@@ -776,7 +803,7 @@ mod tests {
     fn mono_unison_from_silence_drives_u_lanes() {
         let mut m = mk_mono(); // pitch=NodeId(10), slew=NodeId(20), 1 gate=NodeId(30), no vel
         m.set_unison(2);
-        m.set_detune(10.0);
+        m.set_detune(10.0, &mut |_| {});
         let c = mon(&mut m, 69, 100); // from silence, 2 unison voices
         // lanes 0 and 1: each SetParam(pitch) + TriggerVoice(slew) + GateVoice(on)
         let pitch_lanes: Vec<u8> = c.iter().filter_map(|cmd| match cmd {
@@ -869,7 +896,7 @@ mod tests {
     fn mono_width_emits_per_lane_pan_on_sum_node() {
         let mut m = mk_mono(); // pitch=NodeId(10), slew=NodeId(20), gate=NodeId(30), sum=NodeId(40), no vel
         m.set_unison(2);
-        m.set_width(1.0);
+        m.set_width(1.0, &mut |_| {});
         let c = mon(&mut m, 69, 100); // from silence, 2 unison voices
         // pan on lanes 0 and 1 (params 1 and 2) on the sum node (NodeId(40)).
         let pans: std::vec::Vec<u8> = c.iter().filter_map(|cmd| match cmd {
@@ -959,5 +986,37 @@ mod tests {
         assert!(pitches.iter().any(|v| (v - (-8.9)).abs() < 1e-6));
         assert!(pitches.iter().any(|v| (v - (-5.1)).abs() < 1e-6));
         assert!(pitches.iter().any(|v| (v - (-4.9)).abs() < 1e-6));
+    }
+
+    #[test]
+    fn mono_live_redetune_and_rewidth_re_emit() {
+        let mut m = mk_mono(); // pitch=NodeId(10), slew=NodeId(20), gate=NodeId(30), sum=NodeId(40)
+        m.set_unison(2);
+        mon(&mut m, 69, 100); // from silence, lanes 0,1
+        // live re-detune
+        let mut cd: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        { let mut s = |c: Cmd| cd.push(c); m.set_detune(10.0, &mut s); }
+        let pitches: std::vec::Vec<(u8, f32)> = cd.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(10), param, value } => Some((*param, *value)), _ => None }).collect();
+        assert_eq!(pitches.len(), 2, "2 mono lanes re-detuned");
+        // note 69 → base 0 ± 0.1 on lanes 0,1
+        assert!(pitches.iter().any(|(p, v)| *p == 0 && (v - (-0.1)).abs() < 1e-6));
+        assert!(pitches.iter().any(|(p, v)| *p == 1 && (v - 0.1).abs() < 1e-6));
+        // live re-width
+        let mut cw: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        { let mut s = |c: Cmd| cw.push(c); m.set_width(1.0, &mut s); }
+        let pans: std::vec::Vec<u8> = cw.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(40), param, .. } => Some(*param), _ => None }).collect();
+        assert_eq!(pans, std::vec![1, 2], "pan on lanes 0,1 (param u+1)");
+    }
+
+    #[test]
+    fn mono_live_setters_silent_emit_nothing() {
+        let mut m = mk_mono();
+        m.set_unison(2);
+        // no note sounding
+        let mut cmds: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        { let mut s = |c: Cmd| cmds.push(c); m.set_detune(10.0, &mut s); m.set_width(1.0, &mut s); }
+        assert_eq!(cmds.len(), 0, "no sounding note → no re-emit");
     }
 }
