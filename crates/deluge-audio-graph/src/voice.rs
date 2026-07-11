@@ -52,6 +52,7 @@ pub struct VoiceAllocator {
     unison: usize,
     detune_cents: f32,
     width_amount: f32,
+    lane_ctx: [(u8, u8); VOICES], // (u-index, group size U) for each Held lane
 }
 
 impl VoiceAllocator {
@@ -74,12 +75,43 @@ impl VoiceAllocator {
             unison: 1,
             detune_cents: 0.0,
             width_amount: 0.0,
+            lane_ctx: [(0, 0); VOICES],
         }
     }
 
     pub fn set_unison(&mut self, n: usize) { self.unison = n.clamp(1, VOICES); }
-    pub fn set_detune(&mut self, cents: f32) { self.detune_cents = cents; }
-    pub fn set_width(&mut self, amount: f32) { self.width_amount = amount; }
+
+    /// Update the detune spread. Re-emits pitch `SetParam`s for every currently
+    /// `Held` lane so a sounding note's unison spread moves live (Sy-6b).
+    pub fn set_detune(&mut self, cents: f32, emit: &mut impl FnMut(Cmd)) {
+        self.detune_cents = cents;
+        for lane in 0..VOICES {
+            if let LaneState::Held(note) = self.lane_state[lane] {
+                let (u, count) = self.lane_ctx[lane];
+                let value = note as f32 - A440_NOTE
+                    + unison_offset(u as usize, count as usize, cents);
+                emit(Cmd::SetParam { node: self.pitch_node, param: lane as u8, value });
+            }
+        }
+    }
+
+    /// Update the stereo width. Re-emits pan `SetParam`s for every currently
+    /// `Held` lane so a sounding note's stereo spread moves live (Sy-6b). Unlike
+    /// `note_on`'s `width != 0.0` guard, this re-emits even for `amount == 0.0`
+    /// to re-center sounding voices; `Releasing` tails keep their frozen spread.
+    pub fn set_width(&mut self, amount: f32, emit: &mut impl FnMut(Cmd)) {
+        self.width_amount = amount;
+        for lane in 0..VOICES {
+            if let LaneState::Held(_) = self.lane_state[lane] {
+                let (u, count) = self.lane_ctx[lane];
+                emit(Cmd::SetParam {
+                    node: self.sum_node,
+                    param: (lane + 1) as u8,
+                    value: width_offset(u as usize, count as usize, amount),
+                });
+            }
+        }
+    }
 
     /// Fan a gate transition out to every configured envelope, preserving order.
     fn gate_all(&self, lane: usize, on: bool, emit: &mut impl FnMut(Cmd)) {
@@ -126,6 +158,7 @@ impl VoiceAllocator {
         for u in 0..u_count {
             let lane = self.pick_lane();
             self.lane_state[lane] = LaneState::Held(note);
+            self.lane_ctx[lane] = (u as u8, u_count as u8);
             self.lane_age[lane] = self.clock;
             self.clock = self.clock.wrapping_add(1);
             let value = note as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
@@ -683,7 +716,7 @@ mod tests {
     fn poly_unison_allocates_u_distinct_detuned_lanes() {
         let mut a = mk_poly(); // helper: VoiceAllocator, pitch=NodeId(10), 1 gate=NodeId(20), no vel
         a.set_unison(3);
-        a.set_detune(10.0);
+        a.set_detune(10.0, &mut |_| {});
         let c = on(&mut a, 69, 100); // A4, 3 unison voices
         // 3 lanes × (SetParam pitch + GateVoice) = 6 Cmds; the 3 SetParam values are the 3 offsets around 0
         let pitches: Vec<(u8, f32)> = c.iter().filter_map(|cmd| match cmd {
@@ -800,7 +833,7 @@ mod tests {
     fn poly_width_emits_per_lane_pan_on_sum_node() {
         let mut a = mk_poly(); // pitch=NodeId(10), gate=NodeId(20), sum=NodeId(30), no vel
         a.set_unison(3);
-        a.set_width(1.0);
+        a.set_width(1.0, &mut |_| {});
         let c = on(&mut a, 69, 100);
         // 3 pan SetParams on the sum node (NodeId(30)), params lane+1, 3 symmetric values.
         let pans: std::vec::Vec<(u8, f32)> = c.iter().filter_map(|cmd| match cmd {
@@ -853,5 +886,78 @@ mod tests {
             c.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(40), .. })).count(),
             0, "width=0 emits no pan"
         );
+    }
+
+    #[test]
+    fn poly_live_redetune_re_emits_held_lanes() {
+        let mut a = mk_poly(); // pitch=NodeId(10), gate=NodeId(20), sum=NodeId(30)
+        a.set_unison(3);
+        {
+            let mut sink = |_c: Cmd| {};
+            a.set_detune(0.0, &mut sink); // no note yet → emits nothing (below)
+        }
+        on(&mut a, 69, 100); // 3 Held lanes
+        // now re-detune the sounding note
+        let mut cmds: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        {
+            let mut sink = |c: Cmd| cmds.push(c);
+            a.set_detune(20.0, &mut sink);
+        }
+        // 3 pitch SetParams on the pitch node, one per Held lane, new spread.
+        let pitches: std::vec::Vec<(u8, f32)> = cmds.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(10), param, value } => Some((*param, *value)),
+            _ => None,
+        }).collect();
+        assert_eq!(pitches.len(), 3, "3 held lanes re-detuned");
+        // values are note(69)-69=0 + unison_offset(u,3,20) for u=0,1,2 → -0.2, 0, +0.2
+        let mut vals: std::vec::Vec<f32> = pitches.iter().map(|(_, v)| *v).collect();
+        vals.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert!((vals[0] - (-0.2)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn poly_live_rewidth_re_emits_and_recenters() {
+        let mut a = mk_poly();
+        a.set_unison(3);
+        on(&mut a, 69, 100);
+        // re-width to 1.0
+        let mut c1: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        { let mut s = |c: Cmd| c1.push(c); a.set_width(1.0, &mut s); }
+        let pans1 = c1.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(30), .. })).count();
+        assert_eq!(pans1, 3, "3 held lanes re-panned");
+        // re-width back to 0.0 → re-emits pan-0 (re-center), NOT skipped
+        let mut c2: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        { let mut s = |c: Cmd| c2.push(c); a.set_width(0.0, &mut s); }
+        let pans2: std::vec::Vec<f32> = c2.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(30), value, .. } => Some(*value), _ => None }).collect();
+        assert_eq!(pans2.len(), 3, "re-center emits 3 pan SetParams");
+        assert!(pans2.iter().all(|v| v.abs() < 1e-6), "all re-centered to 0");
+    }
+
+    #[test]
+    fn poly_live_setters_no_sounding_note_emit_nothing() {
+        let mut a = mk_poly();
+        a.set_unison(3);
+        let mut cmds: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        { let mut s = |c: Cmd| cmds.push(c); a.set_detune(20.0, &mut s); a.set_width(1.0, &mut s); }
+        assert_eq!(cmds.len(), 0, "no held voice → no re-emit (non-breaking)");
+    }
+
+    #[test]
+    fn poly_live_redetune_uses_per_lane_ctx() {
+        let mut a = mk_poly();
+        a.set_unison(2);
+        on(&mut a, 60, 100); // note 60, 2 voices
+        on(&mut a, 64, 100); // note 64, 2 voices → 4 Held lanes total
+        let mut cmds: std::vec::Vec<Cmd> = std::vec::Vec::new();
+        { let mut s = |c: Cmd| cmds.push(c); a.set_detune(10.0, &mut s); }
+        let pitches: std::vec::Vec<f32> = cmds.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(10), value, .. } => Some(*value), _ => None }).collect();
+        assert_eq!(pitches.len(), 4, "all 4 held lanes re-detuned");
+        // note 60 → base -9 ± 0.1 ; note 64 → base -5 ± 0.1
+        assert!(pitches.iter().any(|v| (v - (-9.1)).abs() < 1e-6));
+        assert!(pitches.iter().any(|v| (v - (-8.9)).abs() < 1e-6));
+        assert!(pitches.iter().any(|v| (v - (-5.1)).abs() < 1e-6));
+        assert!(pitches.iter().any(|v| (v - (-4.9)).abs() < 1e-6));
     }
 }
