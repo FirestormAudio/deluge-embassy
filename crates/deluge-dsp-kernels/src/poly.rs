@@ -258,6 +258,39 @@ pub fn voice_sum(tile: &[f32], out: &mut [f32], gain: f32) {
     }
 }
 
+/// Collapse the `VOICES`-lane tile into a stereo pair, applying a per-lane
+/// unity-center balance pan and an overall `gain` (the 1/√U unison
+/// normalization). `pan[v]` ∈ [-1, 1]: -1 = hard left, 0 = center, +1 = hard
+/// right. The unity-center law (`gl = clamp(1-p, 0, 1)`, `gr = clamp(1+p, 0, 1)`)
+/// keeps pan 0 at gains (1, 1), so an all-center sum is bit-identical to
+/// `voice_sum`. `tile.len() == VOICES * out_l.len()`, `out_l.len() == out_r.len()`.
+pub fn voice_sum_stereo(
+    tile: &[f32],
+    out_l: &mut [f32],
+    out_r: &mut [f32],
+    gain: f32,
+    pan: &[f32; VOICES],
+) {
+    // Per-lane L/R gains, computed once (pan is per-note, block-constant).
+    let mut gl = [0.0f32; VOICES];
+    let mut gr = [0.0f32; VOICES];
+    for v in 0..VOICES {
+        gl[v] = (1.0 - pan[v]).clamp(0.0, 1.0);
+        gr[v] = (1.0 + pan[v]).clamp(0.0, 1.0);
+    }
+    for i in 0..out_l.len() {
+        let mut sl = 0.0f32;
+        let mut sr = 0.0f32;
+        for v in 0..VOICES {
+            let x = tile[i * VOICES + v];
+            sl += gl[v] * x;
+            sr += gr[v] * x;
+        }
+        out_l[i] = gain * sl;
+        out_r[i] = gain * sr;
+    }
+}
+
 #[cfg(feature = "simd")]
 const _: () = assert!(VOICES == 8);
 
@@ -1051,6 +1084,39 @@ mod tests {
         let mut out2 = std::vec![0.0f32; n];
         voice_sum(&tile, &mut out2, 0.5);
         for i in 0..n { assert_eq!(out2[i], out1[i] * 0.5, "gain scales the sum"); }
+    }
+
+    #[test]
+    fn voice_sum_stereo_center_is_bit_identical_mono_and_pans() {
+        // Build a 2-sample, VOICES-lane tile with distinct per-lane values.
+        let mut tile = [0.0f32; VOICES * 2];
+        for i in 0..2 {
+            for v in 0..VOICES {
+                tile[i * VOICES + v] = (i * VOICES + v) as f32 + 1.0;
+            }
+        }
+        // (a) all-center pan ⇒ L == R == plain mono voice_sum (bit-identical).
+        let center = [0.0f32; VOICES];
+        let (mut l, mut r) = ([0.0f32; 2], [0.0f32; 2]);
+        voice_sum_stereo(&tile, &mut l, &mut r, 1.0, &center);
+        let mut mono = [0.0f32; 2];
+        voice_sum(&tile, &mut mono, 1.0);
+        assert_eq!(l, mono, "center L == mono sum");
+        assert_eq!(r, mono, "center R == mono sum");
+        assert_eq!(l, r, "center L == R");
+        // (b) lane 0 panned hard right (+1) ⇒ contributes only to R (gl=0, gr=1).
+        let mut pan = [0.0f32; VOICES];
+        pan[0] = 1.0;
+        let (mut l2, mut r2) = ([0.0f32; 2], [0.0f32; 2]);
+        voice_sum_stereo(&tile, &mut l2, &mut r2, 1.0, &pan);
+        // L2 = sum of lanes 1..VOICES (lane 0 dropped); R2 = full sum.
+        let drop0: f32 = (1..VOICES).map(|v| tile[v]).sum();
+        assert!((l2[0] - drop0).abs() < 1e-6, "hard-right lane 0 absent from L");
+        assert!((r2[0] - mono[0]).abs() < 1e-6, "hard-right lane 0 present in R");
+        // (c) gain scales both rows.
+        let (mut lg, mut rg) = ([0.0f32; 2], [0.0f32; 2]);
+        voice_sum_stereo(&tile, &mut lg, &mut rg, 0.5, &center);
+        assert!((lg[0] - 0.5 * mono[0]).abs() < 1e-6 && (rg[0] - 0.5 * mono[0]).abs() < 1e-6);
     }
 
     use proptest::prelude::*;

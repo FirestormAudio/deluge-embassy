@@ -11,7 +11,7 @@ use deluge_dsp_kernels::{
     env::{Adsr, Ar}, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
-    poly::{poly_add, poly_mul, voice_sum, PolyAdsr, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySlew, PolySvf, PolySync, PolyWt, VOICES},
+    poly::{poly_add, poly_mul, voice_sum, voice_sum_stereo, PolyAdsr, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySlew, PolySvf, PolySync, PolyWt, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -83,6 +83,9 @@ pub enum Kind {
     PolyCtrl,
     PolyOsc,
     VoiceSum,
+    /// Stereo voice sum: VOICES lanes → L/R (port0=L, port1=R) with per-lane
+    /// unity-center pan + 1/√U gain. The Synth's stereo-spread collapse node.
+    StereoVoiceSum,
     PolyAr,
     PolyAdsr,
     PolySvf,
@@ -151,6 +154,7 @@ enum State {
     PolySync(PolySync),
     PolyWt(PolyWt),
     VoiceSum(f32),
+    StereoVoiceSum { gain: f32, pan: [f32; VOICES] },
     Stateless,
 }
 
@@ -197,6 +201,7 @@ impl Node {
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
             Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve | Kind::PolyMul | Kind::PolyAdd => State::Stateless,
             Kind::VoiceSum => State::VoiceSum(1.0),
+            Kind::StereoVoiceSum => State::StereoVoiceSum { gain: 1.0, pan: [0.0; VOICES] },
             Kind::Wavetable => State::Wt(WtOsc::new()),
             Kind::Delay => State::Delay(Delay::new()),
             Kind::Chorus => State::Chorus(ModDelay::<3>::new(0.020)),
@@ -243,7 +248,7 @@ impl Node {
 
     pub fn out_width(kind: Kind) -> usize {
         match kind {
-            Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
+            Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate | Kind::StereoVoiceSum => 2,
             Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul
                 | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
@@ -256,7 +261,7 @@ impl Node {
     /// A poly node carries `VOICES` voice-lanes and is dispatched via
     /// `poly_process`, not `process_resolved`.
     pub fn is_poly(kind: Kind) -> bool {
-        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::StereoVoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
             | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
             | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
             | Kind::PolyWt | Kind::PolyWtMorph)
@@ -266,7 +271,7 @@ impl Node {
     /// controls). Generalizes the Sy-1 single-poly-input model.
     pub fn poly_in_count(kind: Kind) -> usize {
         match kind {
-            Kind::PolySvf | Kind::PolySlew | Kind::VoiceSum | Kind::PolyMtof
+            Kind::PolySvf | Kind::PolySlew | Kind::VoiceSum | Kind::StereoVoiceSum | Kind::PolyMtof
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolyWt | Kind::PolyWtMorph => 1,
             // PolyOsc: port 0 = pitch, port 1 = PWM width (unconnected ⇒
@@ -327,6 +332,10 @@ impl Node {
             State::PolyAdsr(a) if param == 0 => a.set_sustain(value),
             State::PolySlew(s) if param == 0 => s.set_time(value),
             State::VoiceSum(g) if param == 0 => *g = value,
+            State::StereoVoiceSum { gain, .. } if param == 0 => *gain = value,
+            State::StereoVoiceSum { pan, .. } if (1..=VOICES).contains(&(param as usize)) => {
+                pan[param as usize - 1] = value;
+            }
             State::Moog4(m) if param == 0 => m.set_drive(value),
             State::Moog2(m) if param == 0 => m.set_drive(value),
             State::Ms20(m) if param == 0 => m.set_drive(value),
@@ -773,7 +782,7 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::StereoVoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
                 | Kind::PolyWt | Kind::PolyWtMorph => {
@@ -811,6 +820,13 @@ impl Node {
             Kind::VoiceSum => {
                 if let (State::VoiceSum(gain), Some(pin)) = (&self.state, poly_in[0]) {
                     voice_sum(pin, out, *gain);
+                }
+            }
+            Kind::StereoVoiceSum => {
+                if let (State::StereoVoiceSum { gain, pan }, Some(pin)) = (&self.state, poly_in[0]) {
+                    let half = out.len() / 2; // 2*BLOCK ⇒ BLOCK
+                    let (l, r) = out.split_at_mut(half); // l = row base (port0=L), r = row base+1 (port1=R)
+                    voice_sum_stereo(pin, l, r, *gain, pan);
                 }
             }
             Kind::PolyAr => {
@@ -1686,6 +1702,43 @@ mod tests {
         let mut mono2 = [0.0f32; 4];
         n2.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono2, None);
         assert!(mono2.iter().all(|&s| (s - want * 0.5).abs() < 1e-4), "gain 0.5 halves the sum, got {mono2:?}");
+    }
+
+    #[test]
+    fn stereovoicesum_node_center_and_pan_and_gain() {
+        assert_eq!(Node::out_width(Kind::StereoVoiceSum), 2);
+        assert!(Node::is_poly(Kind::StereoVoiceSum));
+        assert_eq!(Node::poly_in_count(Kind::StereoVoiceSum), 1);
+
+        const BLOCK: usize = 4;
+        // A VOICES-lane tile, one sample: lane v = v+1.
+        let mut tile = [0.0f32; VOICES * BLOCK];
+        for v in 0..VOICES { tile[v] = (v + 1) as f32; }
+        let sum: f32 = (1..=VOICES).map(|v| v as f32).sum();
+
+        // out spans 2 rows (2*BLOCK); poly_process splits it L | R.
+        let mut node = Node::new(Kind::StereoVoiceSum, 0);
+        let ins: [In; MAX_INPUTS] = [In::K(0.0); MAX_INPUTS];
+        let mut out = [0.0f32; 2 * BLOCK];
+        // default (center, gain 1.0): L[0] == R[0] == sum.
+        node.poly_process(&ins, [Some(&tile[..]), None], 0.0, &mut out, None);
+        assert!((out[0] - sum).abs() < 1e-6, "L center == sum");
+        assert!((out[BLOCK] - sum).abs() < 1e-6, "R center == sum");
+
+        // set_param(0)=gain 0.5 halves both.
+        node.set_param(0, 0.5);
+        let mut out2 = [0.0f32; 2 * BLOCK];
+        node.poly_process(&ins, [Some(&tile[..]), None], 0.0, &mut out2, None);
+        assert!((out2[0] - 0.5 * sum).abs() < 1e-6 && (out2[BLOCK] - 0.5 * sum).abs() < 1e-6);
+
+        // set_param(1)=pan lane 0 hard right (+1): lane 0 drops from L, stays in R.
+        node.set_param(0, 1.0); // gain back to 1.0
+        node.set_param(1, 1.0); // pan[0] = +1
+        let mut out3 = [0.0f32; 2 * BLOCK];
+        node.poly_process(&ins, [Some(&tile[..]), None], 0.0, &mut out3, None);
+        let drop0: f32 = (2..=VOICES).map(|v| v as f32).sum(); // lanes 1..VOICES
+        assert!((out3[0] - drop0).abs() < 1e-6, "lane0 absent from L");
+        assert!((out3[BLOCK] - sum).abs() < 1e-6, "lane0 present in R");
     }
 
     #[test]
