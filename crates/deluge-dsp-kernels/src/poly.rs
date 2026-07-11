@@ -214,6 +214,37 @@ impl Default for PolyAdsr {
     fn default() -> Self { PolyAdsr::new() }
 }
 
+/// Poly one-pole slew/lag (glide). Per-voice `z`; scalar `time` (seconds, set via
+/// `set_param`). `trigger_voice(v)` snaps lane v to its target on the next sample
+/// (note-from-silence → no swoop from the previous pitch). Mirrors mono `Slew`.
+#[derive(Clone, Copy)]
+pub struct PolySlew {
+    z: [f32; VOICES],
+    snap: [bool; VOICES],
+    time: f32,
+}
+impl PolySlew {
+    pub fn new() -> Self { PolySlew { z: [0.0; VOICES], snap: [false; VOICES], time: 0.0 } }
+    pub fn set_time(&mut self, t: f32) { self.time = t.max(0.0); }
+    pub fn trigger_voice(&mut self, v: usize) { if v < VOICES { self.snap[v] = true; } }
+    /// `target` = voice-interleaved input tile; writes the slewed tile.
+    pub fn process(&mut self, target: &[f32], dt: f32, out: &mut [f32]) {
+        let n = out.len() / VOICES;
+        let c = (dt / self.time.max(dt)).min(1.0);
+        for i in 0..n {
+            for v in 0..VOICES {
+                let t = target[i * VOICES + v];
+                if self.snap[v] { self.z[v] = t; self.snap[v] = false; }
+                else { self.z[v] += (t - self.z[v]) * c; }
+                out[i * VOICES + v] = self.z[v];
+            }
+        }
+    }
+}
+impl Default for PolySlew {
+    fn default() -> Self { Self::new() }
+}
+
 /// Collapse a voice-interleaved tile to mono: `out[i] = Σ_v tile[i*VOICES + v]`.
 /// `tile.len() == VOICES * out.len()`.
 pub fn voice_sum(tile: &[f32], out: &mut [f32]) {
@@ -1382,5 +1413,53 @@ mod tests {
         assert!(out_hi.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out_lo.iter().any(|&s| s != 0.0) && out_hi.iter().any(|&s| s != 0.0));
         assert!(out_lo != out_hi, "position 0 (saw) vs 1 (square) must differ");
+    }
+
+    #[test]
+    fn polyslew_lane_matches_mono_slew() {
+        use crate::modutil::Slew;
+        let dt = 1.0 / 48_000.0;
+        let n = 300usize;
+        let time = 0.05f32;
+        let mut poly = PolySlew::new();
+        poly.set_time(time);
+        let mut mono = Slew::new();
+        // per-voice-distinct target ramps
+        let target: std::vec::Vec<f32> = (0..n * VOICES)
+            .map(|j| { let i = j / VOICES; let v = j % VOICES; (i as f32 * 0.01) + v as f32 })
+            .collect();
+        let mut out = std::vec![0.0f32; n * VOICES];
+        poly.process(&target, dt, &mut out);
+        // compare lane 0 to a mono Slew fed lane 0's target + constant time
+        let vin: std::vec::Vec<f32> = (0..n).map(|i| target[i * VOICES]).collect();
+        let mut mout = std::vec![0.0f32; n];
+        mono.process(In::A(&vin), In::K(time), dt, &mut mout);
+        for i in 0..n {
+            assert_eq!(out[i * VOICES], mout[i], "lane0 sample {i}: {} vs {}", out[i * VOICES], mout[i]);
+        }
+    }
+
+    #[test]
+    fn polyslew_trigger_snaps_lane() {
+        let dt = 1.0 / 48_000.0;
+        let mut s = PolySlew::new();
+        s.set_time(1.0); // long glide
+        // one block toward target 5.0 — without snap it barely moves
+        let target = std::vec![5.0f32; VOICES];
+        let mut out = std::vec![0.0f32; VOICES];
+        s.trigger_voice(0);
+        s.process(&target, dt, &mut out);
+        assert_eq!(out[0], 5.0, "snapped lane 0 jumps to target");
+        assert!(out[1] < 1.0, "un-snapped lane 1 barely moves: {}", out[1]);
+    }
+
+    #[test]
+    fn polyslew_time_zero_passes_through() {
+        let dt = 1.0 / 48_000.0;
+        let mut s = PolySlew::new(); // time defaults 0
+        let target = std::vec![3.0f32; VOICES * 2];
+        let mut out = std::vec![0.0f32; VOICES * 2];
+        s.process(&target, dt, &mut out);
+        for &o in &out { assert_eq!(o, 3.0, "time=0 snaps every sample"); }
     }
 }
