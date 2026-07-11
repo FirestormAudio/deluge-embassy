@@ -147,6 +147,14 @@ foreign class Node {
   foreign compKnee=(v)
   foreign compMakeup=(v)
   foreign compDetector=(v)
+  foreign static gate_(input, threshold, ratio, attack, release, hold, range, detector)
+  foreign gateThreshold=(v)
+  foreign gateRatio=(v)
+  foreign gateAttack=(v)
+  foreign gateRelease=(v)
+  foreign gateHold=(v)
+  foreign gateRange=(v)
+  foreign gateDetector=(v)
   foreign static eq_(input, freq, gain, q, type)
   foreign hz=(v)       // EQ centre/corner frequency (NOT freq= — that's the Osc's)
   foreign gain=(v)     // EQ band gain in dB
@@ -749,6 +757,30 @@ class Comp {
   static limit(input, threshold) {
     if (Node.polyMode_ == 1) Fiber.abort("Comp is an effect — apply it after the Synth's .out, not inside the voice")
     return Node.comp_(input, threshold, 20, 0.001, 0.1, 0, 0, 0)
+  }
+}
+
+// Downward expander/gate. `threshold` dB, `ratio` (higher = harder knee down
+// below threshold), `attack`/`release` seconds, feed-forward:
+//   Out.patch(Expander.new(mix, -30, 2, 0.005, 0.1))
+//   var g = NoiseGate.new(mix, -40, 0.001, 0.05, 0.02); g.gateRange = 60
+// NOTE: the hard-gate class is named `NoiseGate`, NOT `Gate` — `Gate` is
+// already the foreign class for the four hardware gate-output jacks (see
+// `foreign class Gate` above, "CV / Gate"); reusing the name here would be a
+// Wren "Module variable is already defined" compile error at prelude boot.
+class Expander {
+  // Gentle downward expander: no hold, 20 dB range, peak detector.
+  static new(input, threshold, ratio, attack, release) {
+    if (Node.polyMode_ == 1) Fiber.abort("Expander is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.gate_(input, threshold, ratio, attack, release, 0, 20, 0)
+  }
+}
+
+class NoiseGate {
+  // Hard noise gate: ratio 10, deep range (80 dB ≈ mute below threshold), peak, with hold.
+  static new(input, threshold, attack, release, hold) {
+    if (Node.polyMode_ == 1) Fiber.abort("NoiseGate is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.gate_(input, threshold, 10, attack, release, hold, 80, 0)
   }
 }
 
