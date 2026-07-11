@@ -678,14 +678,19 @@ mod tests {
 
     #[test]
     fn poly_unison_second_note_grabs_more_lanes() {
+        let pitch_lanes = |c: &[Cmd]| -> Vec<u8> {
+            c.iter().filter_map(|cmd| match cmd {
+                Cmd::SetParam { node: NodeId(10), param, .. } => Some(*param), _ => None }).collect()
+        };
         let mut a = mk_poly();
         a.set_unison(3);
-        on(&mut a, 60, 100); // 3 lanes
+        let first = pitch_lanes(&on(&mut a, 60, 100)); // 3 lanes
         let c = on(&mut a, 64, 100); // 3 MORE lanes (distinct from the first 3)
-        let lanes: Vec<u8> = c.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(10), param, .. } => Some(*param), _ => None }).collect();
+        let lanes = pitch_lanes(&c);
         let mut u = lanes.clone(); u.sort(); u.dedup();
         assert_eq!(u.len(), 3, "second note grabs 3 distinct lanes");
+        // and none of the second note's lanes collide with the first note's (both notes held)
+        assert!(lanes.iter().all(|l| !first.contains(l)), "second note's lanes disjoint from first note's");
     }
 
     #[test]
@@ -737,6 +742,7 @@ mod tests {
         let mut m = mk_mono();
         m.set_unison(1);
         let c = mon(&mut m, 69, 100); // lane 0 only: SetParam(0) + TriggerVoice(0) + GateVoice(0)
+        assert_eq!(c.len(), 3);
         assert!(matches!(c[0], Cmd::SetParam { param: 0, .. }));
         assert!(matches!(c[1], Cmd::TriggerVoice { voice: 0, .. }));
         assert!(matches!(c[2], Cmd::GateVoice { voice: 0, on: true, .. }));
