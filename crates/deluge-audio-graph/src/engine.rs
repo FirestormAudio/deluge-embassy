@@ -208,6 +208,9 @@ impl<
                     // copying VOICES rows from a width-1 producer would read
                     // adjacent-node garbage/silence past its one live slot.
                     match inputs[j] {
+                        Input::Const(v) => {
+                            for lane in &mut poly_scratch[j] { lane.fill(v); }
+                        }
                         Input::Node { node, .. } => match self.arena.out_base_and_kind(node) {
                             Some((sbase, src_kind)) if Node::out_width(src_kind) == 1 && sbase < OUTS => {
                                 for v in 0..VOICES { poly_scratch[j][v] = arr[sbase]; }
@@ -872,6 +875,47 @@ mod tests {
                     "voice {v} must carry the broadcast mono source, not zero/garbage"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn const_source_broadcasts_to_all_poly_lanes() {
+        // I-1 regression guard: a poly input port driven directly by a
+        // numeric literal (Input::Const(v), v != 0) — e.g. `Osc.syncSaw(60, p)`
+        // or `o.width = 0.3` in Wren — must broadcast v to every VOICES lane,
+        // exactly like a mono (width-1) Node source does. Before the fix,
+        // Input::Const fell into the poly-resolution catch-all `_ => zero`
+        // arm and silently produced an all-zero tile on every lane.
+        type PE = Engine<64, 8, 40, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        e.create(NodeId(0), Kind::PolyCtrl); // pitch per voice
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+        }
+        e.create(NodeId(1), Kind::PolyOsc); // poly source A
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.create(NodeId(2), Kind::PolyMul);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(0.5);
+        e.render_block();
+
+        for v in 0..VOICES {
+            let osc = e.node_output(NodeId(1), v as u8);
+            let out = e.node_output(NodeId(2), v as u8);
+            let osc: [f32; 64] = osc.try_into().unwrap();
+            let out: [f32; 64] = out.try_into().unwrap();
+            for i in 0..64 {
+                let want = osc[i] * 0.5;
+                assert!(
+                    (out[i] - want).abs() < 1e-5,
+                    "voice {v} sample {i}: got {}, want {} (broadcast of Input::Const(0.5))",
+                    out[i], want
+                );
+            }
+            assert!(
+                out.iter().any(|&s| s.abs() > 1e-6),
+                "voice {v} must carry the broadcast Const source, not zero (I-1 regression)"
+            );
         }
     }
 

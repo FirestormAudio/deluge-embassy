@@ -1278,6 +1278,70 @@ fn polyosc_no_width_unchanged_no_setinput_port1() {
 }
 
 #[test]
+fn synth_fixed_numeric_master_drives_hard_sync() {
+    // I-1 regression guard: `Osc.syncSaw(60, p)` wires a FIXED numeric
+    // literal (Input::Const(60), not a Ctrl/Node) onto the poly master
+    // port. Pre-fix, the engine's poly-input resolution silently dropped
+    // Input::Const into its catch-all zero arm, so dtp_m == 0 and the
+    // hard-sync reset (`mp_adv >= 1.0 && dtp_m > 0.0` in PolySync::process)
+    // never fired — the slave free-ran exactly like a bare `Osc.saw(p)`,
+    // i.e. NO sync at all despite the script asking for it.
+    let mut synced = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.syncSaw(60, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut synced,
+    );
+    assert!(synced.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "fixed-master sync bounded");
+    assert!(synced.iter().any(|f| f.l.abs() > 1e-4), "fixed-master sync voice sounds");
+
+    // Reference: the slave's own oscillator with no sync applied at all.
+    let mut free = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.saw(p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut free,
+    );
+
+    assert!(
+        synced.iter().zip(free.iter()).any(|(s, f)| (s.l - f.l).abs() > 1e-4),
+        "syncSaw(60, p) with a fixed numeric master must differ from a free-running \
+         Osc.saw(p) — this proves the Const(60) master is actually reaching PolySync \
+         and driving the hard-sync reset, not being silently zeroed (I-1)"
+    );
+}
+
+#[test]
+fn synth_fixed_numeric_width_applies_to_pwm_duty() {
+    // I-1 regression guard: `o.width = 0.3` wires a FIXED numeric literal
+    // (Input::Const(0.3)) onto PolyOsc's poly width port. Pre-fix, the
+    // engine's poly-input resolution silently dropped Input::Const into its
+    // catch-all zero arm, so the port read 0 — which PolyOsc's `<= 0 ⇒ 0.5`
+    // sentinel then treats as "unset", silently forcing 0.5 duty regardless
+    // of what the script asked for.
+    let mut narrow = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = 0.3\n  return o * Env.ar(0.01,0.3)\n}\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut narrow,
+    );
+    assert!(narrow.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "width=0.3 bounded");
+    assert!(narrow.iter().any(|f| f.l.abs() > 1e-4), "width=0.3 voice sounds");
+
+    // Reference: an explicit 0.5 duty (the sentinel default a dropped Const
+    // would silently collapse to).
+    let mut half = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = 0.5\n  return o * Env.ar(0.01,0.3)\n}\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut half,
+    );
+
+    assert!(
+        narrow.iter().zip(half.iter()).any(|(n, h)| (n.l - h.l).abs() > 1e-4),
+        "o.width = 0.3 must differ from o.width = 0.5 — this proves the fixed numeric \
+         0.3 literal is actually reaching PolyOsc's width port and shaping the duty \
+         cycle, not being silently zeroed and collapsed to the 0.5 sentinel (I-1)"
+    );
+}
+
+#[test]
 fn non_poly_classes_abort_inside_synth() {
     // Sy-2c footgun close: classes not yet poly-ified (or that are post-voice
     // effects) must Fiber.abort rather than silently building a mono/broken

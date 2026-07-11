@@ -1544,7 +1544,10 @@ pub(crate) unsafe extern "C" fn node_set_pm(raw: *mut WrenVM) {
 /// build), `this` is always a `PolyOsc` (`poly_in_count 2`: pitch/width both
 /// poly edges), so it must instead write port 1, the poly width port — a mono
 /// source (e.g. `LFO.sine(4).to(0.2,0.8)`) broadcasts to every voice lane
-/// (Task 1/§0); a poly source drives true per-voice PWM.
+/// (Task 1/§0); a poly source drives true per-voice PWM. NOTE: a literal
+/// `width = 0.0` is indistinguishable from an unset width port — the osc
+/// kernel treats a `<= 0` width as the "use default 0.5 duty" sentinel, so
+/// `0.0` does NOT mean "fully off"/silent.
 pub(crate) fn node_set_width_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
     let port = if audio::poly_mode() { 1 } else { 2 };
