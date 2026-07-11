@@ -10,7 +10,7 @@ after Fx-1 (compressor/limiter). See [[fx-suite-effects]].
 A downward expander / noise gate — attenuate signal *below* threshold (the
 inverse of the Fx-1 compressor, which attenuates *above* threshold). Exposed as
 two Wren classes over one kernel: `Expander.new(input, threshold, ratio, attack,
-release)` (gentle downward expansion) and `Gate.new(input, threshold, attack,
+release)` (gentle downward expansion) and `NoiseGate.new(input, threshold, attack,
 release, hold)` (a hard noise gate with a hold stage). Mono-in/mono-out,
 `out_width == 1`, on the same effect template as Fx-1 `Comp`.
 
@@ -33,7 +33,7 @@ a reusable scaffolding: `enum Detector { Peak, Rms }`, `lin_to_db`/`db_to_lin`
 ## Scope (Fx-1b)
 
 A single `Gate` kernel (downward expansion + range floor + hold + inverted
-ballistics), a `Kind::Gate` node, and two Wren classes (`Expander`, `Gate`) over
+ballistics), a `Kind::Gate` node, and two Wren classes (`Expander`, `NoiseGate`) over
 it with live setters.
 
 ### Explicitly out of scope / deferred
@@ -147,8 +147,8 @@ Constructor default: a gentle expander, e.g. `Gate::new(-40.0, 2.0, 0.001, 0.1,
     `Expander.new(input, threshold, ratio, attack, release)` →
     `Node.gate_(input, threshold, ratio, attack, release, 0, 20, 0)`
     (no hold, 20 dB range, Peak — a gentle downward expander).
-  - `class Gate`:
-    `Gate.new(input, threshold, attack, release, hold)` →
+  - `class NoiseGate` (named to avoid the pre-existing `foreign class Gate` for hardware gate jacks):
+    `NoiseGate.new(input, threshold, attack, release, hold)` →
     `Node.gate_(input, threshold, 10, attack, release, hold, 80, 0)`
     (ratio 10, 80 dB range = near-mute, Peak — a hard noise gate; the user
     controls the timing that matters most for a gate).
@@ -158,7 +158,7 @@ Constructor default: a gentle expander, e.g. `Gate::new(-40.0, 2.0, 0.001, 0.1,
 
 ```
 Expander.new(src, thr, ratio, atk, rel) → gate_(src, thr, ratio, atk, rel, 0, 20, 0)
-Gate.new(src, thr, atk, rel, hold)      → gate_(src, thr, 10, atk, rel, hold, 80, 0)
+NoiseGate.new(src, thr, atk, rel, hold)      → gate_(src, thr, 10, atk, rel, hold, 80, 0)
   → Kind::Gate node (out_width 1), ins[0] = src audio
 per sample x:
   level = Peak(|x|) | Rms(...) → level_db;  over = level_db - threshold
@@ -202,7 +202,7 @@ Both feature configs, per-crate. Oracle-driven.
    -6, 2, 0.001, 0.1))` renders finite/bounded/non-silent (a saw near 0 dB is
    mostly above a −6 dB threshold → largely passes). **Gate closes below
    threshold — discriminated via a HIGH threshold above the source level:**
-   `Gate.new(Osc.saw(110), 6, 0.001, 0.05, 0.001)` sets threshold +6 dB, above the
+   `NoiseGate.new(Osc.saw(110), 6, 0.001, 0.05, 0.001)` sets threshold +6 dB, above the
    ~0 dB saw peak, so the gate never opens → heavily attenuated; assert its peak
    is much lower than the dry `Osc.saw(110)` peak (`peak(gated) < peak(dry)`, a
    strict discriminating inequality — no need to synthesize a quiet source). A
@@ -214,7 +214,7 @@ Both feature configs, per-crate. Oracle-driven.
 ## Success Criteria
 
 - `Expander.new(src, threshold, ratio, attack, release)` applies downward
-  expansion below threshold to the static curve (capped by range); `Gate.new(src,
+  expansion below threshold to the static curve (capped by range); `NoiseGate.new(src,
   threshold, attack, release, hold)` gates out signal below threshold, holding
   open for `hold` seconds to avoid chatter.
 - The hold stage demonstrably keeps the gate open across the hold window before
