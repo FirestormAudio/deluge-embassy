@@ -954,6 +954,24 @@ fn curve_sugar_renders_bounded() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
 }
 
+/// Regression for C1: a MONO (non-Synth) `Env.adsr` gated on must actually
+/// render — pre-fix, `Node::gate` only dispatched `State::Ar`/`State::Lfo`,
+/// so `State::Adsr` fell into `_ => {}` and `e.gate(true)` was a silent no-op:
+/// the envelope never left `Stage::Idle` and `Osc * Env.adsr(...)` rendered
+/// pure silence with no error. Mirrors `curve_sugar_renders_bounded`'s mono
+/// `Env.ar` shape but explicitly gates (as that test never does) and asserts
+/// non-silence rather than just boundedness.
+#[test]
+fn adsr_mono_gate_renders_nonsilent() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var e = Env.adsr(0.001, 0.001, 0.6, 0.5)\nOut.patch(Osc.saw(110) * e)\ne.gate(true)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
+    assert!(out.iter().any(|f| f.l != 0.0), "non-silent (pre-fix: gate(true) was a no-op, stuck in Idle)");
+}
+
 #[test]
 fn scaling_sugar_builds_arithmetic() {
     // The scale/offset sugar is thin wrappers over the * / + binops; confirm each

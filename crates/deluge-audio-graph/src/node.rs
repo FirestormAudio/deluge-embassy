@@ -283,6 +283,7 @@ impl Node {
     pub fn gate(&mut self, on: bool) {
         match &mut self.state {
             State::Ar(a) => a.gate(on),
+            State::Adsr(a) => a.gate(on),
             State::Lfo(l) if on => l.retrigger(),
             _ => {}
         }
@@ -291,6 +292,7 @@ impl Node {
     pub fn trigger(&mut self) {
         match &mut self.state {
             State::Ar(a) => a.trigger(),
+            State::Adsr(a) => a.trigger(),
             State::Lfo(l) => l.retrigger(),
             _ => {}
         }
@@ -1737,6 +1739,63 @@ mod tests {
             let last = out[(block - 1) * VOICES + v];
             assert!((last - 0.5).abs() < 1e-3, "voice {v} steady level = {last}, want ~0.5");
         }
+    }
+
+    /// Regression for C1: `Node::gate` must dispatch to `State::Adsr`, not just
+    /// `State::Ar`. Pre-fix, a mono `Kind::Adsr` node's `gate(true)` was a no-op
+    /// (fell into `_ => {}`), so the envelope never left `Stage::Idle` and this
+    /// node's output stayed 0.0 forever — `Osc * Env.adsr(...)` used outside a
+    /// Synth rendered pure silence with no error. Mirrors
+    /// `polyadsr_node_sustains_at_set_level` but drives the mono `gate`/
+    /// `process_resolved` path instead of `gate_voice`/`poly_process`.
+    #[test]
+    fn adsr_node_gate_sustains_at_set_level() {
+        let mut n = Node::new(Kind::Adsr, 0);
+        // inputs [attack, decay, release]
+        *n.input_mut(0).unwrap() = Input::Const(0.001);
+        *n.input_mut(1).unwrap() = Input::Const(0.001);
+        *n.input_mut(2).unwrap() = Input::Const(0.5);
+        n.set_param(0, 0.6); // sustain
+        n.gate(true);
+
+        let dt = 1.0 / 48_000.0;
+        let a = [0.001f32; 16];
+        let d = [0.001f32; 16];
+        let r = [0.5f32; 16];
+        let ins = [In::A(&a), In::A(&d), In::A(&r)];
+        let mut buf = [0.0f32; 16];
+        // Render enough blocks that attack (1ms) + decay (1ms) settle into
+        // sustain well before the end (16*100 samples @ 48kHz ≈ 33ms).
+        for _ in 0..100 {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, dt, &mut outs, None);
+        }
+        let last = buf[15];
+        assert!((last - 0.6).abs() < 1e-3, "steady level = {last}, want ~0.6 (pre-fix this was 0.0, stuck in Idle)");
+    }
+
+    /// Same gap as `adsr_node_gate_sustains_at_set_level`, driven via
+    /// `Node::trigger` (the percussive AD path) rather than `gate`.
+    #[test]
+    fn adsr_node_trigger_is_non_zero() {
+        let mut n = Node::new(Kind::Adsr, 0);
+        *n.input_mut(0).unwrap() = Input::Const(0.001);
+        *n.input_mut(1).unwrap() = Input::Const(0.001);
+        *n.input_mut(2).unwrap() = Input::Const(0.5);
+        n.set_param(0, 0.6); // sustain
+        n.trigger();
+
+        let dt = 1.0 / 48_000.0;
+        let a = [0.001f32; 16];
+        let d = [0.001f32; 16];
+        let r = [0.5f32; 16];
+        let ins = [In::A(&a), In::A(&d), In::A(&r)];
+        let mut buf = [0.0f32; 16];
+        for _ in 0..100 {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, dt, &mut outs, None);
+        }
+        assert!(buf[15] > 0.0, "trigger() should leave Idle and produce non-zero output, got {}", buf[15]);
     }
 
     #[test]
