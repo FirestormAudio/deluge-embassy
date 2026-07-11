@@ -23,6 +23,15 @@ fn unison_offset(u: usize, count: usize, detune_cents: f32) -> f32 {
     t * detune_cents / 100.0
 }
 
+/// Pan position for unison voice `u` of `count`, spread symmetrically and evenly
+/// over ±`amount` of the stereo field. `count <= 1` ⇒ 0.0 (center). Result ∈
+/// [-1.0, +1.0]: -1 = hard left, 0 = center, +1 = hard right.
+fn width_offset(u: usize, count: usize, amount: f32) -> f32 {
+    if count <= 1 { return 0.0; }
+    let t = -1.0 + 2.0 * (u as f32) / ((count - 1) as f32); // -1..+1
+    t * amount
+}
+
 /// Per-lane lifecycle for release-tail-aware allocation.
 #[derive(Clone, Copy, PartialEq)]
 enum LaneState {
@@ -36,11 +45,13 @@ pub struct VoiceAllocator {
     gates: [NodeId; MAX_GATES],   // PolyAr/PolyAdsr nodes: GateVoice(gates[i], lane, on/off)
     n_gates: usize,                // number of valid entries in `gates`
     vel_node: Option<NodeId>, // a PolyCtrl carrying per-voice velocity, or None
+    sum_node: NodeId, // a StereoVoiceSum: SetParam(sum_node, lane+1, pan) when width_amount != 0.0
     lane_state: [LaneState; VOICES],
     lane_age: [u32; VOICES],
     clock: u32,
     unison: usize,
     detune_cents: f32,
+    width_amount: f32,
 }
 
 impl VoiceAllocator {
@@ -49,22 +60,26 @@ impl VoiceAllocator {
         gates: [NodeId; MAX_GATES],
         n_gates: usize,
         vel_node: Option<NodeId>,
+        sum_node: NodeId,
     ) -> VoiceAllocator {
         VoiceAllocator {
             pitch_node,
             gates,
             n_gates,
             vel_node,
+            sum_node,
             lane_state: [LaneState::Free; VOICES],
             lane_age: [0; VOICES],
             clock: 0,
             unison: 1,
             detune_cents: 0.0,
+            width_amount: 0.0,
         }
     }
 
     pub fn set_unison(&mut self, n: usize) { self.unison = n.clamp(1, VOICES); }
     pub fn set_detune(&mut self, cents: f32) { self.detune_cents = cents; }
+    pub fn set_width(&mut self, amount: f32) { self.width_amount = amount; }
 
     /// Fan a gate transition out to every configured envelope, preserving order.
     fn gate_all(&self, lane: usize, on: bool, emit: &mut impl FnMut(Cmd)) {
@@ -117,6 +132,13 @@ impl VoiceAllocator {
             emit(Cmd::SetParam { node: self.pitch_node, param: lane as u8, value });
             if let Some(vn) = self.vel_node {
                 emit(Cmd::SetParam { node: vn, param: lane as u8, value: vel as f32 / 127.0 });
+            }
+            if self.width_amount != 0.0 {
+                emit(Cmd::SetParam {
+                    node: self.sum_node,
+                    param: (lane + 1) as u8, // param 0 is the gain slot on StereoVoiceSum
+                    value: width_offset(u, u_count, self.width_amount),
+                });
             }
             self.gate_all(lane, true, emit);
         }
@@ -267,11 +289,11 @@ mod tests {
         (arr, 1)
     }
 
-    // 1-gate VoiceAllocator: pitch=NodeId(10), gate=NodeId(20), no vel node.
+    // 1-gate VoiceAllocator: pitch=NodeId(10), gate=NodeId(20), sum=NodeId(30), no vel node.
     fn mk() -> VoiceAllocator {
         let mut g = [NodeId(0); MAX_GATES];
         g[0] = NodeId(20);
-        VoiceAllocator::new(NodeId(10), g, 1, None)
+        VoiceAllocator::new(NodeId(10), g, 1, None, NodeId(30))
     }
 
     // 1-gate VoiceAllocator for unison tests: pitch=NodeId(10), gate=NodeId(20), no vel node.
@@ -321,7 +343,7 @@ mod tests {
 
     #[test]
     fn note_on_emits_pitch_and_gate_on_lane_0() {
-        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, None) };
+        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, None, NodeId(99)) };
         let c = on(&mut a, 69, 100); // A4 → semitone 0
         assert_eq!(c.len(), 2);
         match c[0] {
@@ -344,7 +366,7 @@ mod tests {
 
     #[test]
     fn eight_notes_fill_lanes_then_ninth_steals_oldest() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None) };
+        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99)) };
         for k in 0..VOICES {
             let c = on(&mut a, 60 + k as u8, 100);
             match c[0] {
@@ -366,7 +388,7 @@ mod tests {
 
     #[test]
     fn note_off_releases_the_right_lane_and_frees_it() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None) };
+        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99)) };
         on(&mut a, 60, 100); // lane 0
         on(&mut a, 64, 100); // lane 1
         let c = off(&mut a, 60);
@@ -466,7 +488,7 @@ mod tests {
 
     #[test]
     fn note_on_velocity_zero_is_note_off() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None) };
+        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99)) };
         on(&mut a, 60, 100); // lane 0 held
         let c = on(&mut a, 60, 0); // vel 0 → note-off
         assert_eq!(c.len(), 1);
@@ -475,14 +497,14 @@ mod tests {
 
     #[test]
     fn note_off_for_unheld_note_is_noop() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None) };
+        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99)) };
         let c = off(&mut a, 60);
         assert!(c.is_empty());
     }
 
     #[test]
     fn all_notes_off_releases_every_held_lane() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None) };
+        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99)) };
         on(&mut a, 60, 100);
         on(&mut a, 64, 100);
         let mut c: Vec<Cmd> = Vec::new();
@@ -496,7 +518,7 @@ mod tests {
 
     #[test]
     fn note_on_emits_velocity_when_vel_node_present() {
-        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, Some(NodeId(30))) };
+        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, Some(NodeId(30)), NodeId(99)) };
         let c = on(&mut a, 69, 100); // A4, vel 100
         assert_eq!(c.len(), 3, "pitch + velocity + gate");
         // c[0] = pitch SetParam(node 10), c[1] = velocity SetParam(node 30), c[2] = GateVoice(node 20)
@@ -513,7 +535,7 @@ mod tests {
 
     #[test]
     fn note_on_no_velocity_node_emits_two_cmds() {
-        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, None) };
+        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, None, NodeId(99)) };
         let c = on(&mut a, 69, 100);
         assert_eq!(c.len(), 2, "pitch + gate only");
         assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), .. }));
@@ -522,7 +544,7 @@ mod tests {
 
     #[test]
     fn velocity_value_is_proportional() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, Some(NodeId(2))) };
+        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, Some(NodeId(2)), NodeId(99)) };
         let hi = on(&mut a, 60, 127);
         let lo = on(&mut a, 62, 20);
         let vhi = match hi[1] { Cmd::SetParam { value, .. } => value, _ => panic!() };
@@ -594,7 +616,7 @@ mod tests {
     fn poly_note_on_gates_all_envelopes_in_order() {
         let mut gates = [NodeId(0); MAX_GATES];
         gates[0] = NodeId(20); gates[1] = NodeId(21);
-        let mut a = VoiceAllocator::new(NodeId(10), gates, 2, None);
+        let mut a = VoiceAllocator::new(NodeId(10), gates, 2, None, NodeId(99));
         let c = on(&mut a, 69, 100); // pitch SetParam + GateVoice(20) + GateVoice(21)
         assert_eq!(c.len(), 3);
         assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), .. }));
@@ -606,7 +628,7 @@ mod tests {
     fn poly_note_off_releases_all_envelopes() {
         let mut gates = [NodeId(0); MAX_GATES];
         gates[0] = NodeId(20); gates[1] = NodeId(21);
-        let mut a = VoiceAllocator::new(NodeId(10), gates, 2, None);
+        let mut a = VoiceAllocator::new(NodeId(10), gates, 2, None, NodeId(99));
         on(&mut a, 69, 100);
         let c = off(&mut a, 69);
         assert_eq!(c.len(), 2);
@@ -746,5 +768,53 @@ mod tests {
         assert!(matches!(c[0], Cmd::SetParam { param: 0, .. }));
         assert!(matches!(c[1], Cmd::TriggerVoice { voice: 0, .. }));
         assert!(matches!(c[2], Cmd::GateVoice { voice: 0, on: true, .. }));
+    }
+
+    #[test]
+    fn width_offset_spreads_symmetric_and_scaled() {
+        assert_eq!(width_offset(0, 1, 1.0), 0.0); // single voice = center
+        // U=2 @ amount=1 → -1, +1
+        assert!((width_offset(0, 2, 1.0) - (-1.0)).abs() < 1e-6);
+        assert!((width_offset(1, 2, 1.0) - 1.0).abs() < 1e-6);
+        // U=3 @ amount=0.5 → -0.5, 0, +0.5
+        assert!((width_offset(0, 3, 0.5) - (-0.5)).abs() < 1e-6);
+        assert!(width_offset(1, 3, 0.5).abs() < 1e-6);
+        assert!((width_offset(2, 3, 0.5) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn poly_width_emits_per_lane_pan_on_sum_node() {
+        let mut a = mk_poly(); // pitch=NodeId(10), gate=NodeId(20), sum=NodeId(30), no vel
+        a.set_unison(3);
+        a.set_width(1.0);
+        let c = on(&mut a, 69, 100);
+        // 3 pan SetParams on the sum node (NodeId(30)), params lane+1, 3 symmetric values.
+        let pans: std::vec::Vec<(u8, f32)> = c.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(30), param, value } => Some((*param, *value)),
+            _ => None,
+        }).collect();
+        assert_eq!(pans.len(), 3, "3 pan SetParams on sum node");
+        // params are lane+1 (>=1), distinct
+        assert!(pans.iter().all(|(p, _)| *p >= 1));
+        let mut params: std::vec::Vec<u8> = pans.iter().map(|(p, _)| *p).collect();
+        params.sort(); params.dedup();
+        assert_eq!(params.len(), 3, "3 distinct lane params");
+        // values symmetric around 0: sorted ≈ -1, 0, +1
+        let mut vals: std::vec::Vec<f32> = pans.iter().map(|(_, v)| *v).collect();
+        vals.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert!((vals[0] - (-1.0)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn poly_width_zero_emits_no_pan() {
+        let mut a = mk_poly();
+        a.set_unison(3);
+        // width defaults to 0.0 — no set_width call.
+        let c = on(&mut a, 69, 100);
+        assert_eq!(
+            c.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(30), .. })).count(),
+            0,
+            "width=0 emits no pan SetParam (byte-identical Cmd stream)"
+        );
     }
 }
