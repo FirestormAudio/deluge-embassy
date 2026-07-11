@@ -1085,6 +1085,19 @@ pub(crate) unsafe extern "C" fn node_poly_begin(raw: *mut WrenVM) {
     node_poly_begin_impl(&vm);
 }
 
+/// `Node.polyVelBegin_()` — create the per-voice velocity carrier (a second
+/// PolyCtrl) and record it; returns it control-flagged (like the pitch node),
+/// NOT poly-flagged, since it's a per-voice constant, not an audio-rate signal.
+pub(crate) fn node_poly_vel_begin_impl<S: SlotApi>(vm: &S) {
+    let ctrl = audio::poly_vel_begin();
+    unsafe { return_node(vm, ctrl) }; // return_node (NOT return_poly_node) → control-flagged, isPoly_==0
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_poly_vel_begin(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_poly_vel_begin_impl(&vm);
+}
+
 /// `Node.polyosc_(pitch, shape)` — poly oscillator. Port 0 = pitch (poly Hz);
 /// `shape` (0=sine, 1=saw, 2=square, 3=tri) is set as param 0.
 pub(crate) fn node_polyosc_impl<S: SlotApi>(vm: &S) {
@@ -1380,10 +1393,11 @@ pub(crate) unsafe extern "C" fn node_polywt_pooled(raw: *mut WrenVM) {
 /// exactly-one Env.ar via polyGateCount_.
 pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
     let out = arg_input(vm, 1);
-    let (pitch_ctrl, gate_ar) = audio::poly_end();
+    let (pitch_ctrl, gate_ar, vel_raw) = audio::poly_end();
+    let vel = if vel_raw == audio::NULL_ID { None } else { Some(NodeId(vel_raw)) };
     let sum = audio::alloc_node_id();
     audio::new_node(sum, Kind::VoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), NodeId(gate_ar));
+    let alloc = deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), NodeId(gate_ar), vel);
     unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -1747,6 +1761,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polyMode_", node_poly_mode_impl::<S>);
     method("main", "Node", true, "polyGateCount_", node_poly_gate_count_impl::<S>);
     method("main", "Node", true, "polyBegin_()", node_poly_begin_impl::<S>);
+    method("main", "Node", true, "polyVelBegin_()", node_poly_vel_begin_impl::<S>);
     method("main", "Node", true, "polyosc_(_,_)", node_polyosc_impl::<S>);
     method("main", "Node", true, "polysvf_(_,_,_)", node_polysvf_impl::<S>);
     method("main", "Node", true, "polymoog_(_,_,_,_)", node_polymoog_impl::<S>);

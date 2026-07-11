@@ -79,10 +79,17 @@ struct PolyCtx {
     pitch_ctrl: u16, // the PolyCtrl created by polyBegin_
     gate_ar: u16,    // the PolyAr recorded by polyar_ (amp gate)
     gate_count: u8,  // number of Env.ar created this build (must be 1)
+    vel_node: u16,   // velocity PolyCtrl id, or NULL_ID if the builder didn't take velocity
 }
 impl PolyCtx {
     const fn new() -> Self {
-        PolyCtx { mode: false, pitch_ctrl: NULL_ID, gate_ar: NULL_ID, gate_count: 0 }
+        PolyCtx {
+            mode: false,
+            pitch_ctrl: NULL_ID,
+            gate_ar: NULL_ID,
+            gate_count: 0,
+            vel_node: NULL_ID,
+        }
     }
 }
 // SAFETY: single-threaded VM context, like `ALLOC`.
@@ -117,6 +124,7 @@ pub fn poly_begin() -> u16 {
     p.pitch_ctrl = ctrl;
     p.gate_ar = NULL_ID;
     p.gate_count = 0;
+    p.vel_node = NULL_ID;
     mtof
 }
 /// Record a PolyAr as the voice's amp gate.
@@ -125,11 +133,19 @@ pub fn poly_record_gate(id: u16) {
     p.gate_ar = id;
     p.gate_count = p.gate_count.saturating_add(1);
 }
-/// End a voice build: clear the flag; returns (pitch_ctrl, gate_ar) for the allocator.
-pub fn poly_end() -> (u16, u16) {
+/// Create the per-voice velocity carrier (a second PolyCtrl) and record it.
+/// Returns the PolyCtrl node id (the `vel` signal handed to the builder).
+pub fn poly_vel_begin() -> u16 {
+    let ctrl = alloc_node_id();
+    new_node(ctrl, Kind::PolyCtrl, [Input::Const(0.0); 3]);
+    poly().vel_node = ctrl;
+    ctrl
+}
+/// End a voice build: clear the flag; returns (pitch_ctrl, gate_ar, vel_node) for the allocator.
+pub fn poly_end() -> (u16, u16, u16) {
     let p = poly();
     p.mode = false;
-    (p.pitch_ctrl, p.gate_ar)
+    (p.pitch_ctrl, p.gate_ar, p.vel_node)
 }
 
 pub fn alloc_node_id() -> u16 {
