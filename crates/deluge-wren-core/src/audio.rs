@@ -3,7 +3,7 @@
 //! round-trip); each emitter builds a `deluge_audio_graph::Cmd` and ships it
 //! through the registered [`Host`](crate::Host). Single-threaded VM context.
 
-use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId};
+use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId, MAX_GATES};
 
 use crate::host::host;
 
@@ -76,9 +76,9 @@ fn alloc() -> &'static mut Alloc {
 /// Voice-build state for `Synth.new` (set between polyBegin_/polyEnd_).
 struct PolyCtx {
     mode: bool,
-    pitch_ctrl: u16, // the PolyCtrl created by polyBegin_
-    gate_ar: u16,    // the PolyAr recorded by polyar_ (amp gate)
-    gate_count: u8,  // number of Env.ar created this build (must be 1)
+    pitch_ctrl: u16,          // the PolyCtrl created by polyBegin_
+    gates: [u16; MAX_GATES],  // envelope node ids (first `gate_count`)
+    gate_count: u8,  // total envelopes created this build (may exceed MAX_GATES → guard aborts)
     vel_node: u16,   // velocity PolyCtrl id, or NULL_ID if the builder didn't take velocity
     slew_node: u16,  // the PolySlew created by mono_begin, or NULL_ID for a poly build
 }
@@ -87,7 +87,7 @@ impl PolyCtx {
         PolyCtx {
             mode: false,
             pitch_ctrl: NULL_ID,
-            gate_ar: NULL_ID,
+            gates: [NULL_ID; MAX_GATES],
             gate_count: 0,
             vel_node: NULL_ID,
             slew_node: NULL_ID,
@@ -124,7 +124,7 @@ pub fn poly_begin() -> u16 {
     let p = poly();
     p.mode = true;
     p.pitch_ctrl = ctrl;
-    p.gate_ar = NULL_ID;
+    p.gates = [NULL_ID; MAX_GATES];
     p.gate_count = 0;
     p.vel_node = NULL_ID;
     p.slew_node = NULL_ID;
@@ -144,15 +144,19 @@ pub fn mono_begin() -> u16 {
     p.mode = true;
     p.pitch_ctrl = ctrl;
     p.slew_node = slew;
-    p.gate_ar = NULL_ID;
+    p.gates = [NULL_ID; MAX_GATES];
     p.gate_count = 0;
     p.vel_node = NULL_ID;
     mtof
 }
-/// Record a PolyAr as the voice's amp gate.
+/// Record a PolyAr/PolyAdsr as one of the voice's envelope gates (bounded push
+/// into `gates`; `gate_count` still tracks the true total so the Wren guard
+/// can reject builds that exceed `MAX_GATES`).
 pub fn poly_record_gate(id: u16) {
     let p = poly();
-    p.gate_ar = id;
+    if (p.gate_count as usize) < MAX_GATES {
+        p.gates[p.gate_count as usize] = id;
+    }
     p.gate_count = p.gate_count.saturating_add(1);
 }
 /// Create the per-voice velocity carrier (a second PolyCtrl) and record it.
@@ -163,17 +167,18 @@ pub fn poly_vel_begin() -> u16 {
     poly().vel_node = ctrl;
     ctrl
 }
-/// End a voice build: clear the flag; returns (pitch_ctrl, gate_ar, vel_node) for the allocator.
-pub fn poly_end() -> (u16, u16, u16) {
+/// End a voice build: clear the flag; returns (pitch_ctrl, gates, gate_count,
+/// vel_node) for the allocator.
+pub fn poly_end() -> (u16, [u16; MAX_GATES], u8, u16) {
     let p = poly();
     p.mode = false;
-    (p.pitch_ctrl, p.gate_ar, p.vel_node)
+    (p.pitch_ctrl, p.gates, p.gate_count, p.vel_node)
 }
-/// Returns (pitch_ctrl, slew_node, gate_ar, vel_node) for the mono SynthObj.
-pub fn mono_end() -> (u16, u16, u16, u16) {
+/// Returns (pitch_ctrl, slew_node, gates, gate_count, vel_node) for the mono SynthObj.
+pub fn mono_end() -> (u16, u16, [u16; MAX_GATES], u8, u16) {
     let p = poly();
     p.mode = false;
-    (p.pitch_ctrl, p.slew_node, p.gate_ar, p.vel_node)
+    (p.pitch_ctrl, p.slew_node, p.gates, p.gate_count, p.vel_node)
 }
 
 pub fn alloc_node_id() -> u16 {
