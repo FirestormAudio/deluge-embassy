@@ -1207,8 +1207,9 @@ pub(crate) unsafe extern "C" fn node_polyms20(raw: *mut WrenVM) {
     node_polyms20_impl(&vm);
 }
 
-/// `Node.polyar_(attack, release)` — poly AR envelope (the amp gate). Ports
-/// 0/1 = attack/release (mono). Records itself as the voice's gate.
+/// `Node.polyar_(attack, release)` — poly AR envelope. Ports 0/1 = attack/release
+/// (mono). Records itself as one of the voice's gates (up to `MAX_GATES`); all
+/// recorded envelopes are gated by the note (Sy-5c).
 ///
 /// Deliberately uses `return_node` (unflagged), not `return_poly_node`: for
 /// operator-guard purposes `Env.ar(...)` is a CONTROL/amp signal, not an
@@ -1234,10 +1235,10 @@ pub(crate) unsafe extern "C" fn node_polyar(raw: *mut WrenVM) {
 }
 
 /// `Node.polyadsr_(attack, decay, sustain, release)` — poly ADSR envelope
-/// (the amp gate, like `polyar_`). Ports 0/1/2 = attack/decay/release;
-/// sustain is `SetParam(id, 0, sustain)` (see `node_adsr_impl`). Records
-/// itself as the voice's gate exactly like `PolyAr` — the gate model is
-/// unchanged; `PolyAdsr` just adds a decay stage per voice.
+/// (like `polyar_`). Ports 0/1/2 = attack/decay/release; sustain is
+/// `SetParam(id, 0, sustain)` (see `node_adsr_impl`). Records itself as one of
+/// the voice's gates exactly like `PolyAr` — `PolyAdsr` just adds a decay stage
+/// per voice.
 pub(crate) fn node_polyadsr_impl<S: SlotApi>(vm: &S) {
     let attack = arg_input(vm, 1);
     let decay = arg_input(vm, 2);
@@ -1429,7 +1430,7 @@ pub(crate) unsafe extern "C" fn node_polywt_pooled(raw: *mut WrenVM) {
 
 /// `Node.polyEnd_(out)` — finish a voice: VoiceSum(out) → build a VoiceAllocator
 /// into a Synth foreign object (in slot 0). The prelude has already validated
-/// exactly-one Env.ar via polyGateCount_.
+/// 1–4 envelopes via polyGateCount_.
 pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
     let out = arg_input(vm, 1);
     let (pitch_ctrl, gates_raw, gate_count, vel_raw) = audio::poly_end();
