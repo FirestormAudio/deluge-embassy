@@ -246,8 +246,16 @@ impl<
                     if count > 1 { Some(poly_scratch[1].as_flattened()) } else { None },
                 ];
                 let out = arr[base..base + width].as_flattened_mut(); // width*BLOCK
+                // Resolve a pooled node's region MUTABLY before the node's
+                // `&mut` borrow below, exactly as the mono path does at its
+                // call site below — only `PolyWt`/`PolyWtMorph` read this;
+                // every other poly kind ignores it.
+                let pool_region: Option<&mut [f32]> = match table_src {
+                    Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice_mut(h)),
+                    _ => None,
+                };
                 if let Some(n) = self.arena.node_mut(id) {
-                    n.poly_process(&ins, poly_in, self.dt, out);
+                    n.poly_process(&ins, poly_in, self.dt, out, pool_region);
                 }
             } else {
                 let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);

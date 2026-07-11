@@ -20,6 +20,7 @@ use crate::osc::Wave;
 #[cfg(feature = "simd")]
 use crate::osc::wave_sample_x8;
 use crate::quant::semitones_to_hz;
+use crate::wavetable::{MipSet, WtOsc};
 use crate::In;
 use core::f32::consts::PI;
 
@@ -561,6 +562,40 @@ impl PolySync {
     }
 }
 impl Default for PolySync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Poly wavetable oscillator: 8 voices share one borrowed mip pyramid; each keeps
+/// its own phase. Scalar-per-voice (per-voice pitch ⇒ per-voice mip level, which
+/// defeats f32x8 without a table-row gather the A9 lacks). Reuses the audited
+/// `WtOsc` per voice, for both single-cycle and 2D morph. The graph layer owns the
+/// voice-interleave gather/scatter and the block scratch; this kernel processes one
+/// voice's mono block per call so `freq`/`pmod`/`position` stay audio-rate `In`.
+#[derive(Clone, Copy)]
+pub struct PolyWt {
+    voices: [WtOsc; VOICES],
+}
+impl PolyWt {
+    pub fn new() -> Self {
+        PolyWt { voices: [WtOsc::new(); VOICES] }
+    }
+
+    /// Single-cycle: process voice `v` into a mono `out` block, sharing `mips`.
+    pub fn process_voice(&mut self, v: usize, mips: MipSet, freq: In, pmod: In, dt: f32, out: &mut [f32]) {
+        self.voices[v].process(mips, freq, pmod, dt, out);
+    }
+
+    /// 2D morph: process voice `v` into a mono `out` block.
+    pub fn process_voice_morph(
+        &mut self, v: usize, region: &[f32], frames: usize,
+        freq: In, pmod: In, position: In, dt: f32, out: &mut [f32],
+    ) {
+        self.voices[v].process_morph(region, frames, freq, pmod, position, dt, out);
+    }
+}
+impl Default for PolyWt {
     fn default() -> Self {
         Self::new()
     }
@@ -1178,5 +1213,67 @@ mod tests {
             // measured -27.2 dB worst case (slave×4.3).
             assert!(wa < -25.0, "polysync saw slave×{slave_mul}: worst_alias {wa} dB");
         }
+    }
+
+    #[test]
+    fn polywt_process_voice_matches_scalar_wtosc_per_lane() {
+        // PolyWt::process_voice is a thin per-voice delegate to WtOsc::process
+        // — voice v fed pitch f must equal a standalone WtOsc fed the same
+        // pitch, sharing the same (borrowed) mip pyramid.
+        use crate::wavetable::{compact_levels, COMPACT_LEN};
+        let n = mipgen::N;
+        let mut base = std::vec![0.0f32; n];
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / n as f32) - 1.0; // saw
+        }
+        let mut region = std::vec![0.0f32; COMPACT_LEN];
+        mipgen::build_pyramid_flat_compact(&base, &mut region);
+        let levels = compact_levels(&region);
+
+        let dt = 1.0 / 48_000.0;
+        let nsamp = 200;
+        let mut poly = PolyWt::new();
+        for (v, &f) in [220.0f32, 330.0f32, 55.0f32].iter().enumerate() {
+            let mut out = std::vec![0.0f32; nsamp];
+            poly.process_voice(v, MipSet { levels: &levels }, In::K(f), In::K(0.0), dt, &mut out);
+            let mut refosc = WtOsc::new();
+            let mut want = std::vec![0.0f32; nsamp];
+            refosc.process(MipSet { levels: &levels }, In::K(f), In::K(0.0), dt, &mut want);
+            assert_eq!(out, want, "voice {v} @ {f} Hz");
+        }
+        // Distinct per-voice phase accumulators: lanes at different pitches diverge.
+        let mut o0 = std::vec![0.0f32; nsamp];
+        let mut o1 = std::vec![0.0f32; nsamp];
+        poly.process_voice(0, MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut o0);
+        poly.process_voice(1, MipSet { levels: &levels }, In::K(330.0), In::K(0.0), dt, &mut o1);
+        assert!(o0 != o1, "independent voices at different pitches must diverge");
+    }
+
+    #[test]
+    fn polywt_process_voice_morph_bounded_and_position_varies() {
+        use crate::wavetable::COMPACT_LEN;
+        let n = mipgen::N;
+        let mut saw = std::vec![0.0f32; n];
+        let mut square = std::vec![0.0f32; n];
+        for i in 0..n {
+            saw[i] = 2.0 * (i as f32 / n as f32) - 1.0;
+            square[i] = if i < n / 2 { 1.0 } else { -1.0 };
+        }
+        let mut region = std::vec![0.0f32; 2 * COMPACT_LEN];
+        mipgen::build_pyramid_flat_compact(&saw, &mut region[..COMPACT_LEN]);
+        mipgen::build_pyramid_flat_compact(&square, &mut region[COMPACT_LEN..]);
+
+        let dt = 1.0 / 48_000.0;
+        let nsamp = 256;
+        let mut poly = PolyWt::new();
+        let mut out_lo = std::vec![0.0f32; nsamp];
+        poly.process_voice_morph(0, &region, 2, In::K(220.0), In::K(0.0), In::K(0.0), dt, &mut out_lo);
+        let mut poly2 = PolyWt::new();
+        let mut out_hi = std::vec![0.0f32; nsamp];
+        poly2.process_voice_morph(0, &region, 2, In::K(220.0), In::K(0.0), In::K(1.0), dt, &mut out_hi);
+        assert!(out_lo.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out_hi.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out_lo.iter().any(|&s| s != 0.0) && out_hi.iter().any(|&s| s != 0.0));
+        assert!(out_lo != out_hi, "position 0 (saw) vs 1 (square) must differ");
     }
 }

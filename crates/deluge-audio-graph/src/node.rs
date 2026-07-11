@@ -11,7 +11,7 @@ use deluge_dsp_kernels::{
     env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
-    poly::{poly_add, poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySvf, PolySync, VOICES},
+    poly::{poly_add, poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySvf, PolySync, PolyWt, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -98,6 +98,8 @@ pub enum Kind {
     PolySyncSaw,
     PolySyncSquare,
     PolySyncTri,
+    PolyWt,
+    PolyWtMorph,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -141,6 +143,7 @@ enum State {
     PolyMoog2(PolyMoog<2>),
     PolyMs20(PolyMs20),
     PolySync(PolySync),
+    PolyWt(PolyWt),
     Stateless,
 }
 
@@ -216,6 +219,7 @@ impl Node {
             Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri => {
                 State::PolySync(PolySync::new())
             }
+            Kind::PolyWt | Kind::PolyWtMorph => State::PolyWt(PolyWt::new()),
         };
         Node {
             kind,
@@ -232,7 +236,8 @@ impl Node {
             Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul
                 | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
-                | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri => VOICES,
+                | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
+                | Kind::PolyWt | Kind::PolyWtMorph => VOICES,
             _ => 1,
         }
     }
@@ -242,7 +247,8 @@ impl Node {
     pub fn is_poly(kind: Kind) -> bool {
         matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
             | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
-            | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri)
+            | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
+            | Kind::PolyWt | Kind::PolyWtMorph)
     }
 
     /// Number of leading input ports that are poly edges (the rest are mono
@@ -250,10 +256,14 @@ impl Node {
     pub fn poly_in_count(kind: Kind) -> usize {
         match kind {
             Kind::PolySvf | Kind::VoiceSum | Kind::PolyMtof
-                | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp => 1,
+                | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
+                | Kind::PolyWt | Kind::PolyWtMorph => 1,
             // PolyOsc: port 0 = pitch, port 1 = PWM width (unconnected ⇒
             // Const(0.0) ⇒ all-zero tile ⇒ 0.5 duty, bit-identical to the
             // pre-width PolyOsc). PolySync: port 0 = master, port 1 = slave.
+            // PolyWt/PolyWtMorph: port 0 = pitch (poly edge); pmod (port 1)
+            // and morph position (port 2) are trailing mono controls, matching
+            // mono `Kind::Wavetable`'s port order.
             Kind::PolyOsc | Kind::PolyMul | Kind::PolyAdd
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri => 2,
             _ => 0, // PolyCtrl, PolyAr, PolyNoise/PolyPink/PolyBrown, and all mono kinds
@@ -734,7 +744,8 @@ impl Node {
             }
             Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
-                | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri => {
+                | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
+                | Kind::PolyWt | Kind::PolyWtMorph => {
                 // Poly kinds are dispatched via `poly_process`, not this path.
             }
         }
@@ -743,13 +754,16 @@ impl Node {
     /// Dispatch a poly node. `ins` = the resolved mono control ports; `poly_in`
     /// = up to two voice-interleaved input tiles (`poly_in[j]` is `Some` for
     /// `j < poly_in_count`). `out` is the writable region (VOICES*BLOCK, or BLOCK
-    /// for VoiceSum).
+    /// for VoiceSum). `pool_region` mirrors `process_resolved`'s param: the flat
+    /// mip-pyramid region for a `TableSrc::Pooled` `PolyWt`/`PolyWtMorph` node,
+    /// resolved by the engine before this call; ignored by every other poly kind.
     pub fn poly_process(
         &mut self,
         ins: &[In; MAX_INPUTS],
         poly_in: [Option<&[f32]>; 2],
         dt: f32,
         out: &mut [f32],
+        pool_region: Option<&mut [f32]>,
     ) {
         match self.kind {
             Kind::PolyCtrl => {
@@ -822,6 +836,45 @@ impl Node {
                 if let (State::PolySync(s), Some(master), Some(slave)) =
                     (&mut self.state, poly_in[0], poly_in[1]) {
                     s.process(master, slave, wave, dt, out);
+                }
+            }
+            Kind::PolyWt | Kind::PolyWtMorph => {
+                // Mirrors the mono `Kind::Wavetable` arm's table-region
+                // resolution (static vs. pooled), but the frame-count-based
+                // single/morph decision there is a per-Kind decision here
+                // (PolyWt vs PolyWtMorph), since a poly node's Kind is fixed
+                // at creation. `pool_region` is only Some for `TableSrc::Pooled`
+                // (resolved by the engine, mirroring `process_resolved`'s param).
+                let kind = self.kind;
+                let pool_region: Option<&[f32]> = pool_region.as_deref();
+                if let (State::PolyWt(w), Some(pitch)) = (&mut self.state, poly_in[0]) {
+                    let region: Option<&[f32]> = match self.table {
+                        Some(TableSrc::Static(id)) => static_table_flat(id),
+                        Some(TableSrc::Pooled(_)) => {
+                            pool_region.filter(|r| r.len() >= COMPACT_LEN && r.len() % COMPACT_LEN == 0)
+                        }
+                        None => None,
+                    };
+                    if let Some(region) = region {
+                        let frames = region.len() / COMPACT_LEN;
+                        let n = out.len() / VOICES;
+                        let mut col = [0.0f32; MAX_BLOCK];
+                        let mut ocol = [0.0f32; MAX_BLOCK];
+                        if matches!(kind, Kind::PolyWtMorph) {
+                            for v in 0..VOICES {
+                                for i in 0..n { col[i] = pitch[i * VOICES + v]; }
+                                w.process_voice_morph(v, region, frames, In::A(&col[..n]), ins[1], ins[2], dt, &mut ocol[..n]);
+                                for i in 0..n { out[i * VOICES + v] = ocol[i]; }
+                            }
+                        } else {
+                            let levels = compact_levels(region);
+                            for v in 0..VOICES {
+                                for i in 0..n { col[i] = pitch[i * VOICES + v]; }
+                                w.process_voice(v, MipSet { levels: &levels }, In::A(&col[..n]), ins[1], dt, &mut ocol[..n]);
+                                for i in 0..n { out[i * VOICES + v] = ocol[i]; }
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1552,7 +1605,7 @@ mod tests {
         }
         let mut tile = [0.0f32; VOICES * 4];
         let dummy: [In; MAX_INPUTS] = [In::K(0.0); MAX_INPUTS];
-        ctrl.poly_process(&dummy, [None, None], 1.0 / 48_000.0, &mut tile);
+        ctrl.poly_process(&dummy, [None, None], 1.0 / 48_000.0, &mut tile, None);
         for i in 0..n {
             for v in 0..VOICES {
                 assert_eq!(tile[i * VOICES + v], (v + 1) as f32);
@@ -1560,7 +1613,7 @@ mod tests {
         }
         let mut sum = Node::new(Kind::VoiceSum, 0);
         let mut mono = [0.0f32; 4];
-        sum.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono);
+        sum.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono, None);
         let want: f32 = (1..=VOICES).map(|x| x as f32).sum(); // 36
         assert!(mono.iter().all(|&s| (s - want).abs() < 1e-4), "each sample sums to {want}");
     }
@@ -1578,7 +1631,7 @@ mod tests {
         }
         let dummy = [In::K(0.0); MAX_INPUTS];
         let mut out = [0.0f32; VOICES * 2];
-        n.poly_process(&dummy, [Some(&semis), None], 1.0 / 48_000.0, &mut out);
+        n.poly_process(&dummy, [Some(&semis), None], 1.0 / 48_000.0, &mut out, None);
         assert!((out[0] - 440.0).abs() < 1e-2 && (out[1] - 880.0).abs() < 1e-2);
     }
 
@@ -1596,7 +1649,7 @@ mod tests {
         let width = [0.0f32; VOICES * 4]; // unconnected ⇒ 0.5 duty default
         let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
         let mut out = [0.0f32; VOICES * 4];
-        n.poly_process(&ins, [Some(&pitch), Some(&width)], 1.0 / 48_000.0, &mut out);
+        n.poly_process(&ins, [Some(&pitch), Some(&width)], 1.0 / 48_000.0, &mut out, None);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out.iter().any(|&s| s != 0.0), "saw renders");
     }
@@ -1606,7 +1659,7 @@ mod tests {
         let mut n = Node::new(Kind::PolyNoise, 0);
         let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
         let mut out = [0.0f32; VOICES * 4];
-        n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out);
+        n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out, None);
         assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0) && out.iter().any(|&s| s != 0.0));
     }
 
@@ -1622,7 +1675,7 @@ mod tests {
             let mut n = Node::new(kind, 0);
             let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
             let mut out = [0.0f32; VOICES * 4];
-            n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out);
+            n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out, None);
             assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0), "kind={kind:?} bounded");
             assert!(out.iter().any(|&s| s != 0.0), "kind={kind:?} non-silent");
         }
@@ -1711,5 +1764,185 @@ mod tests {
             assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 8.1), "kind={skind:?} bounded: {out:?}");
             assert!(out.iter().any(|&s| s.abs() > 1e-4), "kind={skind:?} non-silent");
         }
+    }
+
+    #[test]
+    fn polywt_single_matches_mono_per_voice() {
+        // Static table 0 (saw). A PolyWt-backed poly node with distinct
+        // per-voice pitch must match 8 independent mono `Kind::Wavetable`
+        // nodes, one per pitch — bit-identical, since `PolyWt::process_voice`
+        // is a thin per-voice delegate to the same `WtOsc` kernel.
+        //
+        // Node-level (not `Engine`): builds the pitch tile directly in the
+        // sample-major interleaved convention (`tile[i*VOICES+v]`) that
+        // `poly_process` itself reads/writes, so `out[i*VOICES+v]` below is
+        // exactly voice v's trace — no arena port-chunking ambiguity (the
+        // engine's `node_output(id, port)` for a poly node returns a
+        // BLOCK-chunk of the interleaved tile, not a single voice's trace,
+        // when `port` doesn't divide evenly; going through `Node` directly
+        // sidesteps that entirely).
+        assert_eq!(Node::poly_in_count(Kind::PolyWt), 1);
+        assert_eq!(Node::out_width(Kind::PolyWt), VOICES);
+        assert!(Node::is_poly(Kind::PolyWt) && Node::is_poly(Kind::PolyWtMorph));
+
+        let freqs: [f32; VOICES] = core::array::from_fn(|v| (v as f32 + 1.0) * 110.0);
+        let dt = 1.0 / 48_000.0;
+        let n = 64usize;
+
+        let mut poly = Node::new(Kind::PolyWt, 0);
+        poly.bind_table(TableSrc::Static(TableId(0)));
+        let mut pitch = std::vec![0.0f32; VOICES * n];
+        for i in 0..n {
+            for v in 0..VOICES {
+                pitch[i * VOICES + v] = freqs[v];
+            }
+        }
+        let zero = std::vec![0.0f32; n];
+        let ins = [In::A(&zero), In::A(&zero), In::A(&zero)];
+        let mut out = std::vec![0.0f32; VOICES * n];
+        poly.poly_process(&ins, [Some(&pitch), None], dt, &mut out, None);
+
+        for v in 0..VOICES {
+            let mut mono = Node::new(Kind::Wavetable, 0);
+            mono.bind_table(TableSrc::Static(TableId(0)));
+            let freq_buf = std::vec![freqs[v]; n];
+            let mono_ins = [In::A(&freq_buf), In::A(&zero), In::A(&zero)];
+            let mut mono_out = std::vec![0.0f32; n];
+            {
+                let mut outs = OutView::single(&mut mono_out);
+                mono.process_resolved(&mono_ins, dt, &mut outs, None);
+            }
+            for i in 0..n {
+                assert_eq!(out[i * VOICES + v], mono_out[i], "voice {v} sample {i}");
+            }
+            assert!(mono_out.iter().any(|&s| s != 0.0), "voice {v} renders");
+        }
+    }
+
+    #[test]
+    fn polywtmorph_renders_finite_bounded_and_position_varies() {
+        // Static table 6 (HarmonicSweep) is a baked-in 2D (multi-frame) morph
+        // bank (see `TableId`'s doc comment). PolyWtMorph must render finite,
+        // bounded, non-silent audio for every voice, and moving `position`
+        // (port 2, a shared mono control) must change the output.
+        let dt = 1.0 / 48_000.0;
+        let n = 128usize;
+        let mut pitch = std::vec![0.0f32; VOICES * n];
+        for i in 0..n {
+            for v in 0..VOICES {
+                pitch[i * VOICES + v] = 220.0 + v as f32 * 15.0;
+            }
+        }
+        let zero = std::vec![0.0f32; n];
+
+        let render_at = |position: f32| -> std::vec::Vec<f32> {
+            let mut node = Node::new(Kind::PolyWtMorph, 0);
+            node.bind_table(TableSrc::Static(TableId(6)));
+            let pos = std::vec![position; n];
+            let ins = [In::A(&zero), In::A(&zero), In::A(&pos)];
+            let mut out = std::vec![0.0f32; VOICES * n];
+            node.poly_process(&ins, [Some(&pitch), None], dt, &mut out, None);
+            out
+        };
+
+        let out_lo = render_at(0.0);
+        let out_hi = render_at(1.0);
+        assert!(out_lo.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out_hi.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        assert!(out_lo.iter().any(|&s| s != 0.0), "position 0 renders");
+        assert!(out_hi.iter().any(|&s| s != 0.0), "position 1 renders");
+        assert!(out_lo != out_hi, "position must change the morph output");
+    }
+
+    #[test]
+    fn polywt_pooled_table_renders_via_engine_voicesum() {
+        // Exercises the ENGINE's pool_region threading for a poly wavetable
+        // node (the Step-4 plumbing): `TableSrc::Pooled`, resolved by
+        // `Engine::render_block`'s poly branch and passed into
+        // `Node::poly_process`. PolyCtrl(pitch) → PolyWt(pooled saw pyramid)
+        // → VoiceSum: non-silent, bounded, finite. `VoiceSum`'s width-1
+        // output sidesteps the per-voice arena-chunking concern above.
+        use crate::cmd::Cmd;
+        use crate::engine::Engine;
+        use crate::ids::NodeId;
+
+        type PE = Engine<64, 8, 32, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        let compact_len = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+        let h = e.pool_alloc(compact_len).expect("pool room");
+        let n = mipgen::N;
+        let mut base = std::vec![0.0f32; n];
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / n as f32) - 1.0; // saw
+        }
+        mipgen::build_pyramid_flat_compact(&base, e.pool_slice_mut(h));
+
+        e.create(NodeId(0), Kind::PolyCtrl);
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+        }
+        e.create(NodeId(1), Kind::PolyWt);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        e.apply(Cmd::BindTable { node: NodeId(1), src: TableSrc::Pooled(h) });
+        e.create(NodeId(2), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+
+        e.render_block();
+        let out = e.node_output(NodeId(2), 0);
+        // 8 unison-ish saw voices can constructively peak up to ~8x a single
+        // voice's ~1.2 bound (early-block phase alignment); 9.7 covers that
+        // with margin while still catching genuine divergence.
+        assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 9.7), "bounded: {out:?}");
+        assert!(out.iter().any(|&s| s.abs() > 1e-4), "pooled poly wavetable sounds");
+
+        // Free → pool region reclaimed (Cmd::Free's `table_src()`-driven
+        // `pool.free` doesn't care whether the node is mono or poly).
+        e.apply(Cmd::Free { node: NodeId(1) });
+        assert_eq!(e.pool_alloc(compact_len), Some(h));
+    }
+
+    #[test]
+    fn polywtmorph_pooled_table_renders_via_engine_voicesum() {
+        // Same as above but `PolyWtMorph` with a 2-frame pooled bank (saw +
+        // square) and a `position` control (port 2), driven through the full
+        // engine (pool_region resolved by `render_block`'s poly branch).
+        use crate::cmd::Cmd;
+        use crate::engine::Engine;
+        use crate::ids::NodeId;
+
+        type PE = Engine<64, 8, 32, 4, 45056, 2048>;
+        let mut e = PE::new(48_000.0);
+        let compact_len = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+        let h = e.pool_alloc(2 * compact_len).expect("pool room");
+        let n = mipgen::N;
+        let mut saw = std::vec![0.0f32; n];
+        let mut square = std::vec![0.0f32; n];
+        for i in 0..n {
+            saw[i] = 2.0 * (i as f32 / n as f32) - 1.0;
+            square[i] = if i < n / 2 { 1.0 } else { -1.0 };
+        }
+        {
+            let r = e.pool_slice_mut(h);
+            mipgen::build_pyramid_flat_compact(&saw, &mut r[..compact_len]);
+            mipgen::build_pyramid_flat_compact(&square, &mut r[compact_len..]);
+        }
+
+        e.create(NodeId(0), Kind::PolyCtrl);
+        for v in 0..VOICES {
+            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 90.0 });
+        }
+        e.create(NodeId(1), Kind::PolyWtMorph);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 2).unwrap() = Input::Const(0.5); // position
+        e.apply(Cmd::BindTable { node: NodeId(1), src: TableSrc::Pooled(h) });
+        e.create(NodeId(2), Kind::VoiceSum);
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+
+        e.render_block();
+        let out = e.node_output(NodeId(2), 0);
+        // See `polywt_pooled_table_renders_via_engine_voicesum`'s comment: 8
+        // unison-ish voices can constructively peak above a single voice's bound.
+        assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 9.7), "bounded: {out:?}");
+        assert!(out.iter().any(|&s| s.abs() > 1e-4), "pooled poly morph wavetable sounds");
     }
 }
