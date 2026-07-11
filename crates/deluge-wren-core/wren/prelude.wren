@@ -110,6 +110,7 @@ foreign class Node {
   foreign static src_(kind, freq)
   foreign static sync_(wave, master, slave)
   foreign static env_(attack, release)
+  foreign static adsr_(a, d, s, r)
   foreign static noise_()
   foreign static pink_()
   foreign static brown_()
@@ -160,6 +161,7 @@ foreign class Node {
   foreign static polymoog_(audio, cutoff, res, poles)
   foreign static polyms20_(audio, cutoff, res, resp)
   foreign static polyar_(attack, release)
+  foreign static polyadsr_(a, d, s, r)
   foreign static polymul_(a, b)
   foreign static polyadd_(a, b)
   foreign static polynoise_()
@@ -725,6 +727,10 @@ class Env {
   static ar(attack, release) {
     if (Node.polyMode_ == 1) return Node.polyar_(attack, release)
     return Node.env_(attack, release)
+  }
+  static adsr(attack, decay, sustain, release) {
+    if (Node.polyMode_ == 1) return Node.polyadsr_(attack, decay, sustain, release)
+    return Node.adsr_(attack, decay, sustain, release)
   }
 }
 

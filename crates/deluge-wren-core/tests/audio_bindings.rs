@@ -1381,3 +1381,44 @@ fn non_poly_classes_abort_inside_synth() {
         assert!(!run_script_ok(src), "expected abort for: {src}");
     }
 }
+
+#[test]
+fn synth_adsr_renders_and_sustains() {
+    // `Env.adsr` is the single amp gate (polyGateCount_ == 1) and renders
+    // finite, bounded, non-silent audio end-to-end through Synth → VoiceSum,
+    // same as the Env.ar / Moog / Ms20 render tests above.
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.saw(p) * Env.adsr(0.01, 0.1, 0.6, 0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "Env.adsr bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-4), "Env.adsr voice sounds");
+
+    // Stronger per-sample check: with `run_and_render` fixed to a single
+    // 32-sample (44.1kHz) block, attack=0.01/decay=0.1 never leave the
+    // attack ramp within the window, so a 0.6-sustain assertion needs a
+    // much faster attack/decay to actually land the envelope in its
+    // Sustain stage inside those 32 samples. Peak (attack->decay transient,
+    // level ~1.0) must be well above the tail (deep in Sustain, level
+    // ~0.6*sustain), and the tail must still be non-silent.
+    let mut fast = [StereoFrame::default(); 32];
+    run_and_render(
+        "var b = Synth.new { |p| Osc.saw(p) * Env.adsr(0.0001, 0.0002, 0.6, 0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
+        &mut fast,
+    );
+    let peak = fast.iter().map(|f| f.l.abs()).fold(0.0f32, f32::max);
+    let tail = &fast[20..]; // decay (attack+decay ~13 samples) is long done by here
+    let tail_rms = (tail.iter().map(|f| f.l * f.l).sum::<f32>() / tail.len() as f32).sqrt();
+    assert!(tail_rms > 0.0, "sustained tail is non-silent");
+    assert!(tail_rms < peak, "sustained tail ({tail_rms}) well below the attack peak ({peak})");
+}
+
+#[test]
+fn synth_adsr_counts_as_amp_gate() {
+    // Exactly one amp envelope — an ADSR satisfies the gate requirement
+    // just like Env.ar; a Synth with NO envelope still aborts (unchanged
+    // rule, see `synth_error_cases_abort`).
+    assert!(run_script_ok("Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }"));
+    assert!(!run_script_ok("Synth.new { |p| Osc.saw(p) }"));
+}

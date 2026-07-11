@@ -297,6 +297,27 @@ pub(crate) unsafe extern "C" fn node_env(raw: *mut WrenVM) {
     node_env_impl(&vm);
 }
 
+/// `Node.adsr_(attack, decay, sustain, release)` — mono ADSR envelope. Ports
+/// 0/1/2 = attack/decay/release (all three `Input` slots); sustain is a
+/// scalar control param, not an `Input` (`MAX_INPUTS == 3`), so it's emitted
+/// as `SetParam(id, 0, sustain)` right after `new_node`, mirroring how
+/// `node_chorus_impl`/`node_set_mix_impl` set scalar params.
+pub(crate) fn node_adsr_impl<S: SlotApi>(vm: &S) {
+    let attack = arg_input(vm, 1);
+    let decay = arg_input(vm, 2);
+    let sustain = vm.get_f(3) as f32;
+    let release = arg_input(vm, 4);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Adsr, [attack, decay, release]);
+    audio::set_param(id, 0, sustain);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_adsr(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_adsr_impl(&vm);
+}
+
 pub(crate) fn node_noise_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node_id();
     audio::new_node(id, Kind::Noise, [Input::Const(0.0); 3]);
@@ -1160,6 +1181,28 @@ pub(crate) unsafe extern "C" fn node_polyar(raw: *mut WrenVM) {
     node_polyar_impl(&vm);
 }
 
+/// `Node.polyadsr_(attack, decay, sustain, release)` — poly ADSR envelope
+/// (the amp gate, like `polyar_`). Ports 0/1/2 = attack/decay/release;
+/// sustain is `SetParam(id, 0, sustain)` (see `node_adsr_impl`). Records
+/// itself as the voice's gate exactly like `PolyAr` — the gate model is
+/// unchanged; `PolyAdsr` just adds a decay stage per voice.
+pub(crate) fn node_polyadsr_impl<S: SlotApi>(vm: &S) {
+    let attack = arg_input(vm, 1);
+    let decay = arg_input(vm, 2);
+    let sustain = vm.get_f(3) as f32;
+    let release = arg_input(vm, 4);
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::PolyAdsr, [attack, decay, release]);
+    audio::set_param(id, 0, sustain);
+    audio::poly_record_gate(id);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polyadsr(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polyadsr_impl(&vm);
+}
+
 /// `Node.polymul_(a, b)` — poly × poly (the VCA, or a scalar folded into a
 /// control-rate chain via the prelude `*` operator). Ports 0/1 = both poly.
 /// The returned Node's `poly` flag (see `NodeObj`) is the OR of its operands'
@@ -1658,6 +1701,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "src_(_,_)", node_src_impl::<S>);
     method("main", "Node", true, "sync_(_,_,_)", node_sync_impl::<S>);
     method("main", "Node", true, "env_(_,_)", node_env_impl::<S>);
+    method("main", "Node", true, "adsr_(_,_,_,_)", node_adsr_impl::<S>);
     method("main", "Node", true, "noise_()", node_noise_impl::<S>);
     method("main", "Node", true, "pink_()", node_pink_impl::<S>);
     method("main", "Node", true, "brown_()", node_brown_impl::<S>);
@@ -1708,6 +1752,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polymoog_(_,_,_,_)", node_polymoog_impl::<S>);
     method("main", "Node", true, "polyms20_(_,_,_,_)", node_polyms20_impl::<S>);
     method("main", "Node", true, "polyar_(_,_)", node_polyar_impl::<S>);
+    method("main", "Node", true, "polyadsr_(_,_,_,_)", node_polyadsr_impl::<S>);
     method("main", "Node", true, "polymul_(_,_)", node_polymul_impl::<S>);
     method("main", "Node", true, "polyadd_(_,_)", node_polyadd_impl::<S>);
     method("main", "Node", true, "polynoise_()", node_polynoise_impl::<S>);
