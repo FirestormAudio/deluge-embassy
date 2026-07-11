@@ -268,6 +268,8 @@ foreign class Synth {
   foreign out
   foreign isMono_               // true if built via Synth.mono (has a PolySlew node)
   foreign setGlide_(seconds)    // native glide set (renamed; guarded by `glide=` below)
+  foreign unison=(n)            // unison voice count (clamped 1..=VOICES); works mono or poly
+  foreign detune=(cents)        // unison detune spread in cents; works mono or poly
   // Guard the M1 poly-glide footgun: `Synth.new` (poly) has no per-voice slew
   // node, so `glide=` on a poly synth would otherwise be a silent no-op.
   // Mirrors the Sy-2e `Bus.write_`/`write` guard pattern above.

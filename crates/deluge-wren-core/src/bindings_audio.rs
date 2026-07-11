@@ -103,6 +103,22 @@ impl SynthAlloc {
             SynthAlloc::Poly(_) => None,
         }
     }
+    /// `synth.unison = N` (clamped 1..=VOICES by the allocator itself) — set on
+    /// whichever allocator this `Synth` holds.
+    fn set_unison(&mut self, n: usize) {
+        match self {
+            SynthAlloc::Poly(a) => a.set_unison(n),
+            SynthAlloc::Mono(m) => m.set_unison(n),
+        }
+    }
+    /// `synth.detune = cents` — set the unison detune spread on whichever
+    /// allocator this `Synth` holds.
+    fn set_detune(&mut self, cents: f32) {
+        match self {
+            SynthAlloc::Poly(a) => a.set_detune(cents),
+            SynthAlloc::Mono(m) => m.set_detune(cents),
+        }
+    }
 }
 
 /// A monophonic-or-polyphonic instrument: owns a `SynthAlloc` (Poly or Mono)
@@ -1552,6 +1568,33 @@ pub(crate) unsafe extern "C" fn synth_set_glide(raw: *mut WrenVM) {
     synth_set_glide_impl(&vm);
 }
 
+/// `synth.unison = N` — set the unison voice count (clamped 1..=VOICES by the
+/// allocator's own `set_unison`) on the active allocator, and re-normalize the
+/// VoiceSum output gain to `1/√N` (equal-power unison summing).
+pub(crate) fn synth_set_unison_impl<S: SlotApi>(vm: &S) {
+    let n = (vm.get_f(1) as i64).clamp(1, deluge_audio_graph::VOICES as i64) as usize;
+    let out_node = self_synth(vm).out_node;
+    self_synth(vm).alloc.set_unison(n);
+    audio::set_param(out_node, 0, 1.0 / (n as f32).sqrt()); // VoiceSum gain
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_set_unison(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_set_unison_impl(&vm);
+}
+
+/// `synth.detune = cents` — set the unison detune spread on the active
+/// allocator. Works on both `Synth.new` (poly) and `Synth.mono`.
+pub(crate) fn synth_set_detune_impl<S: SlotApi>(vm: &S) {
+    let cents = vm.get_f(1) as f32;
+    self_synth(vm).alloc.set_detune(cents);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_set_detune_impl(&vm);
+}
+
 /// `macro.value = v` — set a `Ctrl` node's held value (`param 0`).
 pub(crate) fn node_set_value_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32;
@@ -1895,6 +1938,8 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Synth", false, "out", synth_out_impl::<S>);
     method("main", "Synth", false, "isMono_", synth_is_mono_impl::<S>);
     method("main", "Synth", false, "setGlide_(_)", synth_set_glide_impl::<S>);
+    method("main", "Synth", false, "unison=(_)", synth_set_unison_impl::<S>);
+    method("main", "Synth", false, "detune=(_)", synth_set_detune_impl::<S>);
     method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);

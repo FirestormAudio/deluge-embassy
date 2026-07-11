@@ -941,6 +941,8 @@ pub static METHODS: &[MethodEntry] = &[
     method("Synth", "out", bindings_audio::synth_out),
     method("Synth", "isMono_", bindings_audio::synth_is_mono),
     method("Synth", "setGlide_(_)", bindings_audio::synth_set_glide),
+    method("Synth", "unison=(_)", bindings_audio::synth_set_unison),
+    method("Synth", "detune=(_)", bindings_audio::synth_set_detune),
     method("Node", "value=(_)", bindings_audio::node_set_value),
     method("Node", "size=(_)", bindings_audio::node_set_size),
     method("Node", "spread=(_)", bindings_audio::node_set_spread),
