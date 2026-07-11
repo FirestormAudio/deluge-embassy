@@ -95,6 +95,76 @@ impl VoiceAllocator {
     }
 }
 
+/// Max simultaneously-held notes tracked for last-note priority.
+pub const MONO_STACK: usize = 16;
+
+/// Monophonic note allocator with last-note priority and legato glide. Drives
+/// lane 0 of the poly graph: pitch (a PolyCtrl), a PolySlew (snapped from silence,
+/// glides on legato), and one gate (PolyAr/PolyAdsr). Control-plane only.
+pub struct MonoAllocator {
+    pitch_node: NodeId,
+    slew_node: NodeId,
+    gate_node: NodeId,
+    vel_node: Option<NodeId>,
+    notes: [u8; MONO_STACK], // press order; top (notes[len-1]) = sounding
+    len: usize,
+}
+
+impl MonoAllocator {
+    pub fn new(pitch_node: NodeId, slew_node: NodeId, gate_node: NodeId, vel_node: Option<NodeId>) -> MonoAllocator {
+        MonoAllocator { pitch_node, slew_node, gate_node, vel_node, notes: [0; MONO_STACK], len: 0 }
+    }
+
+    pub fn slew_node(&self) -> NodeId { self.slew_node }
+
+    pub fn note_on(&mut self, note: u8, vel: u8, emit: &mut impl FnMut(Cmd)) {
+        if vel == 0 { self.note_off(note, emit); return; }
+        let from_silence = self.len == 0;
+        // push (drop oldest if full)
+        if self.len == MONO_STACK {
+            for i in 1..MONO_STACK { self.notes[i - 1] = self.notes[i]; }
+            self.len -= 1;
+        }
+        self.notes[self.len] = note;
+        self.len += 1;
+        // pitch (always) → PolySlew glides toward it (or snaps, below)
+        emit(Cmd::SetParam { node: self.pitch_node, param: 0, value: note as f32 - A440_NOTE });
+        if let Some(vn) = self.vel_node {
+            emit(Cmd::SetParam { node: vn, param: 0, value: vel as f32 / 127.0 });
+        }
+        if from_silence {
+            emit(Cmd::TriggerVoice { node: self.slew_node, voice: 0 });          // snap the glide
+            emit(Cmd::GateVoice { node: self.gate_node, voice: 0, on: true });   // attack
+        }
+        // legato (else): no snap, no re-gate — true legato
+    }
+
+    pub fn note_off(&mut self, note: u8, emit: &mut impl FnMut(Cmd)) {
+        // find first match
+        let mut idx = None;
+        for i in 0..self.len { if self.notes[i] == note { idx = Some(i); break; } }
+        let Some(i) = idx else { return; }; // unheld → no-op
+        let was_top = i == self.len - 1;
+        // remove (shift down)
+        for j in (i + 1)..self.len { self.notes[j - 1] = self.notes[j]; }
+        self.len -= 1;
+        if self.len == 0 {
+            emit(Cmd::GateVoice { node: self.gate_node, voice: 0, on: false }); // release
+        } else if was_top {
+            let top = self.notes[self.len - 1];
+            emit(Cmd::SetParam { node: self.pitch_node, param: 0, value: top as f32 - A440_NOTE }); // glide back
+        }
+        // removing a non-top held note → stack-only, no sound change
+    }
+
+    pub fn all_notes_off(&mut self, emit: &mut impl FnMut(Cmd)) {
+        if self.len > 0 {
+            emit(Cmd::GateVoice { node: self.gate_node, voice: 0, on: false });
+        }
+        self.len = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -115,6 +185,24 @@ mod tests {
         {
             let mut e = |x: Cmd| c.push(x);
             a.note_off(note, &mut e);
+        }
+        c
+    }
+
+    // Capture the Cmds emitted by one mono note event.
+    fn mon(m: &mut MonoAllocator, note: u8, vel: u8) -> Vec<Cmd> {
+        let mut c: Vec<Cmd> = Vec::new();
+        {
+            let mut e = |x: Cmd| c.push(x);
+            m.note_on(note, vel, &mut e);
+        }
+        c
+    }
+    fn moff(m: &mut MonoAllocator, note: u8) -> Vec<Cmd> {
+        let mut c: Vec<Cmd> = Vec::new();
+        {
+            let mut e = |x: Cmd| c.push(x);
+            m.note_off(note, &mut e);
         }
         c
     }
@@ -242,5 +330,64 @@ mod tests {
         let vlo = match lo[1] { Cmd::SetParam { value, .. } => value, _ => panic!() };
         assert!(vhi > vlo, "higher velocity → larger value: {vhi} vs {vlo}");
         assert!((vhi - 1.0).abs() < 1e-6, "127 → 1.0");
+    }
+
+    #[test]
+    fn mono_first_note_snaps_and_gates() {
+        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), NodeId(30), None);
+        let c = mon(&mut m, 69, 100); // A4 from silence
+        // SetParam(pitch=10, lane0, 0.0) + TriggerVoice(slew=20, 0) + GateVoice(gate=30, 0, on)
+        assert_eq!(c.len(), 3);
+        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), param: 0, .. }));
+        assert!(matches!(c[1], Cmd::TriggerVoice { node: NodeId(20), voice: 0 }));
+        assert!(matches!(c[2], Cmd::GateVoice { node: NodeId(30), voice: 0, on: true }));
+    }
+
+    #[test]
+    fn mono_legato_note_glides_without_regate() {
+        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), NodeId(30), None);
+        mon(&mut m, 60, 100);       // first note (from silence)
+        let c = mon(&mut m, 64, 100); // legato (60 still held)
+        // Only a pitch SetParam (glide) — NO TriggerVoice, NO GateVoice
+        assert_eq!(c.len(), 1);
+        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), param: 0, .. }));
+    }
+
+    #[test]
+    fn mono_note_off_falls_back_to_held_note() {
+        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), NodeId(30), None);
+        mon(&mut m, 60, 100);
+        mon(&mut m, 64, 100); // 64 sounding, 60 held
+        let c = moff(&mut m, 64); // release 64 → glide back to 60
+        assert_eq!(c.len(), 1);
+        match c[0] {
+            Cmd::SetParam { node: NodeId(10), param: 0, value } => assert!((value - (60.0 - 69.0)).abs() < 1e-6),
+            _ => panic!("expected glide-back SetParam to 60"),
+        }
+    }
+
+    #[test]
+    fn mono_last_note_off_releases() {
+        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), NodeId(30), None);
+        mon(&mut m, 60, 100);
+        let c = moff(&mut m, 60); // stack empty → release
+        assert_eq!(c.len(), 1);
+        assert!(matches!(c[0], Cmd::GateVoice { node: NodeId(30), voice: 0, on: false }));
+    }
+
+    #[test]
+    fn mono_velocity_written_when_present() {
+        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), NodeId(30), Some(NodeId(40)));
+        let c = mon(&mut m, 69, 100);
+        // pitch SetParam, velocity SetParam(node 40, 100/127), TriggerVoice, GateVoice
+        assert!(c.iter().any(|cmd| matches!(cmd,
+            Cmd::SetParam { node: NodeId(40), param: 0, value } if (value - 100.0/127.0).abs() < 1e-6)));
+    }
+
+    #[test]
+    fn mono_note_off_unheld_is_noop() {
+        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), NodeId(30), None);
+        let c = moff(&mut m, 60);
+        assert!(c.is_empty());
     }
 }
