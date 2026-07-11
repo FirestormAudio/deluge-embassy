@@ -80,6 +80,7 @@ struct PolyCtx {
     gate_ar: u16,    // the PolyAr recorded by polyar_ (amp gate)
     gate_count: u8,  // number of Env.ar created this build (must be 1)
     vel_node: u16,   // velocity PolyCtrl id, or NULL_ID if the builder didn't take velocity
+    slew_node: u16,  // the PolySlew created by mono_begin, or NULL_ID for a poly build
 }
 impl PolyCtx {
     const fn new() -> Self {
@@ -89,6 +90,7 @@ impl PolyCtx {
             gate_ar: NULL_ID,
             gate_count: 0,
             vel_node: NULL_ID,
+            slew_node: NULL_ID,
         }
     }
 }
@@ -125,6 +127,26 @@ pub fn poly_begin() -> u16 {
     p.gate_ar = NULL_ID;
     p.gate_count = 0;
     p.vel_node = NULL_ID;
+    p.slew_node = NULL_ID;
+    mtof
+}
+/// Mono voice build: PolyCtrl → PolySlew → PolyMtof (the slew is the only
+/// difference from poly_begin). Records pitch_ctrl + slew_node. Returns the
+/// PolyMtof output (the `pitch` handed to the builder).
+pub fn mono_begin() -> u16 {
+    let ctrl = alloc_node_id();
+    new_node(ctrl, Kind::PolyCtrl, [Input::Const(0.0); 3]);
+    let slew = alloc_node_id();
+    new_node(slew, Kind::PolySlew, [Input::Node { node: NodeId(ctrl), port: 0 }, Input::Const(0.0), Input::Const(0.0)]);
+    let mtof = alloc_node_id();
+    new_node(mtof, Kind::PolyMtof, [Input::Node { node: NodeId(slew), port: 0 }, Input::Const(0.0), Input::Const(0.0)]);
+    let p = poly();
+    p.mode = true;
+    p.pitch_ctrl = ctrl;
+    p.slew_node = slew;
+    p.gate_ar = NULL_ID;
+    p.gate_count = 0;
+    p.vel_node = NULL_ID;
     mtof
 }
 /// Record a PolyAr as the voice's amp gate.
@@ -146,6 +168,12 @@ pub fn poly_end() -> (u16, u16, u16) {
     let p = poly();
     p.mode = false;
     (p.pitch_ctrl, p.gate_ar, p.vel_node)
+}
+/// Returns (pitch_ctrl, slew_node, gate_ar, vel_node) for the mono SynthObj.
+pub fn mono_end() -> (u16, u16, u16, u16) {
+    let p = poly();
+    p.mode = false;
+    (p.pitch_ctrl, p.slew_node, p.gate_ar, p.vel_node)
 }
 
 pub fn alloc_node_id() -> u16 {

@@ -67,11 +67,50 @@ impl WrenForeign for NodeObj {
     }
 }
 
-/// A polyphonic instrument: owns a VoiceAllocator + its VoiceSum output node.
-/// Created by `Node.polyEnd_`; not used as a node input (no shared tag).
+/// Either voice-allocation strategy a `Synth` foreign can hold: `polyEnd_`
+/// builds a `Poly` (VoiceAllocator over the poly lanes); `monoEnd_` builds a
+/// `Mono` (MonoAllocator driving lane 0 with legato glide). Wrapped so
+/// `synth_note_on_impl`/`synth_note_off_impl` (and `all_notes_off`, once a
+/// call site exists) dispatch without caring which build path made the synth.
+pub(crate) enum SynthAlloc {
+    Poly(deluge_audio_graph::VoiceAllocator),
+    Mono(deluge_audio_graph::MonoAllocator),
+}
+impl SynthAlloc {
+    fn note_on(&mut self, note: u8, vel: u8, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+        match self {
+            SynthAlloc::Poly(a) => a.note_on(note, vel, emit),
+            SynthAlloc::Mono(m) => m.note_on(note, vel, emit),
+        }
+    }
+    fn note_off(&mut self, note: u8, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+        match self {
+            SynthAlloc::Poly(a) => a.note_off(note, emit),
+            SynthAlloc::Mono(m) => m.note_off(note, emit),
+        }
+    }
+    #[allow(dead_code)] // no Wren call site yet (no `allNotesOff` binding); kept for parity with note_on/note_off
+    fn all_notes_off(&mut self, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+        match self {
+            SynthAlloc::Poly(a) => a.all_notes_off(emit),
+            SynthAlloc::Mono(m) => m.all_notes_off(emit),
+        }
+    }
+    /// The mono build's PolySlew node, for `Synth.glide=`. `None` on a poly synth.
+    fn mono_slew(&self) -> Option<deluge_audio_graph::NodeId> {
+        match self {
+            SynthAlloc::Mono(m) => Some(m.slew_node()),
+            SynthAlloc::Poly(_) => None,
+        }
+    }
+}
+
+/// A monophonic-or-polyphonic instrument: owns a `SynthAlloc` (Poly or Mono)
+/// + its VoiceSum output node. Created by `Node.polyEnd_`/`Node.monoEnd_`;
+/// not used as a node input (no shared tag).
 #[repr(C)]
 pub(crate) struct SynthObj {
-    pub alloc: deluge_audio_graph::VoiceAllocator,
+    pub alloc: SynthAlloc,
     pub out_node: u16,
 }
 impl WrenForeign for SynthObj {
@@ -1397,13 +1436,42 @@ pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
     let vel = if vel_raw == audio::NULL_ID { None } else { Some(NodeId(vel_raw)) };
     let sum = audio::alloc_node_id();
     audio::new_node(sum, Kind::VoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), NodeId(gate_ar), vel);
+    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), NodeId(gate_ar), vel));
     unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_poly_end(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_poly_end_impl(&vm);
+}
+
+/// `Node.monoBegin_()` — start a mono voice build; returns the `pitch` node
+/// (PolyMtof, fed from a PolySlew — see `audio::mono_begin`).
+pub(crate) fn node_mono_begin_impl<S: SlotApi>(vm: &S) {
+    let mtof = audio::mono_begin();
+    unsafe { return_node(vm, mtof) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_mono_begin(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_mono_begin_impl(&vm);
+}
+
+/// `Node.monoEnd_(out)` — finish a mono voice: VoiceSum(out) → build a
+/// MonoAllocator into a Synth foreign object (in slot 0).
+pub(crate) fn node_mono_end_impl<S: SlotApi>(vm: &S) {
+    let out = arg_input(vm, 1);
+    let (pitch, slew, gate, vel_raw) = audio::mono_end();
+    let vel = if vel_raw == audio::NULL_ID { None } else { Some(NodeId(vel_raw)) };
+    let sum = audio::alloc_node_id();
+    audio::new_node(sum, Kind::VoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
+    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(NodeId(pitch), NodeId(slew), NodeId(gate), vel));
+    unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_mono_end(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_mono_end_impl(&vm);
 }
 
 fn self_synth<S: SlotApi>(vm: &S) -> &mut SynthObj {
@@ -1440,6 +1508,27 @@ pub(crate) fn synth_out_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn synth_out(raw: *mut WrenVM) {
     let vm = Vm(raw);
     synth_out_impl(&vm);
+}
+
+/// `synth.glide = seconds` — set the mono build's PolySlew glide time (param 0
+/// of the `PolySlew` node recorded by `mono_begin`/`mono_end`). On a poly
+/// synth there is no slew node, so this is a NO-OP: `SlotApi` has no
+/// Rust-side "abort the fiber" primitive (no `wrenAbortFiber`/error-slot
+/// call anywhere in this crate or `slotapi.rs` — every existing misuse check,
+/// e.g. the `Env.ar`-count and amp-source guards, is done in the *prelude*
+/// (Wren-side `Fiber.abort`) before the foreign is ever called). Silently
+/// ignoring `glide=` on a poly synth is consistent with "glide has no
+/// meaning without a single mono voice" rather than a bug to signal.
+pub(crate) fn synth_set_glide_impl<S: SlotApi>(vm: &S) {
+    let t = vm.get_f(1) as f32;
+    if let Some(slew) = self_synth(vm).alloc.mono_slew() {
+        audio::set_param(slew.0, 0, t); // PolySlew set_time
+    }
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_set_glide(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_set_glide_impl(&vm);
 }
 
 /// `macro.value = v` — set a `Ctrl` node's held value (`param 0`).
@@ -1778,9 +1867,12 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polywt_(_,_)", node_polywt_impl::<S>);
     method("main", "Node", true, "polywt_pooled_(_,_)", node_polywt_pooled_impl::<S>);
     method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
+    method("main", "Node", true, "monoBegin_()", node_mono_begin_impl::<S>);
+    method("main", "Node", true, "monoEnd_(_)", node_mono_end_impl::<S>);
     method("main", "Synth", false, "noteOn(_,_)", synth_note_on_impl::<S>);
     method("main", "Synth", false, "noteOff(_)", synth_note_off_impl::<S>);
     method("main", "Synth", false, "out", synth_out_impl::<S>);
+    method("main", "Synth", false, "glide=(_)", synth_set_glide_impl::<S>);
     method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
