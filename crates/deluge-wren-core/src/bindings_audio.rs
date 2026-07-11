@@ -119,6 +119,14 @@ impl SynthAlloc {
             SynthAlloc::Mono(m) => m.set_detune(cents),
         }
     }
+    /// `synth.width = amount` — set the unison stereo spread on whichever
+    /// allocator this `Synth` holds.
+    fn set_width(&mut self, amount: f32) {
+        match self {
+            SynthAlloc::Poly(a) => a.set_width(amount),
+            SynthAlloc::Mono(m) => m.set_width(amount),
+        }
+    }
 }
 
 /// A monophonic-or-polyphonic instrument: owns a `SynthAlloc` (Poly or Mono)
@@ -1454,8 +1462,8 @@ pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
     let gates: [NodeId; deluge_audio_graph::MAX_GATES] = core::array::from_fn(|i| NodeId(gates_raw[i]));
     let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
     let sum = audio::alloc_node_id();
-    audio::new_node(sum, Kind::VoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), gates, n_gates, vel));
+    audio::new_node(sum, Kind::StereoVoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
+    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), gates, n_gates, vel, NodeId(sum)));
     unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -1485,8 +1493,8 @@ pub(crate) fn node_mono_end_impl<S: SlotApi>(vm: &S) {
     let gates: [NodeId; deluge_audio_graph::MAX_GATES] = core::array::from_fn(|i| NodeId(gates_raw[i]));
     let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
     let sum = audio::alloc_node_id();
-    audio::new_node(sum, Kind::VoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(NodeId(pitch), NodeId(slew), gates, n_gates, vel));
+    audio::new_node(sum, Kind::StereoVoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
+    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(NodeId(pitch), NodeId(slew), gates, n_gates, vel, NodeId(sum)));
     unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -1520,10 +1528,14 @@ pub(crate) unsafe extern "C" fn synth_note_off(raw: *mut WrenVM) {
     synth_note_off_impl(&vm);
 }
 
-/// `synth.out` — the mono VoiceSum node, for routing (`Out.patch(synth.out)`).
+/// `synth.out` — the `StereoVoiceSum` node, for routing (`Out.patch(synth.out)`).
+/// WIDTH-2 (port0=L, port1=R) — `write_source_to_bus` routes it per-side.
+/// At default width (0, no unison spread) both channels carry the identical
+/// mono sum, so this is byte-identical to the old mono `VoiceSum` unless
+/// `synth.width` is set.
 pub(crate) fn synth_out_impl<S: SlotApi>(vm: &S) {
     let id = self_synth(vm).out_node;
-    unsafe { return_node(vm, id) }; // return_node overwrites slot 0 with a NodeObj
+    unsafe { return_node_w(vm, id, 2) }; // return_node_w overwrites slot 0 with a width-2 NodeObj
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_out(raw: *mut WrenVM) {
@@ -1570,12 +1582,12 @@ pub(crate) unsafe extern "C" fn synth_set_glide(raw: *mut WrenVM) {
 
 /// `synth.unison = N` — set the unison voice count (clamped 1..=VOICES by the
 /// allocator's own `set_unison`) on the active allocator, and re-normalize the
-/// VoiceSum output gain to `1/√N` (equal-power unison summing).
+/// StereoVoiceSum output gain to `1/√N` (equal-power unison summing).
 pub(crate) fn synth_set_unison_impl<S: SlotApi>(vm: &S) {
     let n = (vm.get_f(1) as i64).clamp(1, deluge_audio_graph::VOICES as i64) as usize;
     let out_node = self_synth(vm).out_node;
     self_synth(vm).alloc.set_unison(n);
-    audio::set_param(out_node, 0, 1.0 / (n as f32).sqrt()); // VoiceSum gain
+    audio::set_param(out_node, 0, 1.0 / libm::sqrtf(n as f32)); // StereoVoiceSum gain (param 0)
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_set_unison(raw: *mut WrenVM) {
@@ -1593,6 +1605,18 @@ pub(crate) fn synth_set_detune_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
     let vm = Vm(raw);
     synth_set_detune_impl(&vm);
+}
+
+/// `synth.width = amount` — set the unison stereo spread (0..1) on the active
+/// allocator. Pan rides the next note-on (no immediate SetParam).
+pub(crate) fn synth_set_width_impl<S: SlotApi>(vm: &S) {
+    let amount = vm.get_f(1) as f32;
+    self_synth(vm).alloc.set_width(amount);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn synth_set_width(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    synth_set_width_impl(&vm);
 }
 
 /// `macro.value = v` — set a `Ctrl` node's held value (`param 0`).
@@ -1940,6 +1964,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Synth", false, "setGlide_(_)", synth_set_glide_impl::<S>);
     method("main", "Synth", false, "unison=(_)", synth_set_unison_impl::<S>);
     method("main", "Synth", false, "detune=(_)", synth_set_detune_impl::<S>);
+    method("main", "Synth", false, "width=(_)", synth_set_width_impl::<S>);
     method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
     method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);

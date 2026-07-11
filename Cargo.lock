@@ -1532,6 +1532,7 @@ dependencies = [
  "deluge-audio-graph",
  "deluge-dsp-kernels",
  "deluge-wren-core",
+ "libm",
  "mipgen",
  "wren-sys",
 ]

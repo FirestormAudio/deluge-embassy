@@ -1014,8 +1014,8 @@ fn synth_note_on_emits_pitch_and_gate() {
     let cmds = run_and_capture_cmds(
         "var p = Node.polyBegin_()\nvar v = Node.polymul_(Node.polysvf_(Node.polyosc_(p, 0), 1200, 0.2), Node.polyar_(0.01, 0.3))\nvar s = Node.polyEnd_(v)\ns.noteOn(69, 100)",
     );
-    // VoiceSum built at polyEnd_.
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::VoiceSum, .. })), "VoiceSum");
+    // StereoVoiceSum built at polyEnd_ (Sy-6a: width-2 sum node, replaces the old mono VoiceSum).
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::StereoVoiceSum, .. })), "StereoVoiceSum");
     // note_on → SetParam(pitch lane 0 = note-69 = 0) + GateVoice(gate, 0, true).
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if value.abs() < 1e-6)), "pitch");
     assert!(cmds.iter().any(|c| matches!(c, Cmd::GateVoice { voice: 0, on: true, .. })), "gate on");
@@ -1026,7 +1026,7 @@ fn synth_builds_the_poly_graph() {
     let cmds = run_and_capture_cmds(
         "var bass = Synth.new { |p| Osc.sine(p).lpf(1200) * Env.ar(0.01, 0.3) }",
     );
-    for k in [Kind::PolyCtrl, Kind::PolyMtof, Kind::PolyOsc, Kind::PolySvf, Kind::PolyAr, Kind::PolyMul, Kind::VoiceSum] {
+    for k in [Kind::PolyCtrl, Kind::PolyMtof, Kind::PolyOsc, Kind::PolySvf, Kind::PolyAr, Kind::PolyMul, Kind::StereoVoiceSum] {
         assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind, .. } if *kind == k)), "missing {:?}", k);
     }
     // No mono Osc/Svf leaked in.

@@ -35,6 +35,10 @@ test-support = ["wren-sys-backend"]
 # false` and pull in a different VM backend instead.
 wren-sys = { path = "../../wren-sys", optional = true }
 deluge-audio-graph = { path = "../deluge-audio-graph" }
+# no_std float math (this crate is unconditionally `#![no_std]`, cross-compiled
+# for armv7a device firmware — no libstd `f32::sqrt`/etc). Same version as
+# deluge-dsp-kernels' own libm dependency.
+libm = "0.2"
 # Needed directly (not just transitively via deluge-audio-graph) so this crate
 # and its integration tests can name `deluge_dsp_kernels::wavetable::TableId`
 # when building a `TableSrc::Static` for `Cmd::BindTable` (Task 5).
