@@ -8,6 +8,7 @@ use crate::Input;
 use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
     drive::{Drive, Shape},
+    dynamics::{Comp, Detector},
     env::{Adsr, Ar}, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
@@ -70,6 +71,7 @@ pub enum Kind {
     Hall,
     Plate,
     Drive,
+    Comp,
     Eq,
     Lfo,
     SampleHold,
@@ -131,6 +133,7 @@ enum State {
     Hall(Fdn8),
     Plate(Dattorro),
     Drive(Drive),
+    Comp(Comp),
     Eq(Eq),
     Lfo(Lfo),
     SampleHold(SampleHold),
@@ -210,6 +213,7 @@ impl Node {
             Kind::Hall => State::Hall(Fdn8::new()),
             Kind::Plate => State::Plate(Dattorro::new()),
             Kind::Drive => State::Drive(Drive::new(Shape::Soft)),
+            Kind::Comp => State::Comp(Comp::new(-20.0, 4.0, 0.01, 0.1, 6.0, 0.0, Detector::Rms)),
             Kind::Eq => State::Eq(Eq::new(EqType::Peak)),
             Kind::Lfo => State::Lfo(Lfo::new()),
             Kind::SampleHold => State::SampleHold(SampleHold::new()),
@@ -390,6 +394,16 @@ impl Node {
                 1 => d.set_tone(value),
                 2 => d.set_mix(value),
                 3 => d.set_shape(value as u8),
+                _ => {}
+            },
+            State::Comp(c) => match param {
+                0 => c.set_threshold(value),
+                1 => c.set_ratio(value),
+                2 => c.set_attack(value),
+                3 => c.set_release(value),
+                4 => c.set_knee(value),
+                5 => c.set_makeup(value),
+                6 => c.set_detector(if value == 0.0 { Detector::Peak } else { Detector::Rms }),
                 _ => {}
             },
             State::Eq(e) => match param {
@@ -734,6 +748,11 @@ impl Node {
             Kind::Drive => {
                 if let State::Drive(d) = &mut self.state {
                     d.process(ins[0], dt, outs.port(0));
+                }
+            }
+            Kind::Comp => {
+                if let State::Comp(c) = &mut self.state {
+                    c.process(ins[0], dt, outs.port(0));
                 }
             }
             Kind::Eq => {
@@ -1411,6 +1430,32 @@ mod tests {
         }
         assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 4.0));
         assert!(buf.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn comp_node_wires_params_and_compresses() {
+        assert_eq!(Node::out_width(Kind::Comp), 1);
+        let mut n = Node::new(Kind::Comp, 0);
+        n.set_param(0, -20.0); // threshold
+        n.set_param(1, 8.0);   // ratio
+        n.set_param(2, 0.001); // attack
+        n.set_param(3, 0.05);  // release
+        n.set_param(4, 0.0);   // knee (hard)
+        n.set_param(5, 0.0);   // makeup
+        n.set_param(6, 0.0);   // Peak
+        // Loud constant 1.0 (0 dB, well above -20) on port 0; run several blocks to
+        // settle the ballistics, then assert the output is well below the input.
+        // Scaffolding copied from `drive_node_renders_mono_bounded` (node.rs:1399).
+        let input = [1.0f32; 64];
+        let ins = [In::A(&input), In::A(&[0.0; 64]), In::A(&[0.0; 64])];
+        let mut buf = [0.0f32; 64];
+        for _ in 0..20 {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None);
+        }
+        assert!(buf.iter().all(|s| s.is_finite()), "finite");
+        // 0 dB through thr=-20/ratio=8 → ~15 dB GR → settled magnitude ≈ 0.18, well < 1.0.
+        assert!(buf[buf.len() - 1].abs() < 0.5, "compressed well below input, got {}", buf[buf.len() - 1]);
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub enum Detector {
     Rms,
 }
 
+#[derive(Clone, Copy)]
 pub struct Comp {
     threshold_db: f32,
     ratio: f32,
