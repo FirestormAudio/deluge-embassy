@@ -1250,6 +1250,46 @@ mod tests {
     }
 
     #[test]
+    fn polywt_process_voice_morph_matches_scalar_wtosc_per_lane() {
+        // Parallels `polywt_process_voice_matches_scalar_wtosc_per_lane` for
+        // the morph path: `PolyWt::process_voice_morph` is a thin per-voice
+        // delegate to `WtOsc::process_morph` — voice v fed pitch f (and a
+        // fixed, non-trivial position so the morph actually blends between
+        // frames) must equal a standalone `WtOsc::process_morph` fed the
+        // same pitch/position, sharing the same (borrowed) 2-frame region.
+        use crate::wavetable::COMPACT_LEN;
+        let n = mipgen::N;
+        let mut saw = std::vec![0.0f32; n];
+        let mut square = std::vec![0.0f32; n];
+        for i in 0..n {
+            saw[i] = 2.0 * (i as f32 / n as f32) - 1.0;
+            square[i] = if i < n / 2 { 1.0 } else { -1.0 };
+        }
+        let mut region = std::vec![0.0f32; 2 * COMPACT_LEN];
+        mipgen::build_pyramid_flat_compact(&saw, &mut region[..COMPACT_LEN]);
+        mipgen::build_pyramid_flat_compact(&square, &mut region[COMPACT_LEN..]);
+
+        let dt = 1.0 / 48_000.0;
+        let nsamp = 200;
+        let position = 0.3f32;
+        let mut poly = PolyWt::new();
+        for (v, &f) in [220.0f32, 330.0f32, 55.0f32].iter().enumerate() {
+            let mut out = std::vec![0.0f32; nsamp];
+            poly.process_voice_morph(v, &region, 2, In::K(f), In::K(0.0), In::K(position), dt, &mut out);
+            let mut refosc = WtOsc::new();
+            let mut want = std::vec![0.0f32; nsamp];
+            refosc.process_morph(&region, 2, In::K(f), In::K(0.0), In::K(position), dt, &mut want);
+            assert_eq!(out, want, "voice {v} @ {f} Hz");
+        }
+        // Distinct per-voice phase accumulators: lanes at different pitches diverge.
+        let mut o0 = std::vec![0.0f32; nsamp];
+        let mut o1 = std::vec![0.0f32; nsamp];
+        poly.process_voice_morph(0, &region, 2, In::K(220.0), In::K(0.0), In::K(position), dt, &mut o0);
+        poly.process_voice_morph(1, &region, 2, In::K(330.0), In::K(0.0), In::K(position), dt, &mut o1);
+        assert!(o0 != o1, "independent voices at different pitches must diverge");
+    }
+
+    #[test]
     fn polywt_process_voice_morph_bounded_and_position_varies() {
         use crate::wavetable::COMPACT_LEN;
         let n = mipgen::N;

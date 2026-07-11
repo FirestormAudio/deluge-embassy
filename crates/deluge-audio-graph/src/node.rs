@@ -1820,6 +1820,60 @@ mod tests {
     }
 
     #[test]
+    fn polywtmorph_matches_mono_per_voice() {
+        // Static table 6 (HarmonicSweep) — a baked-in 2D (multi-frame) morph
+        // bank (see `TableId`'s doc comment). Parallels
+        // `polywt_single_matches_mono_per_voice`: a PolyWtMorph-backed poly
+        // node with distinct per-voice pitch and a fixed, non-trivial
+        // `position` (0.3, so the morph actually blends between frames
+        // rather than landing exactly on one) must match 8 independent mono
+        // `Kind::Wavetable` nodes bound to the same multi-frame table — bit-
+        // identical, since `PolyWt::process_voice_morph` is a thin per-voice
+        // delegate to the same `WtOsc::process_morph` kernel that mono
+        // `Kind::Wavetable` routes to once it detects `frames > 1` (see
+        // `process_resolved`'s `Kind::Wavetable` arm).
+        //
+        // Node-level (not `Engine`), for the same reason as the single-cycle
+        // test above: builds the pitch tile directly in the sample-major
+        // interleaved convention `poly_process` reads/writes, so
+        // `out[i*VOICES+v]` is exactly voice v's trace.
+        let freqs: [f32; VOICES] = core::array::from_fn(|v| (v as f32 + 1.0) * 110.0);
+        let dt = 1.0 / 48_000.0;
+        let n = 64usize;
+        let position = 0.3f32;
+
+        let mut poly = Node::new(Kind::PolyWtMorph, 0);
+        poly.bind_table(TableSrc::Static(TableId(6)));
+        let mut pitch = std::vec![0.0f32; VOICES * n];
+        for i in 0..n {
+            for v in 0..VOICES {
+                pitch[i * VOICES + v] = freqs[v];
+            }
+        }
+        let zero = std::vec![0.0f32; n];
+        let pos = std::vec![position; n];
+        let ins = [In::A(&zero), In::A(&zero), In::A(&pos)];
+        let mut out = std::vec![0.0f32; VOICES * n];
+        poly.poly_process(&ins, [Some(&pitch), None], dt, &mut out, None);
+
+        for v in 0..VOICES {
+            let mut mono = Node::new(Kind::Wavetable, 0);
+            mono.bind_table(TableSrc::Static(TableId(6)));
+            let freq_buf = std::vec![freqs[v]; n];
+            let mono_ins = [In::A(&freq_buf), In::A(&zero), In::A(&pos)];
+            let mut mono_out = std::vec![0.0f32; n];
+            {
+                let mut outs = OutView::single(&mut mono_out);
+                mono.process_resolved(&mono_ins, dt, &mut outs, None);
+            }
+            for i in 0..n {
+                assert_eq!(out[i * VOICES + v], mono_out[i], "voice {v} sample {i}");
+            }
+            assert!(mono_out.iter().any(|&s| s != 0.0), "voice {v} renders");
+        }
+    }
+
+    #[test]
     fn polywtmorph_renders_finite_bounded_and_position_varies() {
         // Static table 6 (HarmonicSweep) is a baked-in 2D (multi-frame) morph
         // bank (see `TableId`'s doc comment). PolyWtMorph must render finite,
