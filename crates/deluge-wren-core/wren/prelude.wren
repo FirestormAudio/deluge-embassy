@@ -139,6 +139,14 @@ foreign class Node {
   foreign static drive_(input, drive, tone, mix, shape)
   foreign tone=(v)
   foreign wet=(v)      // Drive dry/wet (NOT mix= — that's set_param 0, = drive here)
+  foreign static comp_(input, threshold, ratio, attack, release, knee, makeup, detector)
+  foreign compThreshold=(v)
+  foreign compRatio=(v)
+  foreign compAttack=(v)
+  foreign compRelease=(v)
+  foreign compKnee=(v)
+  foreign compMakeup=(v)
+  foreign compDetector=(v)
   foreign static eq_(input, freq, gain, q, type)
   foreign hz=(v)       // EQ centre/corner frequency (NOT freq= — that's the Osc's)
   foreign gain=(v)     // EQ band gain in dB
@@ -724,6 +732,23 @@ class Drive {
   static tube(input, drive, tone, mix) {
     if (Node.polyMode_ == 1) Fiber.abort("Drive is an effect — apply it after the Synth's .out, not inside the voice")
     return Node.drive_(input, drive, tone, mix, 3)
+  }
+}
+
+// Dynamics compressor/limiter. `threshold` dB, `ratio` (1 = none, higher = more
+// compression), `attack`/`release` seconds, feed-forward with soft knee:
+//   Out.patch(Comp.new(mix, -18, 4, 0.01, 0.2))
+//   var c = Comp.limit(mix, -1); c.compRelease = 0.05
+class Comp {
+  // Full compressor: RMS detector, 6 dB soft knee, no makeup, by default.
+  static new(input, threshold, ratio, attack, release) {
+    if (Node.polyMode_ == 1) Fiber.abort("Comp is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.comp_(input, threshold, ratio, attack, release, 6, 0, 1)
+  }
+  // Limiter preset: high ratio, fast attack, peak detector, hard knee.
+  static limit(input, threshold) {
+    if (Node.polyMode_ == 1) Fiber.abort("Comp is an effect — apply it after the Synth's .out, not inside the voice")
+    return Node.comp_(input, threshold, 20, 0.001, 0.1, 0, 0, 0)
   }
 }
 

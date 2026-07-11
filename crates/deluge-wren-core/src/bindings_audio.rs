@@ -844,6 +844,104 @@ pub(crate) unsafe extern "C" fn node_set_wet(raw: *mut WrenVM) {
     node_set_wet_impl(&vm);
 }
 
+/// `Kind::Comp` compressor node (no buffer); sets threshold/ratio/attack/
+/// release/knee/makeup/detector params. (Modeled on `node_drive_impl`, :806.)
+pub(crate) fn node_comp_impl<S: SlotApi>(vm: &S) {
+    let input = arg_input(vm, 1);
+    let threshold = vm.get_f(2) as f32;
+    let ratio = vm.get_f(3) as f32;
+    let attack = vm.get_f(4) as f32;
+    let release = vm.get_f(5) as f32;
+    let knee = vm.get_f(6) as f32;
+    let makeup = vm.get_f(7) as f32;
+    let detector = vm.get_f(8) as f32;
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Comp, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::set_param(id, 0, threshold);
+    audio::set_param(id, 1, ratio);
+    audio::set_param(id, 2, attack);
+    audio::set_param(id, 3, release);
+    audio::set_param(id, 4, knee);
+    audio::set_param(id, 5, makeup);
+    audio::set_param(id, 6, detector);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_comp(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_comp_impl(&vm);
+}
+
+pub(crate) fn comp_set_threshold_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 0 = threshold
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn comp_set_threshold(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    comp_set_threshold_impl(&vm);
+}
+
+pub(crate) fn comp_set_ratio_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 1 = ratio
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn comp_set_ratio(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    comp_set_ratio_impl(&vm);
+}
+
+pub(crate) fn comp_set_attack_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 2 = attack
+    audio::set_param(self_id(vm), 2, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn comp_set_attack(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    comp_set_attack_impl(&vm);
+}
+
+pub(crate) fn comp_set_release_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 3 = release
+    audio::set_param(self_id(vm), 3, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn comp_set_release(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    comp_set_release_impl(&vm);
+}
+
+pub(crate) fn comp_set_knee_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 4 = knee
+    audio::set_param(self_id(vm), 4, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn comp_set_knee(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    comp_set_knee_impl(&vm);
+}
+
+pub(crate) fn comp_set_makeup_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 5 = makeup
+    audio::set_param(self_id(vm), 5, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn comp_set_makeup(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    comp_set_makeup_impl(&vm);
+}
+
+pub(crate) fn comp_set_detector_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32; // param index 6 = detector (0 = Peak, else Rms)
+    audio::set_param(self_id(vm), 6, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn comp_set_detector(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    comp_set_detector_impl(&vm);
+}
+
 pub(crate) fn node_set_rate_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // param 1 = rate (Kind::Chorus/Flanger)
     audio::set_param(self_id(vm), 1, v);
@@ -1923,6 +2021,14 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "drive_(_,_,_,_,_)", node_drive_impl::<S>);
     method("main", "Node", false, "tone=(_)", node_set_tone_impl::<S>);
     method("main", "Node", false, "wet=(_)", node_set_wet_impl::<S>);
+    method("main", "Node", true, "comp_(_,_,_,_,_,_,_,_)", node_comp_impl::<S>);
+    method("main", "Node", false, "compThreshold=(_)", comp_set_threshold_impl::<S>);
+    method("main", "Node", false, "compRatio=(_)", comp_set_ratio_impl::<S>);
+    method("main", "Node", false, "compAttack=(_)", comp_set_attack_impl::<S>);
+    method("main", "Node", false, "compRelease=(_)", comp_set_release_impl::<S>);
+    method("main", "Node", false, "compKnee=(_)", comp_set_knee_impl::<S>);
+    method("main", "Node", false, "compMakeup=(_)", comp_set_makeup_impl::<S>);
+    method("main", "Node", false, "compDetector=(_)", comp_set_detector_impl::<S>);
     method("main", "Node", true, "eq_(_,_,_,_,_)", node_eq_impl::<S>);
     method("main", "Node", false, "hz=(_)", node_set_hz_impl::<S>);
     method("main", "Node", false, "gain=(_)", node_set_gain_impl::<S>);
