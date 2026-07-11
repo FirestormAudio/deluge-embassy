@@ -15,6 +15,14 @@ const A440_NOTE: f32 = 69.0;
 /// envelopes sharing one voice-allocation lane).
 pub const MAX_GATES: usize = 4;
 
+/// Semitone offset for unison voice `u` of `count`, spread symmetrically and
+/// evenly over ±`detune_cents`. `count <= 1` ⇒ 0.0 (no detune).
+fn unison_offset(u: usize, count: usize, detune_cents: f32) -> f32 {
+    if count <= 1 { return 0.0; }
+    let t = -1.0 + 2.0 * (u as f32) / ((count - 1) as f32); // -1..+1
+    t * detune_cents / 100.0
+}
+
 /// Per-lane lifecycle for release-tail-aware allocation.
 #[derive(Clone, Copy, PartialEq)]
 enum LaneState {
@@ -31,6 +39,8 @@ pub struct VoiceAllocator {
     lane_state: [LaneState; VOICES],
     lane_age: [u32; VOICES],
     clock: u32,
+    unison: usize,
+    detune_cents: f32,
 }
 
 impl VoiceAllocator {
@@ -48,8 +58,13 @@ impl VoiceAllocator {
             lane_state: [LaneState::Free; VOICES],
             lane_age: [0; VOICES],
             clock: 0,
+            unison: 1,
+            detune_cents: 0.0,
         }
     }
+
+    pub fn set_unison(&mut self, n: usize) { self.unison = n.clamp(1, VOICES); }
+    pub fn set_detune(&mut self, cents: f32) { self.detune_cents = cents; }
 
     /// Fan a gate transition out to every configured envelope, preserving order.
     fn gate_all(&self, lane: usize, on: bool, emit: &mut impl FnMut(Cmd)) {
@@ -92,36 +107,30 @@ impl VoiceAllocator {
             self.note_off(note, emit); // MIDI: note-on vel 0 == note-off
             return;
         }
-        let lane = self.pick_lane();
-        self.lane_state[lane] = LaneState::Held(note);
-        self.lane_age[lane] = self.clock;
-        self.clock = self.clock.wrapping_add(1);
-        emit(Cmd::SetParam {
-            node: self.pitch_node,
-            param: lane as u8,
-            value: note as f32 - A440_NOTE,
-        });
-        if let Some(vn) = self.vel_node {
-            emit(Cmd::SetParam { node: vn, param: lane as u8, value: vel as f32 / 127.0 });
+        let u_count = self.unison.min(VOICES);
+        for u in 0..u_count {
+            let lane = self.pick_lane();
+            self.lane_state[lane] = LaneState::Held(note);
+            self.lane_age[lane] = self.clock;
+            self.clock = self.clock.wrapping_add(1);
+            let value = note as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
+            emit(Cmd::SetParam { node: self.pitch_node, param: lane as u8, value });
+            if let Some(vn) = self.vel_node {
+                emit(Cmd::SetParam { node: vn, param: lane as u8, value: vel as f32 / 127.0 });
+            }
+            self.gate_all(lane, true, emit);
         }
-        self.gate_all(lane, true, emit);
     }
 
     pub fn note_off(&mut self, note: u8, emit: &mut impl FnMut(Cmd)) {
-        // Release the most-recently-allocated lane playing `note`.
-        let mut best: Option<usize> = None;
+        // Release EVERY lane holding `note` (unison note-on may have grabbed several).
         for v in 0..VOICES {
-            if self.lane_state[v] == LaneState::Held(note)
-                && best.map_or(true, |b| self.lane_age[v] > self.lane_age[b])
-            {
-                best = Some(v);
+            if self.lane_state[v] == LaneState::Held(note) {
+                self.gate_all(v, false, emit);
+                self.lane_state[v] = LaneState::Releasing;
+                self.lane_age[v] = self.clock;
+                self.clock = self.clock.wrapping_add(1);
             }
-        }
-        if let Some(lane) = best {
-            self.gate_all(lane, false, emit);
-            self.lane_state[lane] = LaneState::Releasing;
-            self.lane_age[lane] = self.clock;
-            self.clock = self.clock.wrapping_add(1);
         }
         // Unheld note → no-op.
     }
@@ -240,6 +249,9 @@ mod tests {
         g[0] = NodeId(20);
         VoiceAllocator::new(NodeId(10), g, 1, None)
     }
+
+    // 1-gate VoiceAllocator for unison tests: pitch=NodeId(10), gate=NodeId(20), no vel node.
+    fn mk_poly() -> VoiceAllocator { mk() }
 
     // Capture the Cmds emitted by one note event.
     fn on(a: &mut VoiceAllocator, note: u8, vel: u8) -> Vec<Cmd> {
@@ -587,5 +599,72 @@ mod tests {
         let c2 = mon(&mut m, 64, 100);
         assert_eq!(c2.len(), 1);
         assert!(matches!(c2[0], Cmd::SetParam { node: NodeId(10), .. }));
+    }
+
+    #[test]
+    fn unison_offset_spreads_symmetric_and_even() {
+        assert_eq!(unison_offset(0, 1, 10.0), 0.0); // single voice = no detune
+        // U=2 @ 10 cents → ±0.1 semitone
+        assert!((unison_offset(0, 2, 10.0) - (-0.1)).abs() < 1e-6);
+        assert!((unison_offset(1, 2, 10.0) - 0.1).abs() < 1e-6);
+        // U=3 @ 10 cents → -0.1, 0, +0.1
+        assert!((unison_offset(0, 3, 10.0) - (-0.1)).abs() < 1e-6);
+        assert!(unison_offset(1, 3, 10.0).abs() < 1e-6);
+        assert!((unison_offset(2, 3, 10.0) - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn poly_unison_allocates_u_distinct_detuned_lanes() {
+        let mut a = mk_poly(); // helper: VoiceAllocator, pitch=NodeId(10), 1 gate=NodeId(20), no vel
+        a.set_unison(3);
+        a.set_detune(10.0);
+        let c = on(&mut a, 69, 100); // A4, 3 unison voices
+        // 3 lanes × (SetParam pitch + GateVoice) = 6 Cmds; the 3 SetParam values are the 3 offsets around 0
+        let pitches: Vec<(u8, f32)> = c.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(10), param, value } => Some((*param, *value)),
+            _ => None,
+        }).collect();
+        assert_eq!(pitches.len(), 3, "3 distinct pitch SetParams");
+        // lanes distinct
+        let mut lanes: Vec<u8> = pitches.iter().map(|(p, _)| *p).collect();
+        lanes.sort(); lanes.dedup();
+        assert_eq!(lanes.len(), 3, "3 distinct lanes");
+        // values are 0 (=A4 semitone) ± 0.1
+        let mut vals: Vec<f32> = pitches.iter().map(|(_, v)| *v).collect();
+        vals.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert!((vals[0] - (-0.1)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 0.1).abs() < 1e-6);
+        // and a GateVoice(on) for each of the 3 lanes
+        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::GateVoice { on: true, .. })).count(), 3);
+    }
+
+    #[test]
+    fn poly_unison_note_off_releases_all_voices() {
+        let mut a = mk_poly();
+        a.set_unison(3);
+        on(&mut a, 69, 100);
+        let c = off(&mut a, 69);
+        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. })).count(), 3, "all 3 released");
+    }
+
+    #[test]
+    fn poly_unison_second_note_grabs_more_lanes() {
+        let mut a = mk_poly();
+        a.set_unison(3);
+        on(&mut a, 60, 100); // 3 lanes
+        let c = on(&mut a, 64, 100); // 3 MORE lanes (distinct from the first 3)
+        let lanes: Vec<u8> = c.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(10), param, .. } => Some(*param), _ => None }).collect();
+        let mut u = lanes.clone(); u.sort(); u.dedup();
+        assert_eq!(u.len(), 3, "second note grabs 3 distinct lanes");
+    }
+
+    #[test]
+    fn poly_unison_one_is_byte_identical() {
+        let mut a = mk_poly();
+        a.set_unison(1);
+        let c = on(&mut a, 69, 100); // exactly 2 Cmds: pitch SetParam(param 0, value 0.0) + GateVoice(0, on)
+        assert_eq!(c.len(), 2);
+        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), param: 0, value } if value.abs() < 1e-6));
+        assert!(matches!(c[1], Cmd::GateVoice { voice: 0, on: true, .. }));
     }
 }
