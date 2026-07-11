@@ -412,9 +412,11 @@ impl Host for EngineHost {
 
 static mut ENGINE_HOST: Option<EngineHost> = None;
 
-/// Boot a VM, run `src`, then render one `N`-frame block into `out`. Most
-/// callers use `N = 32`; a larger `N` gives slower ballistics (e.g. a
-/// limiter's attack) more samples to act within a single render call.
+/// Boot a VM, run `src`, then render `N` frames into `out` as
+/// `ceil(N / 32)` sequential 32-sample blocks (`TestEng`'s `BLOCK` is 32),
+/// with continuous engine state across blocks — i.e. a genuine `N`-sample
+/// window for time-based effects (e.g. a limiter's attack). Most callers
+/// use `N = 32`, which renders exactly one block.
 ///
 /// Serialized by [`CAP_LOCK`] (shared with [`run_and_capture_cmds`]): both
 /// touch the same `crate::set_host`/VM-boot/`reset` process-globals, plus
@@ -448,7 +450,13 @@ pub fn run_and_render<const N: usize>(src: &str, out: &mut [StereoFrame; N]) {
             "script failed (line {})",
             LAST_ERR_LINE.load(Ordering::Relaxed)
         );
-        (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap().eng.render(out);
+        // TestEng's BLOCK is 32; render() fills one BLOCK per call and advances
+        // node state, so render successive 32-frame chunks to fill all N frames
+        // with continuity (a real N-sample window for time-based effects).
+        let eng = &mut (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap().eng;
+        for chunk in out.chunks_mut(32) {
+            eng.render(chunk);
+        }
         wren_sys::wrenFreeVM(vm);
         crate::reset();
     }
