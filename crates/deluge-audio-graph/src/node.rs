@@ -10,6 +10,7 @@ use deluge_dsp_kernels::{
     drive::{Drive, Shape},
     dynamics::{Comp, Detector, Gate},
     env::{Adsr, Ar}, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
+    lofi::{Bitcrush, Decimate},
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
     poly::{poly_add, poly_mul, voice_sum, voice_sum_stereo, PolyAdsr, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySlew, PolySvf, PolySync, PolyWt, VOICES},
@@ -73,6 +74,8 @@ pub enum Kind {
     Drive,
     Comp,
     Gate,
+    Bitcrush,
+    Decimate,
     Eq,
     Lfo,
     SampleHold,
@@ -136,6 +139,8 @@ enum State {
     Drive(Drive),
     Comp(Comp),
     Gate(Gate),
+    Bitcrush(Bitcrush),
+    Decimate(Decimate),
     Eq(Eq),
     Lfo(Lfo),
     SampleHold(SampleHold),
@@ -217,6 +222,8 @@ impl Node {
             Kind::Drive => State::Drive(Drive::new(Shape::Soft)),
             Kind::Comp => State::Comp(Comp::new(-20.0, 4.0, 0.01, 0.1, 6.0, 0.0, Detector::Rms)),
             Kind::Gate => State::Gate(Gate::new(-40.0, 2.0, 0.001, 0.1, 0.0, 20.0, Detector::Peak)),
+            Kind::Bitcrush => State::Bitcrush(Bitcrush::new(8.0)),
+            Kind::Decimate => State::Decimate(Decimate::new(8000.0)),
             Kind::Eq => State::Eq(Eq::new(EqType::Peak)),
             Kind::Lfo => State::Lfo(Lfo::new()),
             Kind::SampleHold => State::SampleHold(SampleHold::new()),
@@ -417,6 +424,14 @@ impl Node {
                 4 => g.set_hold(value),
                 5 => g.set_range(value),
                 6 => g.set_detector(if value == 0.0 { Detector::Peak } else { Detector::Rms }),
+                _ => {}
+            },
+            State::Bitcrush(b) => match param {
+                0 => b.set_bits(value),
+                _ => {}
+            },
+            State::Decimate(d) => match param {
+                0 => d.set_rate(value),
                 _ => {}
             },
             State::Eq(e) => match param {
@@ -771,6 +786,16 @@ impl Node {
             Kind::Gate => {
                 if let State::Gate(g) = &mut self.state {
                     g.process(ins[0], dt, outs.port(0));
+                }
+            }
+            Kind::Bitcrush => {
+                if let State::Bitcrush(b) = &mut self.state {
+                    b.process(ins[0], dt, outs.port(0));
+                }
+            }
+            Kind::Decimate => {
+                if let State::Decimate(d) = &mut self.state {
+                    d.process(ins[0], dt, outs.port(0));
                 }
             }
             Kind::Eq => {
@@ -1497,6 +1522,29 @@ mod tests {
         }
         assert!(buf.iter().all(|s| s.is_finite()), "finite");
         assert!(buf[buf.len() - 1].abs() < 0.05, "below-threshold input gated down, got {}", buf[buf.len() - 1]);
+    }
+
+    #[test]
+    fn lofi_nodes_wire_and_degrade() {
+        assert_eq!(Node::out_width(Kind::Bitcrush), 1);
+        assert_eq!(Node::out_width(Kind::Decimate), 1);
+        // Bitcrush: 2 bits → step 0.5 → 0.6 quantizes to 0.5.
+        let mut b = Node::new(Kind::Bitcrush, 0);
+        b.set_param(0, 2.0);
+        let bin = [0.6f32; 8];
+        let ins = [In::A(&bin), In::A(&[0.0; 8]), In::A(&[0.0; 8])];
+        let mut buf = [0.0f32; 8];
+        { let mut outs = OutView::single(&mut buf); b.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, None); }
+        assert!(buf.iter().all(|&v| (v - 0.5).abs() < 1e-4), "2-bit quantizes 0.6 → 0.5, got {}", buf[0]);
+        // Decimate: low rate holds → piecewise constant on a ramp.
+        let mut d = Node::new(Kind::Decimate, 0);
+        d.set_param(0, 48_000.0 / 8.0); // hold ~8 samples
+        let din: [f32; 32] = core::array::from_fn(|i| i as f32);
+        let dins = [In::A(&din), In::A(&[0.0; 32]), In::A(&[0.0; 32])];
+        let mut dbuf = [0.0f32; 32];
+        { let mut outs = OutView::single(&mut dbuf); d.process_resolved(&dins, 1.0 / 48_000.0, &mut outs, None); }
+        let repeats = dbuf.windows(2).filter(|w| w[0] == w[1]).count();
+        assert!(repeats >= dbuf.len() / 2, "decimate holds (piecewise constant), got {} repeats", repeats);
     }
 
     #[test]
