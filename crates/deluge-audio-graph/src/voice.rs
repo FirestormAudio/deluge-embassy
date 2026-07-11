@@ -181,10 +181,12 @@ pub struct MonoAllocator {
     gates: [NodeId; MAX_GATES],
     n_gates: usize,
     vel_node: Option<NodeId>,
+    sum_node: NodeId, // a StereoVoiceSum: SetParam(sum_node, lane+1, pan) when width_amount != 0.0
     notes: [u8; MONO_STACK], // press order; top (notes[len-1]) = sounding
     len: usize,
     unison: usize,
     detune_cents: f32,
+    width_amount: f32,
 }
 
 impl MonoAllocator {
@@ -194,6 +196,7 @@ impl MonoAllocator {
         gates: [NodeId; MAX_GATES],
         n_gates: usize,
         vel_node: Option<NodeId>,
+        sum_node: NodeId,
     ) -> MonoAllocator {
         MonoAllocator {
             pitch_node,
@@ -201,10 +204,12 @@ impl MonoAllocator {
             gates,
             n_gates,
             vel_node,
+            sum_node,
             notes: [0; MONO_STACK],
             len: 0,
             unison: 1,
             detune_cents: 0.0,
+            width_amount: 0.0,
         }
     }
 
@@ -212,6 +217,7 @@ impl MonoAllocator {
 
     pub fn set_unison(&mut self, n: usize) { self.unison = n.clamp(1, VOICES); }
     pub fn set_detune(&mut self, cents: f32) { self.detune_cents = cents; }
+    pub fn set_width(&mut self, amount: f32) { self.width_amount = amount; }
 
     /// Fan a gate transition out to every configured envelope (mono lane is always 0).
     fn gate_all(&self, lane: usize, on: bool, emit: &mut impl FnMut(Cmd)) {
@@ -237,6 +243,13 @@ impl MonoAllocator {
             emit(Cmd::SetParam { node: self.pitch_node, param: u as u8, value });
             if let Some(vn) = self.vel_node {
                 emit(Cmd::SetParam { node: vn, param: u as u8, value: vel as f32 / 127.0 });
+            }
+            if self.width_amount != 0.0 {
+                emit(Cmd::SetParam {
+                    node: self.sum_node,
+                    param: (u + 1) as u8, // param 0 is the gain slot on StereoVoiceSum
+                    value: width_offset(u, u_count, self.width_amount),
+                });
             }
             if from_silence {
                 emit(Cmd::TriggerVoice { node: self.slew_node, voice: u as u8 }); // snap the glide
@@ -299,10 +312,11 @@ mod tests {
     // 1-gate VoiceAllocator for unison tests: pitch=NodeId(10), gate=NodeId(20), no vel node.
     fn mk_poly() -> VoiceAllocator { mk() }
 
-    // 1-gate MonoAllocator for unison tests: pitch=NodeId(10), slew=NodeId(20), gate=NodeId(30), no vel node.
+    // 1-gate MonoAllocator for unison tests: pitch=NodeId(10), slew=NodeId(20), gate=NodeId(30),
+    // sum=NodeId(40), no vel node.
     fn mk_mono() -> MonoAllocator {
         let (g, n) = one_gate(30);
-        MonoAllocator::new(NodeId(10), NodeId(20), g, n, None)
+        MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(40))
     }
 
     // Capture the Cmds emitted by one note event.
@@ -555,7 +569,7 @@ mod tests {
 
     #[test]
     fn mono_first_note_snaps_and_gates() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None) };
+        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99)) };
         let c = mon(&mut m, 69, 100); // A4 from silence
         // SetParam(pitch=10, lane0, 0.0) + TriggerVoice(slew=20, 0) + GateVoice(gate=30, 0, on)
         assert_eq!(c.len(), 3);
@@ -566,7 +580,7 @@ mod tests {
 
     #[test]
     fn mono_legato_note_glides_without_regate() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None) };
+        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99)) };
         mon(&mut m, 60, 100);       // first note (from silence)
         let c = mon(&mut m, 64, 100); // legato (60 still held)
         // Only a pitch SetParam (glide) — NO TriggerVoice, NO GateVoice
@@ -576,7 +590,7 @@ mod tests {
 
     #[test]
     fn mono_note_off_falls_back_to_held_note() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None) };
+        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99)) };
         mon(&mut m, 60, 100);
         mon(&mut m, 64, 100); // 64 sounding, 60 held
         let c = moff(&mut m, 64); // release 64 → glide back to 60
@@ -589,7 +603,7 @@ mod tests {
 
     #[test]
     fn mono_last_note_off_releases() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None) };
+        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99)) };
         mon(&mut m, 60, 100);
         let c = moff(&mut m, 60); // stack empty → release
         assert_eq!(c.len(), 1);
@@ -598,7 +612,7 @@ mod tests {
 
     #[test]
     fn mono_velocity_written_when_present() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, Some(NodeId(40))) };
+        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, Some(NodeId(40)), NodeId(99)) };
         let c = mon(&mut m, 69, 100);
         // pitch SetParam, velocity SetParam(node 40, 100/127), TriggerVoice, GateVoice
         assert!(c.iter().any(|cmd| matches!(cmd,
@@ -607,7 +621,7 @@ mod tests {
 
     #[test]
     fn mono_note_off_unheld_is_noop() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None) };
+        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99)) };
         let c = moff(&mut m, 60);
         assert!(c.is_empty());
     }
@@ -640,7 +654,7 @@ mod tests {
     fn mono_from_silence_gates_all_envelopes_legato_gates_none() {
         let mut gates = [NodeId(0); MAX_GATES];
         gates[0] = NodeId(30); gates[1] = NodeId(31);
-        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), gates, 2, None);
+        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), gates, 2, None, NodeId(99));
         let c = mon(&mut m, 60, 100); // pitch SetParam + TriggerVoice(slew 20) + GateVoice(30) + GateVoice(31)
         assert_eq!(c.len(), 4);
         assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), .. }));
@@ -815,6 +829,29 @@ mod tests {
             c.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(30), .. })).count(),
             0,
             "width=0 emits no pan SetParam (byte-identical Cmd stream)"
+        );
+    }
+
+    #[test]
+    fn mono_width_emits_per_lane_pan_on_sum_node() {
+        let mut m = mk_mono(); // pitch=NodeId(10), slew=NodeId(20), gate=NodeId(30), sum=NodeId(40), no vel
+        m.set_unison(2);
+        m.set_width(1.0);
+        let c = mon(&mut m, 69, 100); // from silence, 2 unison voices
+        // pan on lanes 0 and 1 (params 1 and 2) on the sum node (NodeId(40)).
+        let pans: std::vec::Vec<u8> = c.iter().filter_map(|cmd| match cmd {
+            Cmd::SetParam { node: NodeId(40), param, .. } => Some(*param), _ => None }).collect();
+        assert_eq!(pans, std::vec![1, 2], "pan params lane+1 for lanes 0 and 1");
+    }
+
+    #[test]
+    fn mono_width_zero_emits_no_pan() {
+        let mut m = mk_mono();
+        m.set_unison(2);
+        let c = mon(&mut m, 69, 100);
+        assert_eq!(
+            c.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(40), .. })).count(),
+            0, "width=0 emits no pan"
         );
     }
 }
