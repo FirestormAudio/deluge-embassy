@@ -14,16 +14,18 @@ const A440_NOTE: f32 = 69.0;
 pub struct VoiceAllocator {
     pitch_node: NodeId, // a PolyCtrl: SetParam(pitch_node, lane, note - 69)
     gate_node: NodeId,  // a PolyAr:   GateVoice(gate_node, lane, on/off)
+    vel_node: Option<NodeId>, // a PolyCtrl carrying per-voice velocity, or None
     lane_note: [Option<u8>; VOICES],
     lane_age: [u32; VOICES],
     clock: u32,
 }
 
 impl VoiceAllocator {
-    pub fn new(pitch_node: NodeId, gate_node: NodeId) -> VoiceAllocator {
+    pub fn new(pitch_node: NodeId, gate_node: NodeId, vel_node: Option<NodeId>) -> VoiceAllocator {
         VoiceAllocator {
             pitch_node,
             gate_node,
+            vel_node,
             lane_note: [None; VOICES],
             lane_age: [0; VOICES],
             clock: 0,
@@ -46,6 +48,9 @@ impl VoiceAllocator {
             param: lane as u8,
             value: note as f32 - A440_NOTE,
         });
+        if let Some(vn) = self.vel_node {
+            emit(Cmd::SetParam { node: vn, param: lane as u8, value: vel as f32 / 127.0 });
+        }
         emit(Cmd::GateVoice { node: self.gate_node, voice: lane as u8, on: true });
     }
 
@@ -116,7 +121,7 @@ mod tests {
 
     #[test]
     fn note_on_emits_pitch_and_gate_on_lane_0() {
-        let mut a = VoiceAllocator::new(NodeId(10), NodeId(20));
+        let mut a = VoiceAllocator::new(NodeId(10), NodeId(20), None);
         let c = on(&mut a, 69, 100); // A4 → semitone 0
         assert_eq!(c.len(), 2);
         match c[0] {
@@ -139,7 +144,7 @@ mod tests {
 
     #[test]
     fn eight_notes_fill_lanes_then_ninth_steals_oldest() {
-        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1));
+        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1), None);
         for k in 0..VOICES {
             let c = on(&mut a, 60 + k as u8, 100);
             match c[0] {
@@ -161,7 +166,7 @@ mod tests {
 
     #[test]
     fn note_off_releases_the_right_lane_and_frees_it() {
-        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1));
+        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1), None);
         on(&mut a, 60, 100); // lane 0
         on(&mut a, 64, 100); // lane 1
         let c = off(&mut a, 60);
@@ -174,7 +179,7 @@ mod tests {
 
     #[test]
     fn note_on_velocity_zero_is_note_off() {
-        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1));
+        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1), None);
         on(&mut a, 60, 100); // lane 0 held
         let c = on(&mut a, 60, 0); // vel 0 → note-off
         assert_eq!(c.len(), 1);
@@ -183,14 +188,14 @@ mod tests {
 
     #[test]
     fn note_off_for_unheld_note_is_noop() {
-        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1));
+        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1), None);
         let c = off(&mut a, 60);
         assert!(c.is_empty());
     }
 
     #[test]
     fn all_notes_off_releases_every_held_lane() {
-        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1));
+        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1), None);
         on(&mut a, 60, 100);
         on(&mut a, 64, 100);
         let mut c: Vec<Cmd> = Vec::new();
@@ -200,5 +205,42 @@ mod tests {
         }
         assert_eq!(c.len(), 2);
         assert!(c.iter().all(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. })));
+    }
+
+    #[test]
+    fn note_on_emits_velocity_when_vel_node_present() {
+        let mut a = VoiceAllocator::new(NodeId(10), NodeId(20), Some(NodeId(30)));
+        let c = on(&mut a, 69, 100); // A4, vel 100
+        assert_eq!(c.len(), 3, "pitch + velocity + gate");
+        // c[0] = pitch SetParam(node 10), c[1] = velocity SetParam(node 30), c[2] = GateVoice(node 20)
+        match c[1] {
+            Cmd::SetParam { node, param, value } => {
+                assert_eq!(node.0, 30, "velocity node");
+                assert_eq!(param, 0, "lane 0");
+                assert!((value - 100.0 / 127.0).abs() < 1e-6, "vel/127, got {value}");
+            }
+            _ => panic!("expected velocity SetParam at index 1"),
+        }
+        assert!(matches!(c[2], Cmd::GateVoice { node: NodeId(20), voice: 0, on: true }));
+    }
+
+    #[test]
+    fn note_on_no_velocity_node_emits_two_cmds() {
+        let mut a = VoiceAllocator::new(NodeId(10), NodeId(20), None);
+        let c = on(&mut a, 69, 100);
+        assert_eq!(c.len(), 2, "pitch + gate only");
+        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), .. }));
+        assert!(matches!(c[1], Cmd::GateVoice { node: NodeId(20), .. }));
+    }
+
+    #[test]
+    fn velocity_value_is_proportional() {
+        let mut a = VoiceAllocator::new(NodeId(0), NodeId(1), Some(NodeId(2)));
+        let hi = on(&mut a, 60, 127);
+        let lo = on(&mut a, 62, 20);
+        let vhi = match hi[1] { Cmd::SetParam { value, .. } => value, _ => panic!() };
+        let vlo = match lo[1] { Cmd::SetParam { value, .. } => value, _ => panic!() };
+        assert!(vhi > vlo, "higher velocity → larger value: {vhi} vs {vlo}");
+        assert!((vhi - 1.0).abs() < 1e-6, "127 → 1.0");
     }
 }
