@@ -1841,3 +1841,30 @@ fn gate_low_threshold_passes() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "open gate passes loud source");
 }
+
+#[test]
+fn bitcrush_renders_on_grid() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render("Out.patch(Bitcrush.new(Osc.saw(110), 3))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sounds");
+    // 3-bit step = 1/2^2 = 0.25; every sample is on the grid.
+    let step = 0.25f32;
+    assert!(out.iter().all(|f| { let q = f.l / step; (q - q.round()).abs() < 1e-3 }), "output on the 3-bit grid");
+}
+
+#[test]
+fn decimate_renders_piecewise_constant() {
+    let mut out = [StereoFrame::default(); 128];
+    run_and_render("Out.patch(Decimate.new(Osc.saw(110), 4000))", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sounds");
+    // 4 kHz vs 44.1 kHz SR → holds ~11 samples → mostly repeated consecutive samples.
+    let repeats = out.windows(2).filter(|w| w[0].l == w[1].l).count();
+    assert!(repeats > out.len() / 2, "decimated → piecewise constant, got {} repeats", repeats);
+}
+
+#[test]
+fn lofi_chain_builds() {
+    assert!(run_script_ok("Out.patch(Bitcrush.new(Decimate.new(Osc.saw(110), 6000), 6))"), "chained lo-fi builds/runs");
+}
