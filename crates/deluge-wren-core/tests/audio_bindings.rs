@@ -1043,6 +1043,25 @@ fn synth_error_cases_abort() {
 }
 
 #[test]
+fn bus_write_poly_source_aborts_in_synth() {
+    // A poly node written to a bus inside a Synth builder must abort. Statements
+    // are newline-separated (this Wren dialect's lexer rejects `;`).
+    assert!(!run_script_ok(
+        "Synth.new { |p|\n  var b = Bus.new()\n  b.write(Osc.saw(p))\n  Osc.saw(p) * Env.ar(0.01, 0.3)\n}"
+    ));
+}
+
+#[test]
+fn bus_write_mono_and_const_ok() {
+    // A numeric constant to a bus inside a Synth is a safe mono write (no abort).
+    assert!(run_script_ok(
+        "Synth.new { |p|\n  var b = Bus.new()\n  b.write(0.5)\n  Osc.saw(p) * Env.ar(0.01, 0.3)\n}"
+    ));
+    // A normal bus write OUTSIDE a Synth (mono graph) is unaffected.
+    assert!(run_script_ok("var b = Bus.new()\nb.write(Osc.saw(110))\nOut.patch(b)"));
+}
+
+#[test]
 fn synth_env_scaled_by_constant_renders() {
     // Task-6 review gap, now locked intentionally: `Env.ar(...)` is a
     // CONTROL/amp signal, not an audio-voice signal (`node_polyar_impl` uses

@@ -960,7 +960,7 @@ pub static METHODS: &[MethodEntry] = &[
     method("Node", "out(_)", bindings_audio::node_out),
     method("Node", "free()", bindings_audio::node_free),
     static_method("Bus", "new_()", bindings_audio::bus_new),
-    method("Bus", "write(_)", bindings_audio::bus_write),
+    method("Bus", "write_(_)", bindings_audio::bus_write),
     static_method("Wavetable", "from(_)", bindings_audio::wavetable_from),
     static_method("Wavetable", "from2d(_)", bindings_audio::wavetable_from2d),
 ];

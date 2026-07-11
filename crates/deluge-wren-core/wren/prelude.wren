@@ -765,8 +765,19 @@ class Out {
 //   Out.patch(m)
 foreign class Bus {
   foreign static new_()      // returns a fresh Bus foreign in slot 0
-  foreign write(src)
+  foreign write_(src)        // native bus write (renamed; guarded by `write` below)
   static new() { new_() }    // the public Bus.new() from the spec
+  // Guard the Sy-2e silent-mono footgun: a poly voice signal written to a
+  // (mono) bus inside a Synth bypasses the VoiceSum that `.out` inserts and is
+  // read as a single interleaved row. A poly source is always a `Node`
+  // (`return_poly_node`); Ports come only from Split etc., which abort in poly
+  // mode, so `src is Node` fully covers it. A Num/mono write is safe.
+  write(src) {
+    if (Node.polyMode_ == 1 && (src is Node) && src.isPoly_ == 1) {
+      Fiber.abort("can't write a poly voice to a Bus inside a Synth — route the Synth's .out to a bus instead (Sy-2e)")
+    }
+    write_(src)
+  }
 }
 
 // ── Accessors ────────────────────────────────────────────────────────────────

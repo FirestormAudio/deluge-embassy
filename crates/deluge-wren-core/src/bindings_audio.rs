@@ -1745,7 +1745,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "out(_)", node_out_impl::<S>);
     method("main", "Node", false, "free()", node_free_impl::<S>);
     method("main", "Bus", true, "new_()", bus_new_impl::<S>);
-    method("main", "Bus", false, "write(_)", bus_write_impl::<S>);
+    method("main", "Bus", false, "write_(_)", bus_write_impl::<S>);
     method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
     method("main", "Wavetable", true, "from2d(_)", wavetable_from2d_impl::<S>);
 }
