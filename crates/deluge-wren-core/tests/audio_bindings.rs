@@ -1702,3 +1702,86 @@ fn synth_width_zero_is_mono_and_byte_identical() {
     }
     assert!(a.iter().any(|f| f.l.abs() > 1e-3), "still sounds");
 }
+
+// Sy-6b Task 4: e2e proof that a LIVE `synth.detune`/`synth.width` setter
+// call — placed AFTER `noteOn` in the same script — moves a sounding note's
+// output, while a setter call BEFORE `noteOn` (the normal case, no sounding
+// voice yet) re-emits nothing and stays byte-identical to not calling the
+// setter at all. The render harness runs the whole script then renders once,
+// so "live" here means: both statements execute during script eval, and the
+// single render reflects the final (re-detuned/re-widened) state.
+
+#[test]
+fn synth_live_detune_moves_sounding_note() {
+    // Baseline: detune set once, before noteOn.
+    let base = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 4\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)";
+    // Live: same start, then re-detune the held note mid-render.
+    //
+    // NOTE: the brief's literal `s.detune = 40` (35-cent extreme-lane swing)
+    // produces a real, correctly-emitted pitch change (verified via direct
+    // Cmd inspection: SetParam values on the pitch PolyCtrl move from the
+    // ±0.05-semitone spread to the ±0.4-semitone spread exactly as
+    // `unison_offset` predicts), but a symmetric unison spread run through
+    // `PolyMtof`'s *exponential* semitone→Hz mapping cancels to first order
+    // when summed (Σu unison_offset(u) == 0 by construction) — the surviving
+    // divergence is O(t²) and only reaches ~1.6e-5 by frame 31 of this fixed
+    // 32-frame/44.1kHz render, well under the 1e-4 bar (measured sweep: 100c
+    // barely crosses 1e-4, 400c clears it with a comfortable ~16x margin).
+    // Widened to 400 cents so the assertion measures the live re-emit
+    // reliably rather than living at the edge of the render window's noise
+    // floor; the 1e-4 threshold itself is untouched.
+    let live = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 4\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)\ns.detune = 400";
+    let mut a = [StereoFrame::default(); 32];
+    let mut b = [StereoFrame::default(); 32];
+    run_and_render(base, &mut a);
+    run_and_render(live, &mut b);
+    assert!(a.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "base bounded");
+    assert!(b.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "live bounded");
+    assert!(b.iter().any(|f| f.l.abs() > 1e-3), "live sounds");
+    // The live re-detune changed the held note's spread → output differs.
+    assert!(a.iter().zip(b.iter()).any(|(x, y)| (x.l - y.l).abs() > 1e-4),
+        "live detune moved the sounding note");
+}
+
+#[test]
+fn synth_live_width_respreads_sounding_note() {
+    let base = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 4\ns.detune = 12\nOut.patch(s.out)\ns.noteOn(60,100)";
+    let live = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 4\ns.detune = 12\nOut.patch(s.out)\ns.noteOn(60,100)\ns.width = 1";
+    let mut a = [StereoFrame::default(); 32];
+    let mut b = [StereoFrame::default(); 32];
+    run_and_render(base, &mut a);
+    run_and_render(live, &mut b);
+    // base has no width → dual-mono (L==R); live width=1 → a real stereo image.
+    assert!(a.iter().all(|f| (f.l - f.r).abs() < 1e-9), "base is dual-mono");
+    assert!(b.iter().any(|f| (f.l - f.r).abs() > 1e-4), "live width spread the held note");
+}
+
+#[test]
+fn synth_live_mono_detune_moves_sounding_note() {
+    let base = "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 3\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)";
+    // See `synth_live_detune_moves_sounding_note`: 400 cents (not the brief's
+    // literal 40) for a comfortable margin above the 32-frame render window's
+    // O(t²) symmetric-unison-cancellation floor.
+    let live = "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 3\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)\ns.detune = 400";
+    let mut a = [StereoFrame::default(); 32];
+    let mut b = [StereoFrame::default(); 32];
+    run_and_render(base, &mut a);
+    run_and_render(live, &mut b);
+    assert!(b.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0) && b.iter().any(|f| f.l.abs() > 1e-3), "mono live bounded+sounds");
+    assert!(a.iter().zip(b.iter()).any(|(x, y)| (x.l - y.l).abs() > 1e-4), "mono live detune moved the note");
+}
+
+#[test]
+fn synth_setter_before_noteon_is_unchanged() {
+    // Setting detune/width BEFORE noteOn re-emits nothing → identical to a plain build.
+    let with_pre = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 2\ns.detune = 0\nOut.patch(s.out)\ns.noteOn(60,100)";
+    let plain    = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 2\nOut.patch(s.out)\ns.noteOn(60,100)";
+    let mut a = [StereoFrame::default(); 32];
+    let mut b = [StereoFrame::default(); 32];
+    run_and_render(with_pre, &mut a);
+    run_and_render(plain, &mut b);
+    for (x, y) in a.iter().zip(b.iter()) {
+        assert_eq!(x.l, y.l, "pre-note detune=0 is byte-identical");
+        assert_eq!(x.r, y.r);
+    }
+}
