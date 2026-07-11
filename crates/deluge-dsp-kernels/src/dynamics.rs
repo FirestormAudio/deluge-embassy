@@ -115,6 +115,85 @@ impl Comp {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Gate {
+    threshold_db: f32,
+    ratio: f32,
+    attack_s: f32,
+    release_s: f32,
+    hold_s: f32,
+    range_db: f32, // max attenuation depth (dB, >= 0)
+    detector: Detector,
+    rms_sq: f32,
+    gr_db: f32,    // current gain reduction, dB, >= 0
+    hold_ctr: i32, // samples remaining in the hold-open window
+}
+
+impl Gate {
+    pub fn new(
+        threshold_db: f32,
+        ratio: f32,
+        attack_s: f32,
+        release_s: f32,
+        hold_s: f32,
+        range_db: f32,
+        detector: Detector,
+    ) -> Gate {
+        Gate {
+            threshold_db,
+            ratio: ratio.max(1.0),
+            attack_s: attack_s.max(0.0),
+            release_s: release_s.max(0.0),
+            hold_s: hold_s.max(0.0),
+            range_db: range_db.max(0.0),
+            detector,
+            rms_sq: 0.0,
+            gr_db: 0.0,
+            hold_ctr: 0,
+        }
+    }
+
+    pub fn set_threshold(&mut self, db: f32) { self.threshold_db = db; }
+    pub fn set_ratio(&mut self, r: f32) { self.ratio = r.max(1.0); }
+    pub fn set_attack(&mut self, s: f32) { self.attack_s = s.max(0.0); }
+    pub fn set_release(&mut self, s: f32) { self.release_s = s.max(0.0); }
+    pub fn set_hold(&mut self, s: f32) { self.hold_s = s.max(0.0); }
+    pub fn set_range(&mut self, db: f32) { self.range_db = db.max(0.0); }
+    pub fn set_detector(&mut self, d: Detector) { self.detector = d; }
+
+    pub fn process(&mut self, input: In, dt: f32, out: &mut [f32]) {
+        let atk_c = one_pole_coeff(self.attack_s, dt);
+        let rel_c = one_pole_coeff(self.release_s, dt);
+        let rms_c = one_pole_coeff(RMS_WINDOW_S, dt);
+        let hold_samples = (self.hold_s / dt) as i32;
+        for i in 0..out.len() {
+            let x = input.at(i);
+            let level = match self.detector {
+                Detector::Peak => libm::fabsf(x),
+                Detector::Rms => {
+                    self.rms_sq += (x * x - self.rms_sq) * rms_c;
+                    libm::sqrtf(self.rms_sq)
+                }
+            };
+            let over = lin_to_db(level) - self.threshold_db;
+            // gain computer + hold state machine
+            let target_gr = if over >= 0.0 {
+                self.hold_ctr = hold_samples; // above threshold: open, arm hold
+                0.0
+            } else if self.hold_ctr > 0 {
+                self.hold_ctr -= 1; // holding open
+                0.0
+            } else {
+                ((-over) * (self.ratio - 1.0)).min(self.range_db) // closing / expanding
+            };
+            // ballistics: attack when GR falling (opening), release when rising (closing)
+            let c = if target_gr < self.gr_db { atk_c } else { rel_c };
+            self.gr_db += (target_gr - self.gr_db) * c;
+            out[i] = x * db_to_lin(-self.gr_db);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +264,74 @@ mod tests {
         let recovered = run_const(&mut c, lin(-40.0), 8192, DT); // release back
         assert!(db(loud) < db(quiet) - 1.0, "loud input reduces gain vs quiet");
         assert!(db(recovered) > db(loud) + 1.0, "release recovers gain after loud");
+    }
+
+    // Mirror `run_const` for Gate (settle a constant input, return applied gain).
+    fn run_const_gate(g: &mut Gate, level_lin: f32, samples: usize, dt: f32) -> f32 {
+        let arr = [level_lin; 64];
+        let mut out = [0.0f32; 64];
+        let mut last = 0.0;
+        for _ in 0..(samples / 64) {
+            g.process(In::A(&arr), dt, &mut out);
+            last = out[out.len() - 1];
+        }
+        last / level_lin
+    }
+
+    const DT_G: f32 = 1.0 / 48_000.0;
+
+    #[test]
+    fn gate_above_threshold_is_unity() {
+        // thr -20, input -6 dB (above) → open, ~unity.
+        let mut g = Gate::new(-20.0, 2.0, 0.001, 0.05, 0.0, 40.0, Detector::Peak);
+        let gain = run_const_gate(&mut g, lin(-6.0), 4096, DT_G);
+        assert!(db(gain).abs() < 0.2, "above threshold ≈ unity, got {} dB", db(gain));
+    }
+
+    #[test]
+    fn gate_expansion_static_curve() {
+        // thr -40, ratio 2:1, input -50 dB, range 40, hold 0.
+        // GR = min((thr-level)(ratio-1), range) = min(10*1, 40) = 10 dB.
+        let mut g = Gate::new(-40.0, 2.0, 0.001, 0.05, 0.0, 40.0, Detector::Peak);
+        let gain = run_const_gate(&mut g, lin(-50.0), 8192, DT_G);
+        assert!((db(gain) - (-10.0)).abs() < 0.5, "expansion GR ≈ 10 dB, got {} dB", -db(gain));
+    }
+
+    #[test]
+    fn gate_range_floor_caps_attenuation() {
+        // thr -40, ratio 4:1, input -70 dB → raw GR = 30*3 = 90 dB, capped at range 20.
+        let mut g = Gate::new(-40.0, 4.0, 0.001, 0.05, 0.0, 20.0, Detector::Peak);
+        let gain = run_const_gate(&mut g, lin(-70.0), 32768, DT_G);
+        assert!((db(gain) - (-20.0)).abs() < 0.6, "GR capped at range 20 dB, got {} dB", -db(gain));
+    }
+
+    #[test]
+    fn gate_hold_keeps_open_then_closes() {
+        // Open on a loud input, then drop below threshold; within the hold window the
+        // gain stays ~1 (open), after the hold it drops (closing).
+        let mut g = Gate::new(-20.0, 8.0, 0.0005, 0.02, 0.002, 60.0, Detector::Peak); // hold 2 ms
+        // settle open with a loud (above-threshold) constant
+        run_const_gate(&mut g, lin(0.0), 4096, DT_G);
+        // now one big block of below-threshold input; capture per-sample gain
+        let quiet = lin(-60.0);
+        let arr = [quiet; 512];
+        let mut out = [0.0f32; 512];
+        g.process(In::A(&arr), DT_G, &mut out);
+        let hold_samples = (0.002 / DT_G) as usize; // ≈ 96
+        let gain_at = |k: usize| out[k] / quiet;
+        // early (well within hold) → still open (~unity)
+        assert!(gain_at(hold_samples / 4).abs() > 0.9, "gain held open early, got {}", gain_at(hold_samples / 4));
+        // late (well past hold) → closing/closed (attenuated)
+        assert!(gain_at(500).abs() < 0.5, "gate closed after hold, got {}", gain_at(500));
+    }
+
+    #[test]
+    fn gate_ballistics_open_and_close() {
+        // Open (attack) on loud, close (release) on quiet-past-hold.
+        let mut g = Gate::new(-20.0, 8.0, 0.0005, 0.02, 0.0, 60.0, Detector::Peak);
+        let closed = run_const_gate(&mut g, lin(-60.0), 4096, DT_G); // settle closed → strong GR
+        let opened = run_const_gate(&mut g, lin(0.0), 4096, DT_G);   // loud → opens → ~unity
+        assert!(db(opened) > db(closed) + 1.0, "loud input opens the gate vs quiet");
+        assert!(db(opened).abs() < 0.5, "opened ≈ unity");
     }
 }
