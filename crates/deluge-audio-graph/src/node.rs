@@ -8,10 +8,10 @@ use crate::Input;
 use deluge_dsp_kernels::{
     delay::{Delay, ModDelay},
     drive::{Drive, Shape},
-    env::Ar, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
+    env::{Adsr, Ar}, eq::{Eq, EqType}, filter::OnePole, filter::{Modal, Moog, Ms20, Ms20Resp, Svf, SvfResp, Tb303, MODAL_MODES}, lfo::Lfo, math,
     modutil::{SampleHold, Slew, Steps},
     noise::Noise, noise::NoiseColor, osc::Osc, osc::SyncOsc, osc::Wave,
-    poly::{poly_add, poly_mul, voice_sum, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySvf, PolySync, PolyWt, VOICES},
+    poly::{poly_add, poly_mul, voice_sum, PolyAdsr, PolyAr, PolyCtrl, PolyMoog, PolyMs20, PolyMtof, PolyNoise, PolyOsc, PolySvf, PolySync, PolyWt, VOICES},
     quant::{Mtof, QuantPitch, QuantStep},
     reverb::{Dattorro, Fdn8, Freeverb, HALL_BUF_SAMPLES, PLATE_BUF_SAMPLES, REVERB_BUF_SAMPLES},
     shape::{self, Ctrl},
@@ -45,6 +45,7 @@ pub enum Kind {
     PinkNoise,
     BrownNoise,
     Env,
+    Adsr,
     Lpf,
     SvfLp,
     SvfHp,
@@ -83,6 +84,7 @@ pub enum Kind {
     PolyOsc,
     VoiceSum,
     PolyAr,
+    PolyAdsr,
     PolySvf,
     PolyMul,
     PolyMtof,
@@ -109,6 +111,7 @@ enum State {
     Sync(SyncOsc),
     Noise(Noise),
     Ar(Ar),
+    Adsr(Adsr),
     OnePole(OnePole),
     Svf(Svf),
     Tb303(Tb303),
@@ -136,6 +139,7 @@ enum State {
     PolyCtrl(PolyCtrl),
     PolyOsc(PolyOsc),
     PolyAr(PolyAr),
+    PolyAdsr(PolyAdsr),
     PolySvf(PolySvf),
     PolyMtof(PolyMtof),
     PolyNoise(PolyNoise),
@@ -180,6 +184,7 @@ impl Node {
             Kind::PinkNoise => State::Noise(Noise::seeded_color(0x2545_F491, NoiseColor::Pink)),
             Kind::BrownNoise => State::Noise(Noise::seeded_color(0x2545_F491, NoiseColor::Brown)),
             Kind::Env => State::Ar(Ar::new()),
+            Kind::Adsr => State::Adsr(Adsr::new()),
             Kind::Lpf => State::OnePole(OnePole::new()),
             Kind::SvfLp | Kind::SvfHp | Kind::SvfBp | Kind::SvfNotch => State::Svf(Svf::new()),
             Kind::Tb303 => State::Tb303(Tb303::new()),
@@ -208,6 +213,7 @@ impl Node {
             Kind::PolyCtrl => State::PolyCtrl(PolyCtrl::new()),
             Kind::PolyOsc => State::PolyOsc(PolyOsc::new()),
             Kind::PolyAr => State::PolyAr(PolyAr::new()),
+            Kind::PolyAdsr => State::PolyAdsr(PolyAdsr::new()),
             Kind::PolySvf => State::PolySvf(PolySvf::new()),
             Kind::PolyMtof => State::PolyMtof(PolyMtof::new()),
             Kind::PolyNoise => State::PolyNoise(PolyNoise::new()),
@@ -233,7 +239,7 @@ impl Node {
     pub fn out_width(kind: Kind) -> usize {
         match kind {
             Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate => 2,
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolyMul
                 | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
@@ -245,7 +251,7 @@ impl Node {
     /// A poly node carries `VOICES` voice-lanes and is dispatched via
     /// `poly_process`, not `process_resolved`.
     pub fn is_poly(kind: Kind) -> bool {
-        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
+        matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
             | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
             | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
             | Kind::PolyWt | Kind::PolyWtMorph)
@@ -291,16 +297,26 @@ impl Node {
     }
 
     pub fn gate_voice(&mut self, v: usize, on: bool) {
-        if let State::PolyAr(a) = &mut self.state { a.gate_voice(v, on); }
+        match &mut self.state {
+            State::PolyAr(a) => a.gate_voice(v, on),
+            State::PolyAdsr(a) => a.gate_voice(v, on),
+            _ => {}
+        }
     }
     pub fn trigger_voice(&mut self, v: usize) {
-        if let State::PolyAr(a) = &mut self.state { a.trigger_voice(v); }
+        match &mut self.state {
+            State::PolyAr(a) => a.trigger_voice(v),
+            State::PolyAdsr(a) => a.trigger_voice(v),
+            _ => {}
+        }
     }
 
     /// Set a non-signal scalar parameter. For oscillators, `param 0` = feedback.
     pub fn set_param(&mut self, param: u8, value: f32) {
         match &mut self.state {
             State::Osc(o) if param == 0 => o.set_feedback(value),
+            State::Adsr(a) if param == 0 => a.set_sustain(value),
+            State::PolyAdsr(a) if param == 0 => a.set_sustain(value),
             State::Moog4(m) if param == 0 => m.set_drive(value),
             State::Moog2(m) if param == 0 => m.set_drive(value),
             State::Ms20(m) if param == 0 => m.set_drive(value),
@@ -461,6 +477,11 @@ impl Node {
             Kind::Env => {
                 if let State::Ar(a) = &mut self.state {
                     a.process(ins[0], ins[1], dt, outs.port(0));
+                }
+            }
+            Kind::Adsr => {
+                if let State::Adsr(a) = &mut self.state {
+                    a.process(ins[0], ins[1], ins[2], dt, outs.port(0));
                 }
             }
             Kind::Lpf => {
@@ -742,7 +763,7 @@ impl Node {
                     c.process(outs.port(0));
                 }
             }
-            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
+            Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
                 | Kind::PolyWt | Kind::PolyWtMorph => {
@@ -783,6 +804,11 @@ impl Node {
             Kind::PolyAr => {
                 if let State::PolyAr(a) = &mut self.state {
                     a.process(ins[0], ins[1], dt, out);
+                }
+            }
+            Kind::PolyAdsr => {
+                if let State::PolyAdsr(a) = &mut self.state {
+                    a.process(ins[0], ins[1], ins[2], dt, out);
                 }
             }
             Kind::PolySvf => {
@@ -1678,6 +1704,38 @@ mod tests {
             n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out, None);
             assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0), "kind={kind:?} bounded");
             assert!(out.iter().any(|&s| s != 0.0), "kind={kind:?} non-silent");
+        }
+    }
+
+    #[test]
+    fn polyadsr_node_sustains_at_set_level() {
+        assert_eq!(Node::poly_in_count(Kind::PolyAdsr), 0);
+        assert_eq!(Node::out_width(Kind::PolyAdsr), VOICES);
+        assert!(Node::is_poly(Kind::PolyAdsr));
+
+        let mut n = Node::new(Kind::PolyAdsr, 0);
+        // inputs [attack, decay, release]
+        *n.input_mut(0).unwrap() = Input::Const(0.001);
+        *n.input_mut(1).unwrap() = Input::Const(0.001);
+        *n.input_mut(2).unwrap() = Input::Const(0.5);
+        n.set_param(0, 0.5); // sustain
+        for v in 0..VOICES { n.gate_voice(v, true); }
+
+        let dt = 1.0 / 48_000.0;
+        let block = 16usize;
+        let a = [0.001f32; 16];
+        let d = [0.001f32; 16];
+        let r = [0.5f32; 16];
+        let ins = [In::A(&a), In::A(&d), In::A(&r)];
+        let mut out = [0.0f32; VOICES * 16];
+        // Render enough blocks that attack (1ms) + decay (1ms) settle into
+        // sustain well before the end (16*100 samples @ 48kHz ≈ 33ms).
+        for _ in 0..100 {
+            n.poly_process(&ins, [None, None], dt, &mut out, None);
+        }
+        for v in 0..VOICES {
+            let last = out[(block - 1) * VOICES + v];
+            assert!((last - 0.5).abs() < 1e-3, "voice {v} steady level = {last}, want ~0.5");
         }
     }
 
