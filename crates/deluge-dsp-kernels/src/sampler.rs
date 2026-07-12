@@ -214,11 +214,21 @@ impl StreamVoice {
 #[derive(Clone, Copy)]
 pub struct PolyStreamPlayer {
     voices: [StreamVoice; VOICES],
+    root: f32, // MIDI note at which the sample plays back at rate 1.0
 }
 
 impl PolyStreamPlayer {
     pub fn new() -> PolyStreamPlayer {
-        PolyStreamPlayer { voices: [StreamVoice::new(); VOICES] }
+        PolyStreamPlayer { voices: [StreamVoice::new(); VOICES], root: 60.0 }
+    }
+
+    /// The root MIDI note (the sample plays at rate 1.0 when a voice's pitch == this).
+    pub fn set_root(&mut self, note: f32) { self.root = note; }
+    pub fn root(&self) -> f32 { self.root }
+    /// Samples advanced per output sample for a voice at `hz` (root plays at rate 1).
+    pub fn rate_for(&self, hz: f32) -> f32 {
+        let root_hz = 440.0 * libm::exp2f((self.root - 69.0) / 12.0);
+        hz.max(1e-6) / root_hz
     }
 
     /// (Re)start voice `v` from the beginning of its sample.

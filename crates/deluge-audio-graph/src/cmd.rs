@@ -18,6 +18,9 @@ pub enum Cmd {
     Trigger { node: NodeId },
     GateVoice { node: NodeId, voice: u8, on: bool },
     TriggerVoice { node: NodeId, voice: u8 },
+    /// Prefetch → engine: update a `StreamPlayer` voice's resident ring window
+    /// `[fill_lo, fill_hi)` (and the stream's `total`, carried idempotently).
+    StreamFill { node: NodeId, voice: u8, fill_lo: u64, fill_hi: u64, total: u64 },
     BusWrite { src: Input, bus: BusId },
     BusWriteGains { src: Input, bus: BusId, gl: f32, gr: f32 },
     SetRoot { bus: BusId },

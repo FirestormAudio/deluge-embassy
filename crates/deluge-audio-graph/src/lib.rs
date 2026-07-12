@@ -14,6 +14,7 @@ pub mod frame;
 pub mod ids;
 pub mod node;
 pub mod pool;
+pub mod stream;
 pub mod voice;
 
 pub use arena::Arena;

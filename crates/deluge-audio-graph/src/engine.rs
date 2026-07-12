@@ -41,6 +41,9 @@ pub struct Engine<
     writes: [Option<(Input, BusId, f32, f32)>; NODES],
     writes_len: usize,
     pool: crate::pool::Pool<PCAP, PCHUNK>,
+    // Per-`StreamPlayer`-node fill cursors (produced by the prefetch task via
+    // `Cmd::StreamFill`, consumed at render). Keyed by node index.
+    stream_state: [Option<crate::stream::StreamCursors>; NODES],
 }
 
 impl<
@@ -64,6 +67,7 @@ impl<
             writes: [None; NODES],
             writes_len: 0,
             pool: crate::pool::Pool::new(),
+            stream_state: [None; NODES],
         }
     }
 
@@ -137,6 +141,15 @@ impl<
             Cmd::TriggerVoice { node, voice } => {
                 if let Some(n) = self.arena.node_mut(node) { n.trigger_voice(voice as usize); }
             }
+            Cmd::StreamFill { node, voice, fill_lo, fill_hi, total } => {
+                let idx = node.0 as usize;
+                if idx < NODES && (voice as usize) < VOICES {
+                    let sc = self.stream_state[idx]
+                        .get_or_insert_with(crate::stream::StreamCursors::new);
+                    sc.total = total;
+                    sc.fill[voice as usize] = (fill_lo, fill_hi);
+                }
+            }
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
             Cmd::BusWriteGains { src, bus, gl, gr } => self.bus_write_gains(src, bus, gl, gr),
             Cmd::SetRoot { bus } => self.set_root(bus),
@@ -149,12 +162,15 @@ impl<
                         self.pool.free(h);
                     }
                 }
+                let idx = node.0 as usize;
+                if idx < NODES { self.stream_state[idx] = None; }
                 self.arena.free(node);
             }
             Cmd::Reset => {
                 self.arena.reset();
                 self.writes_len = 0;
                 self.root = None;
+                self.stream_state = [None; NODES];
             }
         }
     }
@@ -258,8 +274,13 @@ impl<
                     Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice_mut(h)),
                     _ => None,
                 };
+                // Stream fill cursors (a disjoint `Engine` field from `pool`/`arena`).
+                let stream = {
+                    let sidx = id.0 as usize;
+                    if sidx < NODES { self.stream_state[sidx].as_ref() } else { None }
+                };
                 if let Some(n) = self.arena.node_mut(id) {
-                    n.poly_process(&ins, poly_in, self.dt, out, pool_region);
+                    n.poly_process(&ins, poly_in, self.dt, out, pool_region, stream);
                 }
             } else {
                 let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
@@ -278,6 +299,13 @@ impl<
                 }
             }
         }
+    }
+
+    /// A `StreamPlayer` voice's playback read-cursor (⌊pos⌋). `None` if `node`
+    /// doesn't exist / isn't a `StreamPlayer` / `voice` is out of range. The
+    /// prefetch task polls this to trail playback.
+    pub fn stream_read_cursor(&self, node: NodeId, voice: usize) -> Option<u64> {
+        self.arena.node(node)?.stream_read_cursor(voice)
     }
 
     /// Test/inspection accessor: a node's rendered output port.
@@ -359,6 +387,49 @@ mod tests {
     use crate::{Cmd, Input, NodeId};
 
     type E = Engine<16, 8, 8, 4, 45056, 2048>;
+
+    #[test]
+    fn stream_player_renders_and_cursors() {
+        // Two VOICES-wide (8-row) nodes need OUTS room for 16 output rows.
+        type SE = Engine<16, 8, 128, 4, 45056, 2048>;
+        let mut e = SE::new(16.0);
+        let cap = 64usize;
+        let node = NodeId(0);
+        let h = e.pool_alloc(VOICES * cap).expect("ring pool");
+        e.create(node, Kind::StreamPlayer);
+        e.apply(Cmd::BindTable { node, src: TableSrc::Pooled(h) });
+        e.apply(Cmd::SetParam { node, param: 0, value: 60.0 }); // root note
+        // Mock prefetch: fill voice 0's sub-ring [0..cap) so sample `a` == a.
+        {
+            let region = e.pool_slice_mut(h);
+            for a in 0..cap { region[a] = a as f32; }
+        }
+        e.apply(Cmd::StreamFill { node, voice: 0, fill_lo: 0, fill_hi: cap as u64, total: cap as u64 });
+        e.apply(Cmd::TriggerVoice { node, voice: 0 });
+        // pitch == root Hz (mtof(60) ≈ 261.63) → rate ≈ 1.0.
+        *e.node_input_mut(node, 0).unwrap() = Input::Const(261.625_58);
+        e.render_block();
+        assert!(e.stream_read_cursor(node, 0).unwrap() > 0, "read cursor advanced on a full window");
+
+        // Underrun: a short window (fill_hi = 4) reads a couple samples then holds.
+        let node2 = NodeId(1);
+        let h2 = e.pool_alloc(VOICES * cap).expect("ring pool 2");
+        e.create(node2, Kind::StreamPlayer);
+        e.apply(Cmd::BindTable { node: node2, src: TableSrc::Pooled(h2) });
+        e.apply(Cmd::SetParam { node: node2, param: 0, value: 60.0 });
+        { let r = e.pool_slice_mut(h2); for a in 0..cap { r[a] = a as f32; } }
+        e.apply(Cmd::StreamFill { node: node2, voice: 0, fill_lo: 0, fill_hi: 4, total: 1000 });
+        e.apply(Cmd::TriggerVoice { node: node2, voice: 0 });
+        *e.node_input_mut(node2, 0).unwrap() = Input::Const(261.625_58);
+        e.render_block();
+        assert!(e.stream_read_cursor(node2, 0).unwrap() <= 2, "held under underrun");
+
+        // No panic on out-of-range node / voice.
+        e.apply(Cmd::StreamFill { node: NodeId(999), voice: 99, fill_lo: 0, fill_hi: 0, total: 0 });
+        e.apply(Cmd::StreamFill { node, voice: 99, fill_lo: 0, fill_hi: 0, total: 0 });
+        assert!(e.stream_read_cursor(NodeId(999), 0).is_none());
+        assert!(e.stream_read_cursor(node, 99).is_none());
+    }
 
     #[test]
     fn single_saw_node_renders() {
