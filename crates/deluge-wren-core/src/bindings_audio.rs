@@ -9,7 +9,7 @@ use deluge_audio_graph::{Input, Kind, NodeId};
 use wren_sys::{Vm, WrenVM};
 
 use crate::audio;
-use crate::slotapi::{SlotApi, WrenForeign, WrenType};
+use crate::slotapi::{SlotApi, WrenForeign, WrenType, checked_list_count};
 
 // All audio foreign objects lead with a `tag: u8` (offset 0 under `repr(C)`) so
 // `arg_input` can discriminate a Node/Port/Bus argument by reading that byte —
@@ -639,9 +639,9 @@ pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
 /// limitation pending a proper object-scoped ownership model
 /// (finalizer/refcount) as a follow-on.
 pub(crate) fn wavetable_from_impl<S: SlotApi>(vm: &S) {
-    let count = vm.get_list_count(1);
+    let count = checked_list_count(vm, 1);
     let mut base = [0.0f32; mipgen::N];
-    let n = (count.max(0) as usize).min(base.len());
+    let n = count.min(base.len());
     vm.ensure_slots(3); // guarantee slot 2 (scratch, for list-element reads) is valid
     for i in 0..n {
         vm.get_list_element(1, i as i32, 2); // element -> slot 2
@@ -676,7 +676,7 @@ pub(crate) unsafe extern "C" fn wavetable_from(raw: *mut WrenVM) {
 /// access) and the binding (VM slot access) never touch each other's state,
 /// which is what keeps this sound through the `Host` trait object.
 pub(crate) fn wavetable_from2d_impl<S: SlotApi>(vm: &S) {
-    let nframes = (vm.get_list_count(1).max(0)) as usize;
+    let nframes = checked_list_count(vm, 1);
     vm.ensure_slots(4); // 1=outer(frames) list, 2=inner(frame) list, 3=sample scratch
     let handle = audio::upload_table_2d(nframes, &mut |f, base| {
         // Zero first: `get_list_count(2)` may be shorter than `base.len()`
@@ -686,7 +686,7 @@ pub(crate) fn wavetable_from2d_impl<S: SlotApi>(vm: &S) {
             *s = 0.0;
         }
         vm.get_list_element(1, f as i32, 2); // frame f -> slot 2
-        let n = (vm.get_list_count(2).max(0) as usize).min(base.len());
+        let n = checked_list_count(vm, 2).min(base.len());
         for i in 0..n {
             vm.get_list_element(2, i as i32, 3); // sample -> slot 3
             base[i] = vm.get_f(3) as f32;
@@ -717,7 +717,7 @@ pub(crate) unsafe extern "C" fn wavetable_from2d(raw: *mut WrenVM) {
 /// freed by `Cmd::Free` on whichever node gets bound to this `SampleBuffer`,
 /// not by the Wren object's GC.
 pub(crate) fn sample_from_impl<S: SlotApi>(vm: &S) {
-    let count = vm.get_list_count(1).max(0) as usize;
+    let count = checked_list_count(vm, 1);
     let handle = audio::alloc_buffer(count); // pool_allocs + zero-fills `count`
     if let Some(h) = handle {
         vm.ensure_slots(3); // guarantee slot 2 (scratch, for list-element reads) is valid
@@ -1614,7 +1614,7 @@ pub(crate) unsafe extern "C" fn node_slew(raw: *mut WrenVM) {
 /// into `set_param` calls: param 0 = length, param k+1 = values[k] (up to
 /// MAX_STEPS; longer lists are truncated). Clock on port 0.
 pub(crate) fn node_steps_impl<S: SlotApi>(vm: &S) {
-    let count = vm.get_list_count(1).max(0) as usize;
+    let count = checked_list_count(vm, 1);
     let len = count.min(deluge_dsp_kernels::modutil::MAX_STEPS);
     let clock = arg_input(vm, 2);
     let id = audio::alloc_node_id();

@@ -34,7 +34,7 @@ use wren_sys::{ClassEntry, MethodEntry, Vm, WrenVM};
 #[cfg(feature = "wren-sys-backend")]
 use crate::bindings_audio;
 use crate::host::{CV_CHANNELS, GATE_CHANNELS, host};
-use crate::slotapi::{Handle, SlotApi, WrenForeign};
+use crate::slotapi::{Handle, SlotApi, WrenForeign, checked_str};
 
 const N_CV: usize = CV_CHANNELS; // 2
 const N_GATE: usize = GATE_CHANNELS; // 4
@@ -739,7 +739,7 @@ unsafe extern "C" fn oled_clear(raw: *mut WrenVM) {
 pub(crate) fn oled_text_impl<S: SlotApi>(vm: &S) {
     let x = vm.get_f(1) as usize;
     let y = vm.get_f(2) as usize;
-    let s = vm.get_str(3);
+    let s = checked_str(vm, 3);
     host().oled_text(x, y, s.as_bytes());
 }
 #[cfg(feature = "wren-sys-backend")]

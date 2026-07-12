@@ -1982,6 +1982,40 @@ fn keymap_from_malformed_short_zone_missing_high_and_root_does_not_crash() {
     );
 }
 
+// Wren slot-read UB hardening, Task 1: the same no-op-`ASSERT` UB the
+// `keymap_from_malformed_*` tests above cover for `Keymap.from` also applies
+// to `SampleBuffer.from`, `Wavetable.from`, `Wavetable.from2d`, `Steps.new`
+// (list-arg reads), and `Oled.text` (string-arg read) — each called
+// `get_list_count`/`get_list_element`/`get_str` on a slot with no prior
+// `slot_type` check. `checked_list_count`/`checked_str` (`slotapi.rs`) now
+// guard all five, degrading a wrong-type slot to 0 / `""` instead of an
+// out-of-bounds read.
+#[test]
+fn sample_from_malformed_arg_not_a_list_does_not_crash() {
+    assert!(run_script_ok("var b = SampleBuffer.from(5)"), "SampleBuffer.from(non-list) degrades, no crash");
+}
+
+#[test]
+fn wavetable_from_malformed_arg_not_a_list_does_not_crash() {
+    assert!(run_script_ok("var w = Wavetable.from(5)"), "Wavetable.from(non-list) degrades, no crash");
+}
+
+#[test]
+fn wavetable_from2d_malformed_args_do_not_crash() {
+    assert!(run_script_ok("var w = Wavetable.from2d(5)"), "from2d(non-list) degrades");
+    assert!(run_script_ok("var w = Wavetable.from2d([5, 6])"), "from2d([non-list frames]) degrades");
+}
+
+#[test]
+fn steps_malformed_values_not_a_list_does_not_crash() {
+    assert!(run_script_ok("var s = Steps.new(5, 1)"), "Steps.new(non-list values) degrades to 0 steps, no crash");
+}
+
+#[test]
+fn oled_text_malformed_non_string_does_not_crash() {
+    assert!(run_script_ok("Oled.text(0, 0, 42)"), "Oled.text(non-string) skips draw, no crash");
+}
+
 // `Sample.new(pitch, source)` (Sa-2 Task 6) — the poly sample-source factory
 // that consumes either a `SampleBuffer` (synthesizes one full-range zone) or
 // a `Keymap` (uses its zone table). Builds INSIDE a `Synth.new`/`Synth.mono`

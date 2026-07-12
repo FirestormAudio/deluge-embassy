@@ -47,3 +47,24 @@ pub trait SlotApi {
     fn call(&self, method: Handle) -> i32;
     fn release_handle(&self, h: Handle);
 }
+
+/// List length if `slot` is actually a List, else 0. A subsequent `0..count`
+/// walk is then always in-bounds (the wren-sys VM does NO bounds/type checking
+/// — its C `ASSERT`s are compiled out).
+pub(crate) fn checked_list_count<S: SlotApi>(vm: &S, slot: i32) -> usize {
+    if vm.slot_type(slot) == WrenType::List {
+        vm.get_list_count(slot).max(0) as usize
+    } else {
+        0
+    }
+}
+
+/// `&str` if `slot` is a String, else `""`. Guards `get_str`, which the VM
+/// backs with an unconditional `AS_STRING` deref (UB on a non-String slot).
+pub(crate) fn checked_str<S: SlotApi>(vm: &S, slot: i32) -> &str {
+    if vm.slot_type(slot) == WrenType::String {
+        vm.get_str(slot)
+    } else {
+        ""
+    }
+}
