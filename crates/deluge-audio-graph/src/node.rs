@@ -21,6 +21,7 @@ use deluge_dsp_kernels::{
 use deluge_dsp_kernels::wavetable::{
     level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
 };
+use deluge_dsp_kernels::sampler::SamplePlayer;
 pub use deluge_dsp_kernels::In;
 
 /// Assemble a `MipSet`'s level-slice array from a flat, compact
@@ -112,6 +113,7 @@ pub enum Kind {
     PolySyncTri,
     PolyWt,
     PolyWtMorph,
+    SamplePlayer,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -165,6 +167,7 @@ enum State {
     PolyWt(PolyWt),
     VoiceSum(f32),
     StereoVoiceSum { gain: f32, pan: [f32; VOICES] },
+    SamplePlayer(SamplePlayer),
     Stateless,
 }
 
@@ -250,6 +253,7 @@ impl Node {
                 State::PolySync(PolySync::new())
             }
             Kind::PolyWt | Kind::PolyWtMorph => State::PolyWt(PolyWt::new()),
+            Kind::SamplePlayer => State::SamplePlayer(SamplePlayer::new()),
         };
         Node {
             kind,
@@ -318,6 +322,7 @@ impl Node {
             State::Ar(a) => a.trigger(),
             State::Adsr(a) => a.trigger(),
             State::Lfo(l) => l.retrigger(),
+            State::SamplePlayer(p) => p.trigger(),
             _ => {}
         }
     }
@@ -474,6 +479,14 @@ impl Node {
             },
             State::PolyMtof(m) => match param {
                 0 => m.set_ref(value),
+                _ => {}
+            },
+            State::SamplePlayer(p) => match param {
+                0 => p.set_speed(value),
+                1 => p.set_semitones(value),
+                2 => p.set_loop_start(value),
+                3 => p.set_loop_end(value),
+                4 => p.set_loop_mode(value != 0.0),
                 _ => {}
             },
             _ => {}
@@ -671,6 +684,20 @@ impl Node {
                     let port = outs.port(0);
                     for i in 0..port.len() {
                         port[i] = ins[0].at(i);
+                    }
+                }
+            }
+            Kind::SamplePlayer => {
+                // Pooled PCM source; only reads its region, so reborrow
+                // immutably. No bound buffer (or engine hasn't resolved one
+                // yet) → silence, never panic.
+                let pcm: Option<&[f32]> = pool_region.as_deref();
+                if let (State::SamplePlayer(p), Some(region)) = (&mut self.state, pcm) {
+                    p.process(region, dt, outs.port(0));
+                } else {
+                    let port = outs.port(0);
+                    for o in port.iter_mut() {
+                        *o = 0.0;
                     }
                 }
             }
@@ -2394,5 +2421,24 @@ mod tests {
         // unison-ish voices can constructively peak above a single voice's bound.
         assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 9.7), "bounded: {out:?}");
         assert!(out.iter().any(|&s| s.abs() > 1e-4), "pooled poly morph wavetable sounds");
+    }
+
+    #[test]
+    fn sample_player_node_reads_pool_and_triggers() {
+        assert_eq!(Node::out_width(Kind::SamplePlayer), 1);
+        assert!(!Node::is_poly(Kind::SamplePlayer));
+        let mut n = Node::new(Kind::SamplePlayer, 0);
+        n.set_param(3, 4.0); // loop_end = 4 (buffer len)
+        n.trigger();          // start playback
+        // Drive it with a pool region = the PCM. one-shot, speed 1 → verbatim.
+        let pcm = [0.25f32, 0.5, -0.5, -0.25];
+        let mut region = pcm; // a &mut [f32] pool region
+        let ins = [In::A(&[0.0; 4]), In::A(&[0.0; 4]), In::A(&[0.0; 4])];
+        let mut buf = [0.0f32; 4];
+        {
+            let mut outs = OutView::single(&mut buf);
+            n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, Some(&mut region));
+        }
+        for i in 0..4 { assert!((buf[i] - pcm[i]).abs() < 1e-5, "plays pool PCM at {}", i); }
     }
 }
