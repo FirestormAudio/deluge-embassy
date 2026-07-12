@@ -21,19 +21,18 @@ fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, frac: f32) -> f32 {
 }
 
 /// 4-point Hermite read of `pcm` at absolute fractional position `pos`, with
-/// taps clamped (one-shot) or wrapped (loop) inside the window `[lo, hi)`.
+/// taps clamped (one-shot) or wrapped (loop) inside the window `[lo, lo+span)`.
 #[inline]
-fn hermite_read(pcm: &[f32], pos: f32, lo: isize, hi: isize, loopable: bool) -> f32 {
+fn hermite_read(pcm: &[f32], pos: f32, lo: isize, span: isize, loopable: bool) -> f32 {
     let i = libm::floorf(pos) as isize;
     let frac = pos - (i as f32);
     let tap = |idx: isize| -> f32 {
-        let span = hi - lo;
         let n = if loopable && span > 0 {
             let mut k = (idx - lo) % span;
             if k < 0 { k += span; }
             lo + k
         } else {
-            idx.clamp(lo, hi - 1)
+            idx.clamp(lo, lo + span - 1)
         };
         pcm[n as usize]
     };
@@ -86,13 +85,13 @@ impl SamplePlayer {
         let ls = self.loop_start.max(0.0);
         let le = self.loop_end.min(len as f32);
         let loopable = self.loop_mode && le > ls + 1.0;
-        let (lo, hi) = if loopable { (ls as isize, le as isize) } else { (0, len as isize) };
+        let (lo, span) = if loopable { (ls as isize, (le - ls) as isize) } else { (0, len as isize) };
         for o in out.iter_mut() {
             if !self.playing {
                 *o = 0.0;
                 continue;
             }
-            *o = hermite_read(pcm, self.pos, lo, hi, loopable);
+            *o = hermite_read(pcm, self.pos, lo, span, loopable);
             self.pos += rate;
             if loopable {
                 if self.pos >= le { self.pos -= le - ls; }
@@ -173,13 +172,13 @@ impl PolySamplePlayer {
         }
         let vc = &mut self.voices[v];
         let lo = vc.off as isize;
-        let hi = (vc.off + vc.len) as isize;
+        let span = vc.len as isize;
         for o in out.iter_mut() {
             if !vc.playing || vc.len == 0 || (vc.off as usize + vc.len as usize) > pcm.len() {
                 *o = 0.0;
                 continue;
             }
-            *o = hermite_read(pcm, vc.off as f32 + vc.pos, lo, hi, loop_mode);
+            *o = hermite_read(pcm, vc.off as f32 + vc.pos, lo, span, loop_mode);
             vc.pos += vc.rate;
             let l = vc.len as f32;
             if loop_mode {
@@ -320,7 +319,6 @@ mod tests {
         let hb = [mtof(72.0); 4]; let mut ob = [0.0f32; 4];
         p.process_voice(1, &pcm, In::A(&hb), 1.0 / 48_000.0, &mut ob);
         assert!(ob.iter().all(|&v| (v - 20.0).abs() < 1e-3), "note 72 plays zone B");
-        // note 100 in no... (covered by zone 1). Test an unmapped note with a 1-zone map elsewhere:
     }
 
     #[test]
