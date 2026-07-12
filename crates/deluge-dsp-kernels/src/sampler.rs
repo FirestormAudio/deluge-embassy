@@ -256,7 +256,7 @@ impl PolyStreamPlayer {
         }
         let cap = ring.len() as u64;
         // last valid absolute sample index (for edge-tap clamping, like one-shot Hermite)
-        let file_hi: i64 = if total > 0 { total as i64 - 1 } else { i64::MAX };
+        let file_hi: i64 = if total == 0 { i64::MAX } else { (total - 1).min(i64::MAX as u64) as i64 };
         let voice = &mut self.voices[v];
         for o in out.iter_mut() {
             if !voice.playing || cap == 0 {
@@ -564,5 +564,36 @@ mod tests {
         p.process_voice(99, &ring, 0, 16, 16, 1.0, &mut out);
         assert_eq!(p.read_cursor(99), 0);
         assert!(!p.is_playing(99));
+    }
+
+    #[test]
+    fn stream_no_panic_huge_total() {
+        // Regression: `total` near/at the u64 boundary used to compute
+        // `file_hi` via `total as i64 - 1`, which for total == 2^63
+        // reinterprets to i64::MIN and panics on `- 1` (overflow-checked
+        // build), and for total in (2^63, u64::MAX] silently produced a
+        // NEGATIVE file_hi. Use a RESIDENT window (fill_lo=0, fill_hi=16,
+        // non-empty ring, v=0 triggered) so the clamp/resident checks in
+        // process_voice actually reach the file_hi computation — unlike the
+        // adversarial test above, which used fill_lo==fill_hi and so
+        // short-circuited before file_hi could matter.
+        let mut ring = [0.0f32; 128];
+        fill_ring(&mut ring, 0, 16);
+        let mut out = [0.0f32; 8];
+
+        // total == 2^63: `total as i64` == i64::MIN; `- 1` used to overflow-panic.
+        let mut p1 = PolyStreamPlayer::new();
+        p1.trigger_voice(0);
+        p1.process_voice(0, &ring, 0, 16, 1u64 << 63, 1.0, &mut out);
+        assert_eq!(out[0], 0.0, "reads verbatim, no panic, for total = 2^63");
+
+        // total == u64::MAX: `total as i64` is negative; `file_hi` used to go negative
+        // and every clamped tap would fail residency (or worse). Now saturates to
+        // i64::MAX, so normal resident reads still work.
+        let mut p2 = PolyStreamPlayer::new();
+        p2.trigger_voice(0);
+        p2.process_voice(0, &ring, 0, 16, u64::MAX, 1.0, &mut out);
+        assert_eq!(out[0], 0.0, "reads verbatim, no panic, for total = u64::MAX");
+        assert_eq!(out[1], 1.0);
     }
 }
