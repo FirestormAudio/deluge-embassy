@@ -194,6 +194,106 @@ impl Default for PolySamplePlayer {
     fn default() -> Self { PolySamplePlayer::new() }
 }
 
+/// One streaming voice: an absolute `f64` playback position into a large sample
+/// that is only partially resident (in a ring). `f64` because a streamed file can
+/// run for minutes — past ~16M samples an `f32` position loses sample precision.
+#[derive(Clone, Copy)]
+struct StreamVoice {
+    pos: f64,
+    playing: bool,
+}
+impl StreamVoice {
+    fn new() -> StreamVoice { StreamVoice { pos: 0.0, playing: false } }
+}
+
+/// Poly (VOICES-wide) streaming sample player: each voice reads from a moving
+/// ring window `[fill_lo, fill_hi)` of a large sample (owned/filled by the
+/// prefetch task — this kernel is a pure consumer). Underrun (a needed tap not
+/// yet resident) → silence + hold position (seamless resume). One-shot; scalar
+/// (the 4-tap modulo gather doesn't vectorize). `no_std`, no heap, no panic.
+#[derive(Clone, Copy)]
+pub struct PolyStreamPlayer {
+    voices: [StreamVoice; VOICES],
+}
+
+impl PolyStreamPlayer {
+    pub fn new() -> PolyStreamPlayer {
+        PolyStreamPlayer { voices: [StreamVoice::new(); VOICES] }
+    }
+
+    /// (Re)start voice `v` from the beginning of its sample.
+    pub fn trigger_voice(&mut self, v: usize) {
+        if v < VOICES {
+            self.voices[v].pos = 0.0;
+            self.voices[v].playing = true;
+        }
+    }
+
+    /// The voice's current integer read position — how far playback has consumed.
+    /// The prefetch task trails this to advance `fill_lo` and target `fill_hi`.
+    pub fn read_cursor(&self, v: usize) -> u64 {
+        if v < VOICES {
+            let p = self.voices[v].pos;
+            if p > 0.0 { libm::floor(p) as u64 } else { 0 }
+        } else {
+            0
+        }
+    }
+
+    pub fn is_playing(&self, v: usize) -> bool {
+        v < VOICES && self.voices[v].playing
+    }
+
+    /// Render one block for voice `v` from its resident ring window.
+    /// `ring`: this voice's window buffer (len = ring capacity, sample `a` at
+    /// `a % len`). `fill_lo..fill_hi`: absolute indices currently resident.
+    /// `total`: full sample length (`0` = unbounded). `rate`: samples/output-sample.
+    pub fn process_voice(&mut self, v: usize, ring: &[f32], fill_lo: u64, fill_hi: u64,
+                         total: u64, rate: f32, out: &mut [f32]) {
+        if v >= VOICES {
+            for o in out.iter_mut() { *o = 0.0; }
+            return;
+        }
+        let cap = ring.len() as u64;
+        // last valid absolute sample index (for edge-tap clamping, like one-shot Hermite)
+        let file_hi: i64 = if total > 0 { total as i64 - 1 } else { i64::MAX };
+        let voice = &mut self.voices[v];
+        for o in out.iter_mut() {
+            if !voice.playing || cap == 0 {
+                *o = 0.0;
+                continue;
+            }
+            if total > 0 && voice.pos >= total as f64 {
+                voice.playing = false;
+                *o = 0.0;
+                continue;
+            }
+            let ip = libm::floor(voice.pos);
+            let base = ip as i64;
+            let frac = (voice.pos - ip) as f32;
+            // clamp each tap to the file bounds [0, file_hi] (so the first/last
+            // samples read correctly), then require every clamped tap resident.
+            let clamp = |a: i64| -> i64 {
+                if a < 0 { 0 } else if a > file_hi { file_hi } else { a }
+            };
+            let (t0, t1, t2, t3) = (clamp(base - 1), clamp(base), clamp(base + 1), clamp(base + 2));
+            let resident = |t: i64| -> bool { (t as u64) >= fill_lo && (t as u64) < fill_hi };
+            if !(resident(t0) && resident(t1) && resident(t2) && resident(t3)) {
+                // UNDERRUN: prefetch hasn't caught up — silence, HOLD pos.
+                *o = 0.0;
+                continue;
+            }
+            // reduce modulo in u64 BEFORE `as usize` (32-bit usize safety)
+            let rd = |t: i64| -> f32 { ring[((t as u64) % cap) as usize] };
+            *o = hermite(rd(t0), rd(t1), rd(t2), rd(t3), frac);
+            voice.pos += rate as f64;
+        }
+    }
+}
+impl Default for PolyStreamPlayer {
+    fn default() -> Self { PolyStreamPlayer::new() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +432,137 @@ mod tests {
         let h = [mtof(48.0); 4]; let mut o = [0.0f32; 4]; // note 48, unmapped
         p.process_voice(0, &pcm, In::A(&h), 1.0 / 48_000.0, &mut o);
         assert!(o.iter().all(|&v| v.abs() < 1e-6), "unmapped note is silent");
+    }
+
+    // helper: fill ring so absolute sample `a` (lo<=a<hi) holds `a as f32`.
+    fn fill_ring(ring: &mut [f32], lo: u64, hi: u64) {
+        let cap = ring.len() as u64;
+        for a in lo..hi {
+            ring[(a % cap) as usize] = a as f32;
+        }
+    }
+
+    #[test]
+    fn stream_resident_read_reproduces_samples() {
+        let mut ring = [0.0f32; 128];
+        let total = 100u64;
+        fill_ring(&mut ring, 0, total);
+        let mut p = PolyStreamPlayer::new();
+        p.trigger_voice(0);
+        let mut out = [0.0f32; 16];
+        p.process_voice(0, &ring, 0, total, total, 1.0, &mut out);
+        // rate 1.0, integer pos → Hermite returns the tap verbatim: out[i] == i.
+        for i in 0..16 { assert_eq!(out[i], i as f32, "sample {}", i); }
+        assert_eq!(p.read_cursor(0), 16);
+    }
+
+    #[test]
+    fn stream_rate_two_reads_every_other() {
+        let mut ring = [0.0f32; 128];
+        let total = 100u64;
+        fill_ring(&mut ring, 0, total);
+        let mut p = PolyStreamPlayer::new();
+        p.trigger_voice(0);
+        let mut out = [0.0f32; 8];
+        p.process_voice(0, &ring, 0, total, total, 2.0, &mut out);
+        for i in 0..8 { assert_eq!(out[i], (2 * i) as f32, "sample {}", i); }
+    }
+
+    #[test]
+    fn stream_underrun_holds_then_resumes() {
+        let mut ring = [0.0f32; 128];
+        let total = 100u64;
+        fill_ring(&mut ring, 0, 5); // only [0,5) resident
+        let mut p = PolyStreamPlayer::new();
+        p.trigger_voice(0);
+        let mut out = [0.0f32; 8];
+        p.process_voice(0, &ring, 0, 5, total, 1.0, &mut out);
+        // reads pos 0,1,2 (taps within [0,5)); pos 3 needs tap 5 → underrun → silence, hold.
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[1], 1.0);
+        assert_eq!(out[2], 2.0);
+        assert!(out[3..].iter().all(|&s| s == 0.0), "underrun → silence");
+        assert_eq!(p.read_cursor(0), 3, "pos held at 3 (not advanced through underrun)");
+        // prefetch catches up: extend the window, resume seamlessly.
+        fill_ring(&mut ring, 5, total);
+        let mut out2 = [0.0f32; 4];
+        p.process_voice(0, &ring, 0, total, total, 1.0, &mut out2);
+        assert_eq!(out2[0], 3.0, "resumes at the exact held pos");
+        assert_eq!(out2[1], 4.0);
+    }
+
+    #[test]
+    fn stream_one_shot_stops_at_total() {
+        let mut ring = [0.0f32; 128];
+        let total = 10u64;
+        fill_ring(&mut ring, 0, total);
+        let mut p = PolyStreamPlayer::new();
+        p.trigger_voice(0);
+        let mut out = [0.0f32; 16];
+        p.process_voice(0, &ring, 0, total, total, 1.0, &mut out);
+        assert!(!p.is_playing(0), "stopped at end of file");
+        assert!(out[10..].iter().all(|&s| s == 0.0), "silence past the end");
+    }
+
+    #[test]
+    fn stream_wraparound_ring() {
+        // Slide a small (cap=8) window forward so a read crosses the modulo boundary.
+        let cap = 8usize;
+        let mut ring = [0.0f32; 8];
+        let total = 100u64;
+        let mut p = PolyStreamPlayer::new();
+        p.trigger_voice(0);
+        // Window 1: [0,8) resident. Play pos 0..=5 (pos 6 would need tap 8 → underrun).
+        fill_ring(&mut ring, 0, 8);
+        let mut out1 = [0.0f32; 6];
+        p.process_voice(0, &ring, 0, 8, total, 1.0, &mut out1);
+        for i in 0..6 { assert_eq!(out1[i], i as f32); }
+        assert_eq!(p.read_cursor(0), 6);
+        // Slide window forward to [4,12): filling [8,12) overwrites ring[0..4] (8→ring[0],
+        // 9→ring[1], 10→ring[2], 11→ring[3]) — so reads now WRAP across the cap boundary.
+        fill_ring(&mut ring, 8, 12);
+        let mut out2 = [0.0f32; 4];
+        p.process_voice(0, &ring, 4, 12, total, 1.0, &mut out2);
+        // pos 6: taps [5,6,7,8] — tap 8 reads ring[8 % 8 = 0] = 8.0 (the wrap). Hermite@0 → 6.
+        assert_eq!(out2[0], 6.0);
+        assert_eq!(out2[1], 7.0);
+        assert_eq!(out2[2], 8.0, "wrapped read (sample 8 at ring[0]) correct");
+        assert_eq!(out2[3], 9.0);
+        let _ = cap;
+    }
+
+    #[test]
+    fn stream_per_voice_independent() {
+        let mut ring = [0.0f32; 128];
+        let total = 100u64;
+        fill_ring(&mut ring, 0, total);
+        let mut p = PolyStreamPlayer::new();
+        p.trigger_voice(0);
+        // voice 1 NOT triggered → silent, independent of voice 0.
+        let mut out0 = [0.0f32; 8];
+        let mut out1 = [0.0f32; 8];
+        p.process_voice(0, &ring, 0, total, total, 1.0, &mut out0);
+        p.process_voice(1, &ring, 0, total, total, 1.0, &mut out1);
+        assert_eq!(out0[4], 4.0);
+        assert!(out1.iter().all(|&s| s == 0.0), "untriggered voice 1 is silent");
+        assert!(!p.is_playing(1));
+    }
+
+    #[test]
+    fn stream_no_panic_on_adversarial() {
+        let ring = [0.0f32; 16];
+        let empty: [f32; 0] = [];
+        let mut p = PolyStreamPlayer::new();
+        p.trigger_voice(0);
+        let mut out = [0.0f32; 8];
+        // empty ring → silence, no panic
+        p.process_voice(0, &empty, 0, 100, 100, 1.0, &mut out);
+        assert!(out.iter().all(|&s| s == 0.0));
+        // fill_hi < fill_lo, huge total/cursors, v >= VOICES → no panic
+        p.process_voice(0, &ring, 50, 10, u64::MAX, 1.0, &mut out);
+        p.process_voice(0, &ring, u64::MAX, u64::MAX, u64::MAX, 3.5, &mut out);
+        p.process_voice(99, &ring, 0, 16, 16, 1.0, &mut out);
+        assert_eq!(p.read_cursor(99), 0);
+        assert!(!p.is_playing(99));
     }
 }
