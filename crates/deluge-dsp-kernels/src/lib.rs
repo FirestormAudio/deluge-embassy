@@ -22,6 +22,7 @@ pub mod osc;
 pub mod poly;
 pub mod quant;
 pub mod reverb;
+pub mod sampler;
 pub mod shape;
 pub mod wavetable;
 mod wavetables_generated;
