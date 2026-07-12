@@ -9,7 +9,7 @@ use deluge_audio_graph::{Input, Kind, NodeId};
 use wren_sys::{Vm, WrenVM};
 
 use crate::audio;
-use crate::slotapi::{SlotApi, WrenForeign, WrenType, checked_list_count};
+use crate::slotapi::{SlotApi, WrenForeign, WrenType, checked_list_count, checked_tagged_foreign};
 
 // All audio foreign objects lead with a `tag: u8` (offset 0 under `repr(C)`) so
 // `arg_input` can discriminate a Node/Port/Bus argument by reading that byte —
@@ -911,9 +911,10 @@ pub(crate) unsafe extern "C" fn keymap_from(raw: *mut WrenVM) {
 /// failed) still creates the node but skips both, same graceful-degrade
 /// contract as `node_wavetable_pooled_impl`.
 pub(crate) fn node_player_impl<S: SlotApi>(vm: &S) {
-    let obj = unsafe { vm.foreign_mut::<SampleObj>(1) };
-    let handle = obj.handle;
-    let len = obj.len;
+    let (handle, len) = match checked_tagged_foreign::<SampleObj, _>(vm, 1, TAG_SAMPLE) {
+        Some(obj) => (obj.handle, obj.len),
+        None => (None, 0),
+    };
     let id = audio::alloc_node_id();
     audio::new_sample_player(id, handle, len);
     unsafe { return_node(vm, id) };
@@ -986,7 +987,7 @@ pub(crate) unsafe extern "C" fn node_set_loop_mode(raw: *mut WrenVM) {
 /// `BindTable{Pooled}`; an unbound one (upload failed) still creates the
 /// node but skips the bind, so it renders silent instead of panicking.
 pub(crate) fn node_wavetable_pooled_impl<S: SlotApi>(vm: &S) {
-    let handle = unsafe { vm.foreign_mut::<WtObj>(1) }.handle;
+    let handle = checked_tagged_foreign::<WtObj, _>(vm, 1, TAG_WT).and_then(|o| o.handle);
     let freq = arg_input(vm, 2);
     let id = audio::alloc_node_id();
     match handle {
@@ -2030,9 +2031,11 @@ pub(crate) unsafe extern "C" fn node_polywt(raw: *mut WrenVM) {
 /// morph) comes from the `Wavetable`'s `frames` field, set at upload time by
 /// `wavetable_from_impl`/`wavetable_from2d_impl`.
 pub(crate) fn node_polywt_pooled_impl<S: SlotApi>(vm: &S) {
-    let wt = unsafe { vm.foreign_mut::<WtObj>(1) };
-    let handle = wt.handle;
-    let kind = poly_wt_kind(wt.frames as usize);
+    let (handle, frames) = match checked_tagged_foreign::<WtObj, _>(vm, 1, TAG_WT) {
+        Some(wt) => (wt.handle, wt.frames as usize),
+        None => (None, 1), // frames=1 (single-cycle) is inert; handle None -> plain silent node
+    };
+    let kind = poly_wt_kind(frames);
     let freq = arg_input(vm, 2);
     let id = audio::alloc_node_id();
     match handle {
@@ -2390,8 +2393,12 @@ pub(crate) unsafe extern "C" fn bus_write(raw: *mut WrenVM) {
 pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
     // `Out.patch(arg)` → if `arg` is a Bus, set it as root directly; otherwise
     // route the source (stereo-aware) into the master bus and set it as root.
-    let tag = unsafe { *vm.foreign_mut::<u8>(1) };
-    if tag == TAG_BUS {
+    // Only peek the tag byte if arg 1 is actually a Foreign; a Num/String/List/
+    // Null slot must NOT be reinterpreted as an Obj pointer (UB). Non-Bus (and
+    // non-Foreign) falls through to write_source_to_bus, which already tolerates
+    // non-Foreign args via arg_input.
+    let is_bus = vm.slot_type(1) == WrenType::Foreign && unsafe { *vm.foreign_mut::<u8>(1) } == TAG_BUS;
+    if is_bus {
         let bus = unsafe { vm.foreign_mut::<BusObj>(1) }.id;
         audio::set_root(bus);
     } else {

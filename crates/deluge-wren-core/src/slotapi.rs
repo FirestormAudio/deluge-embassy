@@ -68,3 +68,21 @@ pub(crate) fn checked_str<S: SlotApi>(vm: &S, slot: i32) -> &str {
         ""
     }
 }
+
+/// `Some(&mut T)` iff `slot` is a Foreign whose leading tag byte == `want_tag`,
+/// else `None`. Prevents the heap over-read where a small 4-byte foreign
+/// (Node/Port/Bus) is cast to a larger `WtObj`/`SampleObj`: a mismatched tag
+/// yields `None` before the large cast happens. Mirrors `arg_input`'s tag peek.
+pub(crate) fn checked_tagged_foreign<T, S: SlotApi>(vm: &S, slot: i32, want_tag: u8) -> Option<&mut T> {
+    if vm.slot_type(slot) != WrenType::Foreign {
+        return None;
+    }
+    // SAFETY: slot is a Foreign, so it is at least the 1-byte tag (every foreign
+    // is >= 4 bytes). Read only the tag, copy it out, then drop that borrow.
+    let tag = unsafe { *vm.foreign_mut::<u8>(slot) };
+    if tag != want_tag {
+        return None;
+    }
+    // SAFETY: tag == want_tag guarantees the foreign really is a T.
+    Some(unsafe { vm.foreign_mut::<T>(slot) })
+}

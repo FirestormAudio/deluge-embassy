@@ -2162,3 +2162,50 @@ fn keymap_and_scope_guard() {
         "Sample.new aborts outside a Synth"
     );
 }
+
+// Wren slot-read UB hardening, Task 2: the same no-op-`ASSERT` UB the Task 1
+// tests above cover for list/string reads also applies to the 3 tagged-
+// foreign sites (`node_player_impl`/`node_wavetable_pooled_impl`/
+// `node_polywt_pooled_impl`, each reading a `SampleObj`/`WtObj` with no prior
+// `slot_type`/tag check) plus the `Out.patch` tag peek (`node_patch_impl`,
+// reading a tag byte off arg 1 with no `slot_type` guard first). Beyond the
+// plain "non-foreign arg" case, a *wrong-tag* foreign (e.g. a `Bus`, whose
+// `BusObj` is only 4 bytes) cast to the larger `WtObj`/`SampleObj` is a
+// genuine heap over-read into adjacent VM memory, not just a logic bug —
+// `checked_tagged_foreign` (`slotapi.rs`) now peeks the leading tag byte
+// before ever casting to the full struct, degrading a non-Foreign or
+// wrong-tag slot to `None` (silent/inert node) instead of reading past the
+// object. `Player.new`/`Node.wavetable_pooled_`/`Node.polywt_pooled_` are all
+// called directly here (bypassing `Osc.wavetable`'s `is Wavetable` prelude
+// guard) since the audit found these foreign statics reachable straight from
+// Wren.
+#[test]
+fn player_malformed_buffer_not_a_foreign_does_not_crash() {
+    assert!(run_script_ok("var p = Player.new(5)"), "Player.new(non-foreign) -> unbound silent node, no crash");
+}
+
+#[test]
+fn wavetable_pooled_malformed_not_a_wavetable_does_not_crash() {
+    assert!(run_script_ok("var n = Node.wavetable_pooled_(5, 220)"), "wavetable_pooled_(non-foreign) degrades, no crash");
+    // A wrong-tag foreign (a Bus, not a Wavetable) must also degrade, not heap-over-read:
+    assert!(
+        run_script_ok("var b = Bus.new()\nvar n = Node.wavetable_pooled_(b, 220)"),
+        "wavetable_pooled_(Bus) degrades, no over-read"
+    );
+}
+
+#[test]
+fn polywt_pooled_malformed_not_a_wavetable_does_not_crash() {
+    assert!(run_script_ok("var n = Node.polywt_pooled_(5, 220)"), "polywt_pooled_(non-foreign) degrades, no crash");
+    assert!(
+        run_script_ok("var b = Bus.new()\nvar n = Node.polywt_pooled_(b, 220)"),
+        "polywt_pooled_(Bus) degrades, no over-read"
+    );
+}
+
+#[test]
+fn out_patch_malformed_non_source_does_not_crash() {
+    assert!(run_script_ok("Out.patch(5)"), "Out.patch(Num) -> patches silence, no crash");
+    assert!(run_script_ok("Out.patch(\"x\")"), "Out.patch(String) -> patches silence, no crash");
+    assert!(run_script_ok("Out.patch([1, 2])"), "Out.patch(List) -> patches silence, no crash");
+}
