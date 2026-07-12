@@ -767,43 +767,127 @@ pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
 /// `root` per zone) and `n_zones` are still computed and recorded — a node
 /// built from the resulting unbound `Keymap` can still size its zone
 /// `SetParam`s and will simply render silence, never panic.
+///
+/// Malformed input degrades gracefully too, rather than reading out of
+/// bounds: `wren-sys` compiles the C VM's `ASSERT` bounds/type checks to
+/// no-ops (see this crate's `wren-sys/build.rs` — `DEBUG` is never defined),
+/// so `get_list_count`/`get_list_element`/`get_f` on a slot that isn't
+/// actually a list (or an out-of-range index) is undefined behavior, not a
+/// catchable error. Every list read here is therefore preceded by a
+/// `slot_type(..) == WrenType::List` guard, and each zone's element count is
+/// fetched once and used to bound every sub-read (samples list at index 0,
+/// `low`/`high`/`root` at indices 1/2/3): a non-list `Keymap.from` argument
+/// yields zero zones; a zone that isn't a list, or is a short list, degrades
+/// field-by-field to `deluge_dsp_kernels::sampler::Zone::empty()`'s defaults
+/// (`low = 0, high = 0, root = 60`; 0 samples) for whichever fields it's
+/// missing, and pass 1 (sizing `total`) applies the identical guards so the
+/// allocated pool size and pass 2's recorded `len`s never disagree.
 pub(crate) fn keymap_from_impl<S: SlotApi>(vm: &S) {
     const MAX_ZONES: usize = deluge_dsp_kernels::sampler::MAX_ZONES;
+    // `deluge_dsp_kernels::sampler::Zone::empty()`'s defaults (sampler.rs
+    // ~L114): offset=0, len=0, low=0, high=0, root=60. A malformed or short
+    // zone fills in whichever of these fields it's missing.
+    const EMPTY_LOW: u8 = 0;
+    const EMPTY_HIGH: u8 = 0;
+    const EMPTY_ROOT: u8 = 60;
 
-    let n_zones = (vm.get_list_count(1).max(0) as usize).min(MAX_ZONES);
     vm.ensure_slots(5); // 1=zones(outer), 2=zone, 3=zone's samples list, 4=scalar scratch
 
-    // Pass 1: sum the (capped) zones' samples-list lengths -> total pool size.
+    // Slot 1 (the arg) must actually be a list before any `get_list_count`/
+    // `get_list_element` touches it (see doc comment above). A non-list arg,
+    // e.g. `Keymap.from(5)`, degrades to zero zones and an unbound handle —
+    // no further list calls are made.
+    if vm.slot_type(1) != WrenType::List {
+        unsafe {
+            vm.new_foreign_in::<KeymapObj>(
+                0,
+                KeymapObj {
+                    tag: TAG_KEYMAP,
+                    handle: None,
+                    zones: [(0, 0, EMPTY_LOW, EMPTY_HIGH, EMPTY_ROOT); MAX_ZONES],
+                    n_zones: 0,
+                },
+            )
+        };
+        return;
+    }
+
+    let n_zones = (vm.get_list_count(1).max(0) as usize).min(MAX_ZONES);
+
+    // Pass 1: sum the (capped) zones' samples-list lengths -> total pool
+    // size. Every guard below is mirrored exactly in pass 2, so a zone pass
+    // 2 treats as empty/short contributes the same amount here as it does to
+    // its recorded `len`.
     let mut total: usize = 0;
     for z in 0..n_zones {
         vm.get_list_element(1, z as i32, 2); // zone z -> slot 2
+        if vm.slot_type(2) != WrenType::List {
+            continue; // malformed zone (not a list itself): Zone::empty(), 0 samples
+        }
+        if vm.get_list_count(2).max(0) < 1 {
+            continue; // zone list has no samples-list element (index 0)
+        }
         vm.get_list_element(2, 0, 3); // zone[0] (samples list) -> slot 3
+        if vm.slot_type(3) != WrenType::List {
+            continue; // zone[0] isn't itself a list: 0 samples
+        }
         total += vm.get_list_count(3).max(0) as usize;
     }
 
     let handle = audio::alloc_buffer(total); // pool_allocs + zero-fills `total`
 
-    // Pass 2: copy each zone's samples (if bound) and record its zone-table entry.
-    let mut zones = [(0u32, 0u32, 0u8, 0u8, 0u8); MAX_ZONES];
+    // Pass 2: copy each zone's samples (if bound) and record its zone-table
+    // entry. Same guards as pass 1, plus per-field length checks for
+    // low/high/root: a zone list shorter than 4 elements fills the missing
+    // tail with `Zone::empty()`'s defaults instead of reading past its end.
+    let mut zones = [(0u32, 0u32, EMPTY_LOW, EMPTY_HIGH, EMPTY_ROOT); MAX_ZONES];
     let mut offset: u32 = 0;
     for z in 0..n_zones {
         vm.get_list_element(1, z as i32, 2); // zone z -> slot 2
-        vm.get_list_element(2, 0, 3); // samples list -> slot 3
-        let len = vm.get_list_count(3).max(0) as usize;
+        if vm.slot_type(2) != WrenType::List {
+            zones[z] = (offset, 0, EMPTY_LOW, EMPTY_HIGH, EMPTY_ROOT);
+            continue;
+        }
+        // Zone's own element count, fetched once and reused to gate every
+        // sub-read below (samples list at index 0, low/high/root at 1/2/3).
+        let zc = vm.get_list_count(2).max(0);
+
+        let len = if zc >= 1 {
+            vm.get_list_element(2, 0, 3); // samples list -> slot 3
+            if vm.slot_type(3) == WrenType::List { vm.get_list_count(3).max(0) as usize } else { 0 }
+        } else {
+            0
+        };
         if let Some(h) = handle {
             for i in 0..len {
                 vm.get_list_element(3, i as i32, 4); // sample -> slot 4
                 audio::pool_set(h, offset as usize + i, vm.get_f(4) as f32);
             }
         }
-        vm.get_list_element(2, 1, 4); // low -> slot 4
-        let low = vm.get_f(4).clamp(0.0, 127.0) as u8;
-        vm.get_list_element(2, 2, 4); // high -> slot 4
-        let high = vm.get_f(4).clamp(0.0, 127.0) as u8;
-        vm.get_list_element(2, 3, 4); // root -> slot 4
-        let root = vm.get_f(4).clamp(0.0, 127.0) as u8;
+        let low = if zc > 1 {
+            vm.get_list_element(2, 1, 4); // low -> slot 4
+            vm.get_f(4).clamp(0.0, 127.0) as u8
+        } else {
+            EMPTY_LOW
+        };
+        let high = if zc > 2 {
+            vm.get_list_element(2, 2, 4); // high -> slot 4
+            vm.get_f(4).clamp(0.0, 127.0) as u8
+        } else {
+            EMPTY_HIGH
+        };
+        let root = if zc > 3 {
+            vm.get_list_element(2, 3, 4); // root -> slot 4
+            vm.get_f(4).clamp(0.0, 127.0) as u8
+        } else {
+            EMPTY_ROOT
+        };
         zones[z] = (offset, len as u32, low, high, root);
-        offset += len as u32;
+        // `offset` is a running total of every prior zone's sample count; a
+        // pathological script (many large zones) must degrade by saturating
+        // rather than overflow-panic under debug-assertions (same defect
+        // class as the Task 1 `hermite_read` u32 fix, commit a084d5b).
+        offset = offset.saturating_add(len as u32);
     }
 
     unsafe {

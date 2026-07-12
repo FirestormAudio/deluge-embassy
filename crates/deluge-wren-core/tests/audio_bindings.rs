@@ -1946,3 +1946,38 @@ fn keymap_from_uploads_through_real_pool_without_panicking() {
     );
     assert!(out.iter().all(|f| f.l == 0.0 && f.r == 0.0), "nothing patched: silent render");
 }
+
+// Task 5 review fix (CRITICAL): `keymap_from_impl` used to read zone
+// sub-elements (samples list, low/high/root) at fixed indices with no
+// `slot_type`/count guard first. Since `wren-sys` compiles the C VM's
+// `ASSERT` bounds/type checks to no-ops (see the crate's `wren-sys/build.rs`
+// — `DEBUG` is never defined), calling `get_list_count`/`get_list_element`
+// on a slot that isn't actually a list, or with an out-of-range index, was
+// undefined behavior (a wild out-of-bounds read), not a catchable Wren
+// error. These three scripts each hit one of the vulnerable shapes — arg
+// not a list, zone not a list, zone list shorter than 4 elements — and must
+// still build without crashing, degrading the missing fields to
+// `deluge_dsp_kernels::sampler::Zone::empty()`'s defaults instead.
+#[test]
+fn keymap_from_malformed_arg_not_a_list_does_not_crash() {
+    assert!(run_script_ok("var k = Keymap.from(5)"), "non-list arg must degrade to zero zones, not UB");
+}
+
+#[test]
+fn keymap_from_malformed_zone_not_a_list_does_not_crash() {
+    assert!(
+        run_script_ok("var k = Keymap.from([5])"),
+        "a zone that isn't itself a list must degrade to Zone::empty(), not UB"
+    );
+}
+
+#[test]
+fn keymap_from_malformed_short_zone_missing_high_and_root_does_not_crash() {
+    // Zone has only 2 elements (samples list + low) — `high`/`root` (indices
+    // 2/3) are missing entirely; the old fixed-index reads would have walked
+    // off the end of this 2-element zone list.
+    assert!(
+        run_script_ok("var k = Keymap.from([[[1.0, 2.0], 60]])"),
+        "a zone list shorter than 4 elements must degrade its missing tail, not UB"
+    );
+}
