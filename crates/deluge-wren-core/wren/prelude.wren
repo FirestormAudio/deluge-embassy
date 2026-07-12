@@ -266,7 +266,8 @@ foreign class Node {
   invert()       { this * -1 }
   unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
   bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
-  scale(m, a)    { this * m + a }
+  scale(k)       { this * Node.ctrl_(k) }                 // audio-safe scale-by-constant (FM index, etc.): ctrl_ wrap dodges the `*`-Num guard, engine broadcasts across voices
+  scale(m, a)    { this * Node.ctrl_(m) + Node.ctrl_(a) } // audio-safe affine (was `this * m + a`, which aborted on an audio node)
   curve(k) {
     if (Node.polyMode_ == 1) Fiber.abort("curve not usable in a Synth yet (Sy-2c)")
     return Node.curve_(this, k)
@@ -380,7 +381,8 @@ foreign class Port {
   invert()       { this * -1 }
   unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
   bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
-  scale(m, a)    { this * m + a }
+  scale(k)       { this * Node.ctrl_(k) }                 // audio-safe scale-by-constant (FM index, etc.): ctrl_ wrap dodges the `*`-Num guard, engine broadcasts across voices
+  scale(m, a)    { this * Node.ctrl_(m) + Node.ctrl_(a) } // audio-safe affine (was `this * m + a`, which aborted on an audio node)
   curve(k) {
     if (Node.polyMode_ == 1) Fiber.abort("curve not usable in a Synth yet (Sy-2c)")
     return Node.curve_(this, k)

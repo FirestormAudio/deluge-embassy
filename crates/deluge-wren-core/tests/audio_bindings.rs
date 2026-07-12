@@ -2303,6 +2303,46 @@ fn poly_sine_fm_plays_in_synth() {
 }
 
 #[test]
+fn fm_index_via_scale_renders_and_scales_depth() {
+    // car.pm = m.scale(3) must render AND differ from car.pm = m (index 1),
+    // proving .scale applies real, scaled FM depth.
+    let mut out_scaled = [StereoFrame::default(); 64];
+    run_and_render(
+        "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m.scale(3)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
+        &mut out_scaled,
+    );
+    assert!(out_scaled.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "scaled bounded/finite");
+    assert!(out_scaled.iter().any(|f| f.l.abs() > 1e-3), "m.scale(3) sounds (no abort)");
+    let mut out_unit = [StereoFrame::default(); 64];
+    run_and_render(
+        "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
+        &mut out_unit,
+    );
+    let differs = out_scaled.iter().zip(out_unit.iter()).any(|(a, b)| (a.l - b.l).abs() > 1e-4);
+    assert!(differs, "index 3 differs from index 1 -> FM depth scaled");
+}
+
+#[test]
+fn fm_index_enveloped_renders() {
+    // A modulated (enveloped) index: car.pm = m * Env.adsr(...) (node × control node).
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m * Env.adsr(0.001, 0.3, 0.5, 0.2)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "enveloped index sounds");
+}
+
+#[test]
+fn scale_two_arg_audio_safe_renders() {
+    // The fixed two-arg scale(m,a) must no longer abort on an audio node.
+    assert!(
+        run_script_ok("var s = Synth.new { |p|\n  var c = Osc.sine(p).scale(2, 0)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)"),
+        "audio.scale(2,0) renders without aborting"
+    );
+}
+
+#[test]
 fn poly_sine_fm_feedback_plays() {
     let mut out = [StereoFrame::default(); 64];
     run_and_render(
