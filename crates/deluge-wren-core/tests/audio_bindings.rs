@@ -1899,3 +1899,50 @@ fn player_pitch_and_build() {
     // speed / semitone setters build + render.
     assert!(run_script_ok("var b = SampleBuffer.from([0.3, 0.6, -0.6, -0.3])\nvar p = Player.new(b)\np.speed = 2\np.semitones = 12\np.loop = 1\np.trigger()\nOut.patch(p)"), "pitch setters build/run");
 }
+
+// `Keymap.from` (Sa-2 Task 5) has no consuming node yet — that's Task 6's
+// `PolySamplePlayer`-backed synth build path — so these are smoke tests via
+// the existing `run_script_ok`/`run_and_render` harnesses (same style as
+// `wavetable_from2d_unbound_on_cmd_capture_host_no_bogus_bindtable` above),
+// not a pool-content readback: neither `sample_from_impl`/`SampleBuffer` nor
+// `wavetable_from2d_impl`/`Wavetable` has a dedicated raw-pool-readback test
+// in this suite either (their coverage is render-round-trip through a
+// consuming node). Once Task 6 lands a node that binds a `Keymap`'s pooled
+// region, extend coverage with a render-level round-trip (mirroring
+// `wavetable_from2d_round_trip_renders_finite_nonsilent_and_morphs`) that
+// exercises both zones and asserts the concatenated layout end-to-end.
+#[test]
+fn keymap_from_unbound_on_cmd_capture_host_builds_without_panicking() {
+    // The `run_script_ok` host (`CmdCaptureHost`) has no pool, so
+    // `alloc_buffer` returns `None` and the two-pass upload's copy loop is
+    // skipped entirely — must still build the `Keymap` (zone table + n_zones
+    // recorded) without panicking.
+    assert!(
+        run_script_ok(
+            "var k = Keymap.from([\n\
+             \x20 [[0, 0.5, 1, 0.5], 0, 59, 48],\n\
+             \x20 [[0, 0.8, -0.8, 0], 60, 127, 72],\n\
+             ])"
+        ),
+        "Keymap.from builds on a poolless host without panicking"
+    );
+}
+
+#[test]
+fn keymap_from_uploads_through_real_pool_without_panicking() {
+    // Real `EngineHost` (pool present): `alloc_buffer` succeeds, so the
+    // two-pass concatenation actually walks both zones' nested sample lists
+    // and copies every element via `pool_set` — exercises the full nested-
+    // read + offset-advance path, not just the `None`-handle skip above.
+    // Nothing is patched to `Out`, so this only asserts the upload/build
+    // doesn't panic (see the module comment above for the coverage gap).
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render(
+        "var k = Keymap.from([\n\
+         \x20 [[0, 0.5, 1, 0.5], 0, 59, 48],\n\
+         \x20 [[0, 0.8, -0.8, 0], 60, 127, 72],\n\
+         ])",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l == 0.0 && f.r == 0.0), "nothing patched: silent render");
+}

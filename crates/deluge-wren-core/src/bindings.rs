@@ -1000,6 +1000,7 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Wavetable", "from(_)", bindings_audio::wavetable_from),
     static_method("Wavetable", "from2d(_)", bindings_audio::wavetable_from2d),
     static_method("SampleBuffer", "from(_)", bindings_audio::sample_from),
+    static_method("Keymap", "from(_)", bindings_audio::keymap_from),
 ];
 
 /// Terse instance-`MethodEntry` constructor for the `main` module.

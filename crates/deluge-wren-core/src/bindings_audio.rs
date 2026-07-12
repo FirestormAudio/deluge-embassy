@@ -19,6 +19,7 @@ pub(crate) const TAG_PORT: u8 = 1;
 pub(crate) const TAG_BUS: u8 = 2;
 pub(crate) const TAG_WT: u8 = 3;
 pub(crate) const TAG_SAMPLE: u8 = 4;
+pub(crate) const TAG_KEYMAP: u8 = 5;
 
 /// Ring-buffer length for a `Delay` node: ≈1.09 s @ 44.1 kHz, 1.0 s @ 48 kHz.
 /// The delay `time` (port 1) is clamped to this length inside the kernel.
@@ -229,6 +230,42 @@ impl WrenForeign for SampleObj {
     }
     fn class_name() -> &'static str {
         "SampleBuffer"
+    }
+}
+
+/// A handle to a dynamically-uploaded, multi-zone keymap, produced by
+/// `Keymap.from([[samplesList, low, high, root], ...])` (Sa-2 Task 5): every
+/// zone's PCM is concatenated *verbatim* (no mip pyramid, no band-limiting —
+/// same raw-PCM contract as [`SampleObj`]) into ONE pool region, and a zone
+/// table `(offset, len, low, high, root)` is recorded per zone — field order
+/// matches `deluge_dsp_kernels::sampler::PolySamplePlayer::set_zone_field`'s
+/// numbering (0=offset,1=len,2=low,3=high,4=root), which is how Task 6's
+/// node `set_param` scheme addresses each field. `handle` is `None` when the
+/// upload was rejected (bad host / pool exhaustion) — same graceful-degrade
+/// contract as [`SampleObj`]/[`WtObj`]: the zone table (and `n_zones`) is
+/// still recorded so downstream can size its `SetParam`s, but a node built
+/// from an unbound `Keymap` skips its pool bind and plays silence rather
+/// than panicking. `n_zones` is capped at
+/// `deluge_dsp_kernels::sampler::MAX_ZONES` — extra zones in the Wren list
+/// beyond the cap are neither uploaded nor recorded, so the offset math
+/// stays consistent with what's in `zones`.
+///
+/// Same node-scoped-lifetime caveat as `SampleObj`/`WtObj` applies: the pool
+/// region is freed by `Cmd::Free` on whichever node gets bound to this
+/// `Keymap`, not by the Wren object's GC.
+#[repr(C)]
+pub(crate) struct KeymapObj {
+    pub tag: u8,
+    pub handle: Option<deluge_audio_graph::PoolHandle>,
+    pub zones: [(u32, u32, u8, u8, u8); deluge_dsp_kernels::sampler::MAX_ZONES],
+    pub n_zones: usize,
+}
+impl WrenForeign for KeymapObj {
+    fn module_name() -> &'static str {
+        "main"
+    }
+    fn class_name() -> &'static str {
+        "Keymap"
     }
 }
 
@@ -697,6 +734,89 @@ pub(crate) fn sample_from_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
     let vm = Vm(raw);
     sample_from_impl(&vm);
+}
+
+/// `Keymap.from([[samplesList, low, high, root], ...])` — read the outer
+/// Wren list of zones (arg, slot 1); each zone is itself a 4-element list
+/// whose item 0 is a *nested* list of raw PCM samples. Concatenate every
+/// zone's samples (in list order, capped at
+/// `deluge_dsp_kernels::sampler::MAX_ZONES` zones) into ONE freshly-allocated
+/// pool region, recording a zone table `(offset, len, low, high, root)`
+/// alongside it.
+///
+/// Two-pass, mirroring the brief: pass 1 sums every (capped) zone's samples-
+/// list length to size the single `alloc_buffer` call; pass 2 walks the
+/// zones again, copying each zone's samples element-by-element via
+/// `audio::pool_set` (same one-at-a-time contract as `sample_from_impl` —
+/// no fixed-size stack scratch, since a zone's sample list can be
+/// arbitrarily long) and recording its `(offset, len, low, high, root)`
+/// entry before advancing the running `offset`.
+///
+/// Nested-list read: this descends one level deeper than
+/// `wavetable_from2d_impl`'s frames — zones (slot 1) -> one zone (slot 2) ->
+/// that zone's samples list (slot 3) -> one sample (slot 4), so
+/// `ensure_slots(5)` guarantees all four plus slot 0 (`self`/return) are
+/// valid. `low`/`high`/`root` are read as sibling elements of the same zone
+/// list (indices 1/2/3), off the same slot-2 zone element used to reach the
+/// slot-3 samples list — no extra slot needed for those, since they're read
+/// after the samples loop is done with slot 3/4 for that zone.
+///
+/// Same graceful-degrade contract as `sample_from_impl`: on a host with no
+/// pool (or on exhaustion), `alloc_buffer` returns `None` and the copy loop
+/// is skipped entirely, but the zone table (`offset`/`len`/`low`/`high`/
+/// `root` per zone) and `n_zones` are still computed and recorded — a node
+/// built from the resulting unbound `Keymap` can still size its zone
+/// `SetParam`s and will simply render silence, never panic.
+pub(crate) fn keymap_from_impl<S: SlotApi>(vm: &S) {
+    const MAX_ZONES: usize = deluge_dsp_kernels::sampler::MAX_ZONES;
+
+    let n_zones = (vm.get_list_count(1).max(0) as usize).min(MAX_ZONES);
+    vm.ensure_slots(5); // 1=zones(outer), 2=zone, 3=zone's samples list, 4=scalar scratch
+
+    // Pass 1: sum the (capped) zones' samples-list lengths -> total pool size.
+    let mut total: usize = 0;
+    for z in 0..n_zones {
+        vm.get_list_element(1, z as i32, 2); // zone z -> slot 2
+        vm.get_list_element(2, 0, 3); // zone[0] (samples list) -> slot 3
+        total += vm.get_list_count(3).max(0) as usize;
+    }
+
+    let handle = audio::alloc_buffer(total); // pool_allocs + zero-fills `total`
+
+    // Pass 2: copy each zone's samples (if bound) and record its zone-table entry.
+    let mut zones = [(0u32, 0u32, 0u8, 0u8, 0u8); MAX_ZONES];
+    let mut offset: u32 = 0;
+    for z in 0..n_zones {
+        vm.get_list_element(1, z as i32, 2); // zone z -> slot 2
+        vm.get_list_element(2, 0, 3); // samples list -> slot 3
+        let len = vm.get_list_count(3).max(0) as usize;
+        if let Some(h) = handle {
+            for i in 0..len {
+                vm.get_list_element(3, i as i32, 4); // sample -> slot 4
+                audio::pool_set(h, offset as usize + i, vm.get_f(4) as f32);
+            }
+        }
+        vm.get_list_element(2, 1, 4); // low -> slot 4
+        let low = vm.get_f(4).clamp(0.0, 127.0) as u8;
+        vm.get_list_element(2, 2, 4); // high -> slot 4
+        let high = vm.get_f(4).clamp(0.0, 127.0) as u8;
+        vm.get_list_element(2, 3, 4); // root -> slot 4
+        let root = vm.get_f(4).clamp(0.0, 127.0) as u8;
+        zones[z] = (offset, len as u32, low, high, root);
+        offset += len as u32;
+    }
+
+    unsafe {
+        vm.new_foreign_in::<KeymapObj>(
+            0,
+            KeymapObj { tag: TAG_KEYMAP, handle, zones, n_zones },
+        )
+    };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn keymap_from(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    keymap_from_impl(&vm);
 }
 
 /// `Node.player_(buffer)` — create a `Kind::SamplePlayer` node from a
@@ -2416,4 +2536,5 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
     method("main", "Wavetable", true, "from2d(_)", wavetable_from2d_impl::<S>);
     method("main", "SampleBuffer", true, "from(_)", sample_from_impl::<S>);
+    method("main", "Keymap", true, "from(_)", keymap_from_impl::<S>);
 }

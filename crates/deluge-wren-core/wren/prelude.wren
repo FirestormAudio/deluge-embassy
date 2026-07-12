@@ -436,6 +436,21 @@ foreign class SampleBuffer {
   foreign static from(samples)
 }
 
+// A multi-zone keymap for a poly sample source (Sa-2): each zone is
+// `[samplesList, low, high, root]` (raw PCM list, MIDI note range, root
+// note). `Keymap.from` concatenates every zone's PCM into ONE pool region
+// (verbatim, same raw-PCM contract as `SampleBuffer.from`) and records a
+// zone table `(offset, len, low, high, root)` per zone, for a
+// `PolySamplePlayer`-backed synth to key-split across at render time:
+//   var k = Keymap.from([
+//     [[0, 0.5, 1, 0.5], 0, 59, 48],
+//     [[0, 0.8, -0.8, 0], 60, 127, 72],
+//   ])
+// Same node-scoped-lifetime contract as `SampleBuffer.from`.
+foreign class Keymap {
+  foreign static from(zones)
+}
+
 // A one-shot/looped PCM sample source, built from a `SampleBuffer`:
 //   var p = Player.new(SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]))
 //   p.speed = 1.5; p.semitones = -12; p.loopStart = 0; p.loopEnd = 4; p.loop = 1
