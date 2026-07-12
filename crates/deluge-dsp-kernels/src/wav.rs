@@ -68,6 +68,44 @@ pub fn parse(bytes: &[u8]) -> Result<WavInfo, WavErr> {
     Ok(WavInfo { channels, sample_rate, bits, data_offset, data_len })
 }
 
+/// Convert a chunk of little-endian 16-bit PCM `bytes` to `f32` in [-1, 1).
+/// Writes `min(bytes.len()/2, out.len())` samples and returns that count.
+/// Channel-agnostic (interleaved stays interleaved). A trailing odd byte is
+/// ignored. Never panics.
+pub fn decode_i16_le(bytes: &[u8], out: &mut [f32]) -> usize {
+    const INV: f32 = 1.0 / 32768.0;
+    let n = (bytes.len() / 2).min(out.len());
+
+    #[cfg(feature = "simd")]
+    {
+        use core::simd::prelude::*;
+        let inv = f32x8::splat(INV);
+        let chunks = n / 8;
+        for c in 0..chunks {
+            let base = c * 8;
+            let mut a = [0i16; 8];
+            for k in 0..8 {
+                let j = 2 * (base + k);
+                a[k] = i16::from_le_bytes([bytes[j], bytes[j + 1]]);
+            }
+            let v: f32x8 = i16x8::from_array(a).cast::<f32>() * inv;
+            v.copy_to_slice(&mut out[base..base + 8]);
+        }
+        for i in (chunks * 8)..n {
+            let s = i16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]);
+            out[i] = s as f32 * INV;
+        }
+    }
+    #[cfg(not(feature = "simd"))]
+    {
+        for i in 0..n {
+            let s = i16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]);
+            out[i] = s as f32 * INV;
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -166,6 +204,62 @@ mod tests {
         // Must return (Ok or Err) without panicking.
         let result = parse(&w);
         assert!(matches!(result, Ok(_) | Err(_)));
+    }
+
+    #[test]
+    fn decode_known_values() {
+        // 0x0000=0.0, 0x0080(LE)=-32768=-1.0, 0xFF7F(LE)=32767≈0.99997
+        let bytes = [0u8, 0, 0x00, 0x80, 0xFF, 0x7F];
+        let mut out = [0.0f32; 3];
+        let n = decode_i16_le(&bytes, &mut out);
+        assert_eq!(n, 3);
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[1], -1.0);
+        assert!((out[2] - 0.99996948).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decode_counts_and_odd_byte() {
+        // 5 whole samples + 1 trailing odd byte → 5 written, odd byte ignored.
+        let bytes = [0u8; 11];
+        let mut out = [1.0f32; 8];
+        let n = decode_i16_le(&bytes, &mut out);
+        assert_eq!(n, 5);
+        assert!(out[..5].iter().all(|&s| s == 0.0));
+        assert_eq!(out[5], 1.0); // untouched
+    }
+
+    #[test]
+    fn decode_out_shorter_than_samples() {
+        let bytes = [0u8; 40]; // 20 samples
+        let mut out = [9.0f32; 3];
+        let n = decode_i16_le(&bytes, &mut out);
+        assert_eq!(n, 3); // clamped to out.len()
+    }
+
+    #[test]
+    fn decode_no_panic_on_empty_and_tiny() {
+        let mut out = [0.0f32; 4];
+        assert_eq!(decode_i16_le(&[], &mut out), 0);
+        assert_eq!(decode_i16_le(&[1], &mut out), 0); // 1 byte = 0 whole samples
+        let mut empty: [f32; 0] = [];
+        assert_eq!(decode_i16_le(&[1, 0, 2, 0], &mut empty), 0);
+    }
+
+    #[test]
+    fn decode_wide_buffer_covers_simd_and_tail() {
+        // 19 samples: 2 f32x8 chunks + 3-sample scalar tail (exercises both paths).
+        let mut bytes = std::vec::Vec::new();
+        for i in 0..19i16 {
+            bytes.extend_from_slice(&(i * 1000).to_le_bytes());
+        }
+        let mut out = [0.0f32; 19];
+        let n = decode_i16_le(&bytes, &mut out);
+        assert_eq!(n, 19);
+        for i in 0..19 {
+            let expected = (i as i16 * 1000) as f32 * (1.0 / 32768.0);
+            assert_eq!(out[i], expected, "sample {} bit-exact", i);
+        }
     }
 
     #[test]
