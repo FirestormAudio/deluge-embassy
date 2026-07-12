@@ -1868,3 +1868,34 @@ fn decimate_renders_piecewise_constant() {
 fn lofi_chain_builds() {
     assert!(run_script_ok("Out.patch(Bitcrush.new(Decimate.new(Osc.saw(110), 6000), 6))"), "chained lo-fi builds/runs");
 }
+
+#[test]
+fn sample_player_plays_buffer() {
+    let mut out = [StereoFrame::default(); 64];
+    // 4-sample buffer, looped so the 64-frame render stays non-silent.
+    run_and_render(
+        "var b = SampleBuffer.from([0.5, 0.5, -0.5, -0.5])\nvar p = Player.new(b)\np.loop = 1\np.trigger()\nOut.patch(p)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sample plays (non-silent)");
+}
+
+#[test]
+fn one_shot_goes_silent_after_length() {
+    let mut out = [StereoFrame::default(); 128];
+    // tiny 2-sample one-shot buffer: sounds early, silent later.
+    run_and_render(
+        "var b = SampleBuffer.from([0.8, 0.8])\nvar p = Player.new(b)\np.trigger()\nOut.patch(p)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite()), "finite");
+    assert!(out[0..8].iter().any(|f| f.l.abs() > 1e-3), "sounds at the start");
+    assert!(out[64..128].iter().all(|f| f.l.abs() < 1e-4), "one-shot silent well after its 2 samples");
+}
+
+#[test]
+fn player_pitch_and_build() {
+    // speed / semitone setters build + render.
+    assert!(run_script_ok("var b = SampleBuffer.from([0.3, 0.6, -0.6, -0.3])\nvar p = Player.new(b)\np.speed = 2\np.semitones = 12\np.loop = 1\np.trigger()\nOut.patch(p)"), "pitch setters build/run");
+}
