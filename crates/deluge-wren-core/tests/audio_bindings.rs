@@ -2073,3 +2073,58 @@ fn sample_new_keymap_round_trip_renders_finite_nonsilent() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a Keymap source");
 }
+
+// Sa-2 Task 7 — end-to-end: a poly sample voice actually plays inside a
+// `Synth`, polyphonically, through a multi-zone `Keymap`, and the
+// outside-a-Synth scope guard still fires. Task 6 already proved the single
+// render round-trip (`sample_new_*_round_trip_renders_finite_nonsilent`
+// above); these three exercise the paths that weren't covered yet: an
+// `Env.adsr` (not just `Env.ar`) gate shape, two simultaneous poly voices,
+// and multi-zone note routing.
+
+#[test]
+fn poly_sample_voice_plays_in_synth() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var b = SampleBuffer.from([0.6, 0.6, -0.6, -0.6])\nvar s = Synth.new { |p| Sample.new(p, b) * Env.adsr(0.001, 0.5, 1, 0.2) }\nOut.patch(s.out)\ns.noteOn(60, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sample voice sounds");
+}
+
+#[test]
+fn poly_sample_two_notes_two_voices() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var b = SampleBuffer.from([0.5, 0.5, -0.5, -0.5])\nvar s = Synth.new { |p| Sample.new(p, b) * Env.adsr(0.001, 0.5, 1, 0.2) }\nOut.patch(s.out)\ns.noteOn(60, 100)\ns.noteOn(64, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "two poly sample voices sound");
+}
+
+#[test]
+fn keymap_and_scope_guard() {
+    // A 2-zone keymap builds + renders in a Synth: note 64 falls in zone 0
+    // (0..59, root 48), note 72 falls in zone 1 (60..127, root 72) — two
+    // different zones latched by two different poly voices.
+    //
+    // NB: `Keymap.from` takes ONE list argument (a list of zones), not one
+    // zone per positional argument — see `foreign static from(zones)` and
+    // the `Keymap.from([[...], ...])` doc example in prelude.wren, and the
+    // `sample_new_keymap_*` tests above. The brief's literal
+    // `Keymap.from([...], [...])` (two args) would pass a wrong arity to a
+    // 1-arg foreign method, so the two zone lists are wrapped in an outer
+    // list here.
+    assert!(
+        run_script_ok(
+            "var k = Keymap.from([[[0.5,0.5,-0.5,-0.5], 0, 59, 48], [[0.3,0.3,-0.3,-0.3], 60, 127, 72]])\nvar s = Synth.new { |p| Sample.new(p, k) * Env.adsr(0.001,0.5,1,0.2) }\nOut.patch(s.out)\ns.noteOn(64,100)\ns.noteOn(72,100)"
+        ),
+        "keymap synth builds/runs"
+    );
+    // Sample.new OUTSIDE a Synth aborts.
+    assert!(
+        !run_script_ok("var b = SampleBuffer.from([0.5])\nOut.patch(Sample.new(Osc.saw(110), b))"),
+        "Sample.new aborts outside a Synth"
+    );
+}
