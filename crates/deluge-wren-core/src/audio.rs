@@ -3,7 +3,7 @@
 //! round-trip); each emitter builds a `deluge_audio_graph::Cmd` and ships it
 //! through the registered [`Host`](crate::Host). Single-threaded VM context.
 
-use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId, MAX_GATES};
+use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId, MAX_GATES, MAX_TRIGGERS};
 
 use crate::host::host;
 
@@ -81,6 +81,8 @@ struct PolyCtx {
     gate_count: u8,  // total envelopes created this build (may exceed MAX_GATES → guard aborts)
     vel_node: u16,   // velocity PolyCtrl id, or NULL_ID if the builder didn't take velocity
     slew_node: u16,  // the PolySlew created by mono_begin, or NULL_ID for a poly build
+    triggers: [u16; MAX_TRIGGERS], // registered sample-source node ids (first `trigger_count`)
+    trigger_count: u8, // total sources registered this build (may exceed MAX_TRIGGERS → guard aborts)
 }
 impl PolyCtx {
     const fn new() -> Self {
@@ -91,6 +93,8 @@ impl PolyCtx {
             gate_count: 0,
             vel_node: NULL_ID,
             slew_node: NULL_ID,
+            triggers: [NULL_ID; MAX_TRIGGERS],
+            trigger_count: 0,
         }
     }
 }
@@ -128,6 +132,8 @@ pub fn poly_begin() -> u16 {
     p.gate_count = 0;
     p.vel_node = NULL_ID;
     p.slew_node = NULL_ID;
+    p.triggers = [NULL_ID; MAX_TRIGGERS];
+    p.trigger_count = 0;
     mtof
 }
 /// Mono voice build: PolyCtrl → PolySlew → PolyMtof (the slew is the only
@@ -147,6 +153,8 @@ pub fn mono_begin() -> u16 {
     p.gates = [NULL_ID; MAX_GATES];
     p.gate_count = 0;
     p.vel_node = NULL_ID;
+    p.triggers = [NULL_ID; MAX_TRIGGERS];
+    p.trigger_count = 0;
     mtof
 }
 /// Record a PolyAr/PolyAdsr as one of the voice's envelope gates (bounded push
@@ -159,6 +167,17 @@ pub fn poly_record_gate(id: u16) {
     }
     p.gate_count = p.gate_count.saturating_add(1);
 }
+/// Record a registered sample-source node as one of the voice's per-lane
+/// trigger targets (bounded push into `triggers`; `trigger_count` still
+/// tracks the true total so a guard can reject builds that exceed
+/// `MAX_TRIGGERS`). Used by Task 6's sample-source registration.
+pub fn poly_record_trigger(id: u16) {
+    let p = poly();
+    if (p.trigger_count as usize) < MAX_TRIGGERS {
+        p.triggers[p.trigger_count as usize] = id;
+    }
+    p.trigger_count = p.trigger_count.saturating_add(1);
+}
 /// Create the per-voice velocity carrier (a second PolyCtrl) and record it.
 /// Returns the PolyCtrl node id (the `vel` signal handed to the builder).
 pub fn poly_vel_begin() -> u16 {
@@ -168,17 +187,18 @@ pub fn poly_vel_begin() -> u16 {
     ctrl
 }
 /// End a voice build: clear the flag; returns (pitch_ctrl, gates, gate_count,
-/// vel_node) for the allocator.
-pub fn poly_end() -> (u16, [u16; MAX_GATES], u8, u16) {
+/// vel_node, triggers, trigger_count) for the allocator.
+pub fn poly_end() -> (u16, [u16; MAX_GATES], u8, u16, [u16; MAX_TRIGGERS], u8) {
     let p = poly();
     p.mode = false;
-    (p.pitch_ctrl, p.gates, p.gate_count, p.vel_node)
+    (p.pitch_ctrl, p.gates, p.gate_count, p.vel_node, p.triggers, p.trigger_count)
 }
-/// Returns (pitch_ctrl, slew_node, gates, gate_count, vel_node) for the mono SynthObj.
-pub fn mono_end() -> (u16, u16, [u16; MAX_GATES], u8, u16) {
+/// Returns (pitch_ctrl, slew_node, gates, gate_count, vel_node, triggers,
+/// trigger_count) for the mono SynthObj.
+pub fn mono_end() -> (u16, u16, [u16; MAX_GATES], u8, u16, [u16; MAX_TRIGGERS], u8) {
     let p = poly();
     p.mode = false;
-    (p.pitch_ctrl, p.slew_node, p.gates, p.gate_count, p.vel_node)
+    (p.pitch_ctrl, p.slew_node, p.gates, p.gate_count, p.vel_node, p.triggers, p.trigger_count)
 }
 
 pub fn alloc_node_id() -> u16 {

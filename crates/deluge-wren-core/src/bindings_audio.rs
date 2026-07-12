@@ -1848,13 +1848,15 @@ pub(crate) unsafe extern "C" fn node_polywt_pooled(raw: *mut WrenVM) {
 /// 1–4 envelopes via polyGateCount_.
 pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
     let out = arg_input(vm, 1);
-    let (pitch_ctrl, gates_raw, gate_count, vel_raw) = audio::poly_end();
+    let (pitch_ctrl, gates_raw, gate_count, vel_raw, trig_raw, trig_count) = audio::poly_end();
     let vel = if vel_raw == audio::NULL_ID { None } else { Some(NodeId(vel_raw)) };
     let gates: [NodeId; deluge_audio_graph::MAX_GATES] = core::array::from_fn(|i| NodeId(gates_raw[i]));
     let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
+    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] = core::array::from_fn(|i| NodeId(trig_raw[i]));
+    let n_triggers = (trig_count as usize).min(deluge_audio_graph::MAX_TRIGGERS);
     let sum = audio::alloc_node_id();
     audio::new_node(sum, Kind::StereoVoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), gates, n_gates, vel, NodeId(sum)));
+    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), gates, n_gates, vel, NodeId(sum), triggers, n_triggers));
     unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -1879,13 +1881,15 @@ pub(crate) unsafe extern "C" fn node_mono_begin(raw: *mut WrenVM) {
 /// MonoAllocator into a Synth foreign object (in slot 0).
 pub(crate) fn node_mono_end_impl<S: SlotApi>(vm: &S) {
     let out = arg_input(vm, 1);
-    let (pitch, slew, gates_raw, gate_count, vel_raw) = audio::mono_end();
+    let (pitch, slew, gates_raw, gate_count, vel_raw, trig_raw, trig_count) = audio::mono_end();
     let vel = if vel_raw == audio::NULL_ID { None } else { Some(NodeId(vel_raw)) };
     let gates: [NodeId; deluge_audio_graph::MAX_GATES] = core::array::from_fn(|i| NodeId(gates_raw[i]));
     let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
+    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] = core::array::from_fn(|i| NodeId(trig_raw[i]));
+    let n_triggers = (trig_count as usize).min(deluge_audio_graph::MAX_TRIGGERS);
     let sum = audio::alloc_node_id();
     audio::new_node(sum, Kind::StereoVoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(NodeId(pitch), NodeId(slew), gates, n_gates, vel, NodeId(sum)));
+    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(NodeId(pitch), NodeId(slew), gates, n_gates, vel, NodeId(sum), triggers, n_triggers));
     unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
 }
 #[cfg(feature = "wren-sys-backend")]
