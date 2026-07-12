@@ -370,6 +370,53 @@ pub fn new_sample_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
     }
 }
 
+/// Create a `Kind::PolySamplePlayer` node, wired to the per-voice `pitch`
+/// (PolyMtof Hz) tile on port 0. Mirrors `new_polywt_pooled`'s
+/// bound/unbound-`handle` shape: a bound `handle` emits `NewNode` +
+/// `BindTable{Pooled}` + the zone table (`offset, len, low, high, root` per
+/// zone) as `SetParam`s, per the scheme
+/// `deluge_dsp_kernels::sampler::PolySamplePlayer::set_zone_field` numbers
+/// (0=offset,1=len,2=low,3=high,4=root): param 0 = n_zones, param 1 =
+/// loop_mode, then per zone `z` a 5-block at base `2 + z*5`. An unbound
+/// `handle` (upload failed / no pool) still creates the node but skips both
+/// the bind and every zone `SetParam` — same graceful-degrade contract as
+/// [`new_sample_player`]/[`new_polywt_pooled`]; the node keeps
+/// `PolySamplePlayer::new()`'s zero-zone default and renders silence, never
+/// panics. Used by `Node.polysampleplayer_(pitch, source)` (Sa-2 Task 6).
+pub fn new_poly_sample_player(
+    id: u16,
+    handle: Option<deluge_audio_graph::PoolHandle>,
+    pitch: Input,
+    zones: &[(u32, u32, u8, u8, u8)],
+    loop_mode: bool,
+) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind: Kind::PolySamplePlayer,
+        args: [pitch, Input::Const(0.0), Input::Const(0.0)],
+    });
+    if let Some(h) = handle {
+        host().audio_cmd(Cmd::BindTable {
+            node: NodeId(id),
+            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+        });
+        let sp = |param: u8, value: f32| host().audio_cmd(Cmd::SetParam { node: NodeId(id), param, value });
+        sp(0, zones.len() as f32); // n_zones
+        sp(1, if loop_mode { 1.0 } else { 0.0 });
+        for (z, &(off, len, lo, hi, root)) in zones.iter().enumerate() {
+            let base = 2 + (z as u8) * 5;
+            sp(base, off as f32);
+            sp(base + 1, len as f32);
+            sp(base + 2, lo as f32);
+            sp(base + 3, hi as f32);
+            sp(base + 4, root as f32);
+        }
+    }
+}
+
 /// Create a pooled effect node of `kind` with `input` on port 0, binding a
 /// pool ring if `handle` is `Some` (unbound → dry passthrough). Params are set
 /// separately by the caller via `set_param`. Used by `Chorus`/`Flanger`.

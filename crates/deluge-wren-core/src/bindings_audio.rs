@@ -2047,6 +2047,87 @@ pub(crate) unsafe extern "C" fn node_polywt_pooled(raw: *mut WrenVM) {
     node_polywt_pooled_impl(&vm);
 }
 
+/// `Node.polysampleplayer_(pitch, source)` — poly sample-source node
+/// (`Kind::PolySamplePlayer`) bound to either a `SampleBuffer` or a `Keymap`
+/// foreign at slot 2, backing `Sample.new(pitch, source)`. A `SampleBuffer`
+/// synthesizes ONE full-range zone `(offset=0, len=<its len>, low=0,
+/// high=127, root=60)` — deliberately NOT `Zone::empty()` (whose `high=0`
+/// would key-split every note out): every MIDI note plays it, rooted at C4
+/// (the Sa-2 default), and `root=` retargets that zone afterward. A `Keymap`
+/// uses its `handle`/`zones`/`n_zones` directly (already capped at
+/// `MAX_ZONES` and offset-consistent — see `keymap_from_impl`).
+///
+/// Dispatches on the foreign's leading `tag` byte at slot 2 (`TAG_SAMPLE` vs
+/// `TAG_KEYMAP`), the same mechanism `arg_input` uses to discriminate
+/// `Node`/`Port`/`Bus` above — every audio foreign is `#[repr(C)]` with `tag:
+/// u8` as its first field (`NodeObj`/`WtObj`/`SampleObj`/`KeymapObj` all
+/// confirmed). Slot 2 is guarded by `slot_type(2) == WrenType::Foreign`
+/// FIRST: reading the tag byte off a non-foreign slot (e.g.
+/// `Sample.new(p, 5)`) would be UB (same defect class the Task 5 review
+/// fixed for `Keymap.from`'s unguarded list reads) — a non-foreign or
+/// unrecognized-tag `source` degrades to `handle: None`, zero zones: a
+/// silent node, never a panic.
+///
+/// Ends by calling `audio::poly_record_trigger(id)` — this is what makes the
+/// allocator's per-lane `note_on` actually re-attack this source (Task 4's
+/// wiring); without it the sample source builds but never triggers. Returns
+/// through the same poly-node path `node_polywt_pooled_impl` uses.
+pub(crate) fn node_polysampleplayer_impl<S: SlotApi>(vm: &S) {
+    const MAX_ZONES: usize = deluge_dsp_kernels::sampler::MAX_ZONES;
+    const EMPTY_ZONES: [(u32, u32, u8, u8, u8); MAX_ZONES] = [(0, 0, 0, 0, 0); MAX_ZONES];
+
+    let pitch = arg_input(vm, 1);
+    let (handle, zones, n_zones): (Option<deluge_audio_graph::PoolHandle>, [(u32, u32, u8, u8, u8); MAX_ZONES], usize) =
+        if vm.slot_type(2) == WrenType::Foreign {
+            // SAFETY: slot 2 is confirmed Foreign above; every audio foreign is
+            // >=4 bytes with `tag: u8` at offset 0 (see `arg_input`'s SAFETY
+            // note), so reading just the tag byte is sound regardless of which
+            // concrete foreign this is.
+            let tag = unsafe { *vm.foreign_mut::<u8>(2) };
+            match tag {
+                TAG_SAMPLE => {
+                    let s = unsafe { vm.foreign_mut::<SampleObj>(2) };
+                    let mut zones = EMPTY_ZONES;
+                    zones[0] = (0, s.len, 0, 127, 60); // full-range zone, root C4
+                    (s.handle, zones, 1)
+                }
+                TAG_KEYMAP => {
+                    let k = unsafe { vm.foreign_mut::<KeymapObj>(2) };
+                    (k.handle, k.zones, k.n_zones)
+                }
+                _ => (None, EMPTY_ZONES, 0),
+            }
+        } else {
+            (None, EMPTY_ZONES, 0)
+        };
+
+    let id = audio::alloc_node_id();
+    audio::new_poly_sample_player(id, handle, pitch, &zones[..n_zones], false);
+    audio::poly_record_trigger(id);
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_polysampleplayer(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_polysampleplayer_impl(&vm);
+}
+
+/// `Node.root=(v)` — set zone 0's root note on a `PolySamplePlayer` node
+/// (param `2 + 0*5 + 4 = 6`, per `new_poly_sample_player`'s zone-block
+/// scheme). Backs `Sample.new`'s single-`SampleBuffer` form, whose synthesized
+/// zone 0 defaults to root 60 (C4) — this retargets it. A plain `Node`
+/// instance setter (poly-only usage in practice), harmless as a param write
+/// on any other node kind (ignored by `Node::set_param`'s `_ => {}` arm).
+pub(crate) fn node_set_root_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 6, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_root(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_root_impl(&vm);
+}
+
 /// `Node.polyEnd_(out)` — finish a voice: VoiceSum(out) → build a VoiceAllocator
 /// into a Synth foreign object (in slot 0). The prelude has already validated
 /// 1–4 envelopes via polyGateCount_.
@@ -2581,6 +2662,8 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polysync_(_,_,_)", node_polysync_impl::<S>);
     method("main", "Node", true, "polywt_(_,_)", node_polywt_impl::<S>);
     method("main", "Node", true, "polywt_pooled_(_,_)", node_polywt_pooled_impl::<S>);
+    method("main", "Node", true, "polysampleplayer_(_,_)", node_polysampleplayer_impl::<S>);
+    method("main", "Node", false, "root=(_)", node_set_root_impl::<S>);
     method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
     method("main", "Node", true, "monoBegin_()", node_mono_begin_impl::<S>);
     method("main", "Node", true, "monoEnd_(_)", node_mono_end_impl::<S>);

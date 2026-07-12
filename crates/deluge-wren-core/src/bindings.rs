@@ -959,6 +959,8 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "polysync_(_,_,_)", bindings_audio::node_polysync),
     static_method("Node", "polywt_(_,_)", bindings_audio::node_polywt),
     static_method("Node", "polywt_pooled_(_,_)", bindings_audio::node_polywt_pooled),
+    static_method("Node", "polysampleplayer_(_,_)", bindings_audio::node_polysampleplayer),
+    method("Node", "root=(_)", bindings_audio::node_set_root),
     static_method("Node", "polyEnd_(_)", bindings_audio::node_poly_end),
     static_method("Node", "monoBegin_()", bindings_audio::node_mono_begin),
     static_method("Node", "monoEnd_(_)", bindings_audio::node_mono_end),

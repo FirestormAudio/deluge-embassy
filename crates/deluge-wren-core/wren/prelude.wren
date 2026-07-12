@@ -200,6 +200,8 @@ foreign class Node {
   foreign static polysync_(wave, master, slave)
   foreign static polywt_(table, freq)
   foreign static polywt_pooled_(wt, freq)
+  foreign static polysampleplayer_(pitch, source)
+  foreign root=(v)      // PolySamplePlayer zone-0 root note (Sample.new default: 60/C4)
   foreign static polyEnd_(out)
   foreign value=(v)     // Ctrl (Macro) held value
   foreign size=(v)
@@ -462,6 +464,20 @@ class Player {
   static new(buffer) {
     if (Node.polyMode_ == 1) Fiber.abort("Player is a sample source — not usable in a Synth yet (Sa-2)")
     return Node.player_(buffer)
+  }
+}
+
+// A poly (per-voice) sample source, built INSIDE a Synth voice — the poly
+// counterpart of `Player` (which is top-level/one-shot only). `source` is
+// either a `SampleBuffer` (one full-range zone, root C4) or a `Keymap`
+// (multi-zone, key-split by `low`/`high`/`root`):
+//   var s = Synth.new { |p| Sample.new(p, SampleBuffer.from([...])) * Env.ar(0.01, 0.3) }
+//   var k = Synth.new { |p| Sample.new(p, Keymap.from([[[...], 0, 59, 48], [[...], 60, 127, 72]])) * Env.ar(0.01, 0.3) }
+// `.root =` retargets the single-`SampleBuffer` form's zone-0 root (default 60/C4).
+class Sample {
+  static new(pitch, source) {
+    if (Node.polyMode_ != 1) Fiber.abort("Sample.new is a poly voice source — use it inside Synth.new/Synth.mono (top-level one-shot playback is Player)")
+    return Node.polysampleplayer_(pitch, source)
   }
 }
 

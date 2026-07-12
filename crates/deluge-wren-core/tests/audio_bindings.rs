@@ -1981,3 +1981,95 @@ fn keymap_from_malformed_short_zone_missing_high_and_root_does_not_crash() {
         "a zone list shorter than 4 elements must degrade its missing tail, not UB"
     );
 }
+
+// `Sample.new(pitch, source)` (Sa-2 Task 6) — the poly sample-source factory
+// that consumes either a `SampleBuffer` (synthesizes one full-range zone) or
+// a `Keymap` (uses its zone table). Builds INSIDE a `Synth.new`/`Synth.mono`
+// voice closure, mirroring the `Osc.sine(p) * Env.ar(...)` shape every other
+// poly-source smoke test above uses. `sample_new_samplebuffer_round_trip_*`
+// goes one step further than a build-only smoke test and renders through a
+// real note-on, asserting non-silence (Task 7 owns full e2e coverage).
+#[test]
+fn sample_new_samplebuffer_builds_without_panicking() {
+    assert!(
+        run_script_ok(
+            "var b = Synth.new { |p| Sample.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.ar(0.01, 0.3) }"
+        ),
+        "Sample.new(SampleBuffer) builds inside a Synth voice without panicking"
+    );
+}
+
+#[test]
+fn sample_new_keymap_builds_without_panicking() {
+    assert!(
+        run_script_ok(
+            "var b = Synth.new { |p| Sample.new(p, Keymap.from([\n\
+             \x20 [[0, 0.5, 1, 0.5], 0, 59, 48],\n\
+             \x20 [[0, 0.8, -0.8, 0], 60, 127, 72],\n\
+             ])) * Env.ar(0.01, 0.3) }"
+        ),
+        "Sample.new(Keymap) builds inside a Synth voice without panicking"
+    );
+}
+
+#[test]
+fn sample_new_root_setter_builds_without_panicking() {
+    // `root=` retargets zone 0's root note (default 60/C4) on the
+    // single-`SampleBuffer` form — must build and accept the setter call
+    // without panicking, same shape as `player_pitch_and_build`.
+    assert!(
+        run_script_ok(
+            "var b = Synth.new { |p|\n\
+             \x20 var s = Sample.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]))\n\
+             \x20 s.root = 72\n\
+             \x20 s * Env.ar(0.01, 0.3)\n\
+             }"
+        ),
+        "root= builds on a Sample.new node without panicking"
+    );
+}
+
+#[test]
+fn sample_new_outside_synth_aborts_cleanly() {
+    // Mirrors `Player`'s inverse guard (`Player` aborts INSIDE a Synth;
+    // `Sample` requires being inside one) — must Fiber.abort, not build a
+    // bogus top-level node, and must not crash the harness.
+    assert!(
+        !run_script_ok("var s = Sample.new(60, SampleBuffer.from([0, 0.5, 1, 0.5]))"),
+        "Sample.new outside a Synth voice must abort cleanly, not build"
+    );
+}
+
+#[test]
+fn sample_new_samplebuffer_round_trip_renders_finite_nonsilent() {
+    // Real `EngineHost` (pool present): the SampleBuffer's PCM actually
+    // uploads, the synthesized full-range zone (low=0/high=127) covers note
+    // 69, `poly_record_trigger` wires the allocator's note_on to fire
+    // `trigger_voice` on this node, and the PolySamplePlayer kernel reads
+    // real PCM back out — same shape as `synth_note_on_renders_sound`.
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var bass = Synth.new { |p| Sample.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.noteOn(69, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a SampleBuffer source");
+}
+
+#[test]
+fn sample_new_keymap_round_trip_renders_finite_nonsilent() {
+    // Same round-trip, but through a two-zone `Keymap` — note 69 falls in the
+    // second zone (60..127, root 72), exercising the zone-lookup path
+    // (`PolySamplePlayer::process_voice`'s latch-time note→zone search)
+    // rather than the SampleBuffer form's single always-matching zone.
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var bass = Synth.new { |p| Sample.new(p, Keymap.from([\n\
+         \x20 [[0, 0.5, 1, 0.5], 0, 59, 48],\n\
+         \x20 [[0, 0.8, -0.8, 0], 60, 127, 72],\n\
+         ])) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.noteOn(69, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a Keymap source");
+}
