@@ -21,7 +21,7 @@ use deluge_dsp_kernels::{
 use deluge_dsp_kernels::wavetable::{
     level_len, level_offset, static_table_flat, MipSet, TableId, WtOsc, COMPACT_LEN, LEVELS,
 };
-use deluge_dsp_kernels::sampler::SamplePlayer;
+use deluge_dsp_kernels::sampler::{PolySamplePlayer, SamplePlayer};
 pub use deluge_dsp_kernels::In;
 
 /// Assemble a `MipSet`'s level-slice array from a flat, compact
@@ -114,6 +114,7 @@ pub enum Kind {
     PolyWt,
     PolyWtMorph,
     SamplePlayer,
+    PolySamplePlayer,
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -168,6 +169,7 @@ enum State {
     VoiceSum(f32),
     StereoVoiceSum { gain: f32, pan: [f32; VOICES] },
     SamplePlayer(SamplePlayer),
+    PolySamplePlayer(PolySamplePlayer),
     Stateless,
 }
 
@@ -254,6 +256,7 @@ impl Node {
             }
             Kind::PolyWt | Kind::PolyWtMorph => State::PolyWt(PolyWt::new()),
             Kind::SamplePlayer => State::SamplePlayer(SamplePlayer::new()),
+            Kind::PolySamplePlayer => State::PolySamplePlayer(PolySamplePlayer::new()),
         };
         Node {
             kind,
@@ -271,7 +274,7 @@ impl Node {
                 | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
-                | Kind::PolyWt | Kind::PolyWtMorph => VOICES,
+                | Kind::PolyWt | Kind::PolyWtMorph | Kind::PolySamplePlayer => VOICES,
             _ => 1,
         }
     }
@@ -282,7 +285,7 @@ impl Node {
         matches!(kind, Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::StereoVoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
             | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
             | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
-            | Kind::PolyWt | Kind::PolyWtMorph)
+            | Kind::PolyWt | Kind::PolyWtMorph | Kind::PolySamplePlayer)
     }
 
     /// Number of leading input ports that are poly edges (the rest are mono
@@ -291,7 +294,7 @@ impl Node {
         match kind {
             Kind::PolySvf | Kind::PolySlew | Kind::VoiceSum | Kind::StereoVoiceSum | Kind::PolyMtof
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
-                | Kind::PolyWt | Kind::PolyWtMorph => 1,
+                | Kind::PolyWt | Kind::PolyWtMorph | Kind::PolySamplePlayer => 1,
             // PolyOsc: port 0 = pitch, port 1 = PWM width (unconnected ⇒
             // Const(0.0) ⇒ all-zero tile ⇒ 0.5 duty, bit-identical to the
             // pre-width PolyOsc). PolySync: port 0 = master, port 1 = slave.
@@ -339,6 +342,7 @@ impl Node {
             State::PolyAr(a) => a.trigger_voice(v),
             State::PolyAdsr(a) => a.trigger_voice(v),
             State::PolySlew(s) => s.trigger_voice(v),
+            State::PolySamplePlayer(p) => p.trigger_voice(v),
             _ => {}
         }
     }
@@ -488,6 +492,14 @@ impl Node {
                 3 => p.set_loop_end(value),
                 4 => p.set_loop_mode(value != 0.0),
                 _ => {}
+            },
+            State::PolySamplePlayer(p) => match param {
+                0 => p.set_n_zones(value),
+                1 => p.set_loop_mode(value != 0.0),
+                _ => {
+                    let idx = param as usize - 2;
+                    p.set_zone_field(idx / 5, idx % 5, value);
+                }
             },
             _ => {}
         }
@@ -874,7 +886,7 @@ impl Node {
             Kind::PolyCtrl | Kind::PolyOsc | Kind::VoiceSum | Kind::StereoVoiceSum | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri
-                | Kind::PolyWt | Kind::PolyWtMorph => {
+                | Kind::PolyWt | Kind::PolyWtMorph | Kind::PolySamplePlayer => {
                 // Poly kinds are dispatched via `poly_process`, not this path.
             }
         }
@@ -1022,6 +1034,22 @@ impl Node {
                                 for i in 0..n { out[i * VOICES + v] = ocol[i]; }
                             }
                         }
+                    }
+                }
+            }
+            Kind::PolySamplePlayer => {
+                // Sample-player pool region is raw PCM (no COMPACT_LEN mip
+                // pyramid validation, unlike PolyWt's wavetable region).
+                let pcm: Option<&[f32]> = pool_region.as_deref();
+                if let (State::PolySamplePlayer(p), Some(pitch), Some(region)) =
+                    (&mut self.state, poly_in[0], pcm) {
+                    let n = out.len() / VOICES;
+                    let mut col = [0.0f32; MAX_BLOCK];
+                    let mut ocol = [0.0f32; MAX_BLOCK];
+                    for v in 0..VOICES {
+                        for i in 0..n { col[i] = pitch[i * VOICES + v]; }
+                        p.process_voice(v, region, In::A(&col[..n]), dt, &mut ocol[..n]);
+                        for i in 0..n { out[i * VOICES + v] = ocol[i]; }
                     }
                 }
             }
@@ -2440,5 +2468,34 @@ mod tests {
             n.process_resolved(&ins, 1.0 / 48_000.0, &mut outs, Some(&mut region));
         }
         for i in 0..4 { assert!((buf[i] - pcm[i]).abs() < 1e-5, "plays pool PCM at {}", i); }
+    }
+
+    #[test]
+    fn poly_sample_node_wires_and_reads_pool() {
+        assert_eq!(Node::out_width(Kind::PolySamplePlayer), VOICES);
+        assert!(Node::is_poly(Kind::PolySamplePlayer));
+        assert_eq!(Node::poly_in_count(Kind::PolySamplePlayer), 1);
+        let mut n = Node::new(Kind::PolySamplePlayer, 0);
+        // 1 zone, root 60, offset 0 len 4, full range. set_param scheme: 0=n_zones,1=loop, 2+z*5+f.
+        n.set_param(0, 1.0);           // n_zones
+        n.set_param(1, 0.0);           // loop off
+        n.set_param(2, 0.0);           // zone0 offset
+        n.set_param(3, 4.0);           // zone0 len
+        n.set_param(4, 0.0);           // zone0 low
+        n.set_param(5, 127.0);         // zone0 high
+        n.set_param(6, 60.0);          // zone0 root
+        n.trigger_voice(0);
+        // pool region = PCM; poly_in[0] = an interleaved Hz tile at mtof(60) for lane 0.
+        let pcm = [0.5f32, -0.5, 0.5, -0.5];
+        let mut region = pcm;
+        // mtof(60) with A4=440 (middle C), hardcoded — no libm dep in this crate.
+        let hz = 261.625_58_f32;
+        // one sample block: VOICES-interleaved pitch tile, lane 0 = hz, others 0.
+        let mut pitch = [0.0f32; VOICES]; pitch[0] = hz;
+        let ins: [In; MAX_INPUTS] = core::array::from_fn(|_| In::K(0.0));
+        let mut out = [0.0f32; VOICES]; // out_width VOICES, 1 sample
+        n.poly_process(&ins, [Some(&pitch[..]), None], 1.0 / 48_000.0, &mut out, Some(&mut region));
+        // lane 0 at root → pcm[0] = 0.5
+        assert!((out[0] - 0.5).abs() < 1e-4, "lane 0 plays pool PCM at root pitch, got {}", out[0]);
     }
 }
