@@ -175,18 +175,22 @@ Synth.new { |p|
 }
 ```
 
-> **KNOWN LIMITATION (v1) — constant FM index not yet settable via `mod * n`.**
-> A pre-existing Synth-DSL guard (`prelude.wren:238`/`:357`, locked by
-> `synth_error_cases_abort`) ABORTS `poly-audio-node * constant` inside a Synth
-> ("multiply by a constant inside a Synth isn't supported yet — the amp comes
-> from `Env.ar`"). So `car.pm = mod * 3` (a static modulation index) does NOT
-> work today. What DOES work as a depth control: `car.pm = mod` (fixed unity),
-> `car.feedback = f` (continuous self-FM), and `car.pm = mod * Env.ar(...)`
-> (envelope-shaped index, poly×poly). The kernel adds `pm` UNSCALED
-> (`rp = p + pm + fb`), so it is forward-compatible: relaxing the guard or adding
-> a depth idiom (`car.pm(mod, index)` / a `Gain` node) later needs no kernel
-> change. **Follow-up sub-project:** a static FM-index depth idiom.
-> (Multi-statement Synth block bodies also require an explicit `return`.)
+> **SETTING FM INDEX (depth).** Use **`car.pm = mod.scale(3)`** for a constant
+> modulation index, or **`car.pm = mod * Env.adsr(...)`** for a modulated /
+> enveloped index (the expressive DX case). Both work: the kernel adds `pm`
+> UNSCALED (`rp = p + pm + fb`), so scaling the modulator signal upstream sets the
+> depth. `car.feedback = f` gives continuous self-FM depth; bare `car.pm = mod` is
+> a fixed unity (~±1 cycle) index.
+>
+> Historical note: the design's originally-pitched `car.pm = mod * 3` (bare Num)
+> ABORTS — a pre-existing Synth-DSL guard (`prelude.wren`, locked by
+> `synth_error_cases_abort`) refuses `poly-audio-node * constant` to steer
+> amplitude through `Env.ar`. The `.scale(k)` helper (added by the FM-index
+> follow-up, main-merged 2026-07-12 — see `2026-07-12-fm-index-scale-design.md`)
+> is the sanctioned path: it wraps the constant in a control node (`this *
+> Node.ctrl_(k)`), which the guard permits and the engine broadcasts across
+> voices. The guard itself is unchanged. (Multi-statement Synth block bodies also
+> require an explicit `return`.)
 
 ## Non-breaking guarantee
 
