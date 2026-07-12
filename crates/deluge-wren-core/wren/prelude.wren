@@ -128,6 +128,12 @@ foreign class Node {
   foreign static pan_(input, position)
   foreign static wavetable_(table, freq)
   foreign static wavetable_pooled_(wt, freq)
+  foreign static player_(buffer)
+  foreign speed=(v)
+  foreign semitones=(v)
+  foreign loopStart=(v)
+  foreign loopEnd=(v)
+  foreign loop=(v)
   foreign static delay_(input, time, feedback)
   foreign mix=(v)
   foreign damp=(v)     // Delay feedback-path damping (NOT damping= — that's the Resonator's)
@@ -428,6 +434,20 @@ foreign class Wavetable {
 //   var s = SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])
 foreign class SampleBuffer {
   foreign static from(samples)
+}
+
+// A one-shot/looped PCM sample source, built from a `SampleBuffer`:
+//   var p = Player.new(SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]))
+//   p.speed = 1.5; p.semitones = -12; p.loopStart = 0; p.loopEnd = 4; p.loop = 1
+//   Out.patch(p); p.trigger()
+// `Player.new` returns a plain `Node`, so `.trigger()` uses the existing
+// `Node.trigger()` (dispatches to `State::SamplePlayer` — Sa-1 Task 2) and
+// the setters above use the new `Node` foreigns registered for Task 4.
+class Player {
+  static new(buffer) {
+    if (Node.polyMode_ == 1) Fiber.abort("Player is a sample source — not usable in a Synth yet (Sa-2)")
+    return Node.player_(buffer)
+  }
 }
 
 class Osc {

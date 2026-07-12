@@ -699,6 +699,83 @@ pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
     sample_from_impl(&vm);
 }
 
+/// `Node.player_(buffer)` — create a `Kind::SamplePlayer` node from a
+/// `SampleBuffer` handle (Task 3). Reads the `SampleObj`'s `handle`+`len`
+/// from slot 1: a bound handle emits `NewNode` + `BindTable{Pooled}` + a
+/// `SetParam{param: 3}` seeding loop_end to the buffer's length, so the
+/// default loop region covers the whole sample; an unbound one (upload
+/// failed) still creates the node but skips both, same graceful-degrade
+/// contract as `node_wavetable_pooled_impl`.
+pub(crate) fn node_player_impl<S: SlotApi>(vm: &S) {
+    let obj = unsafe { vm.foreign_mut::<SampleObj>(1) };
+    let handle = obj.handle;
+    let len = obj.len;
+    let id = audio::alloc_node_id();
+    audio::new_sample_player(id, handle, len);
+    unsafe { return_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_player(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_player_impl(&vm);
+}
+
+/// `Node.speed=(v)` — `SamplePlayer` playback speed multiplier (param 0).
+pub(crate) fn node_set_speed_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 0, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_speed(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_speed_impl(&vm);
+}
+
+/// `Node.semitones=(v)` — `SamplePlayer` pitch transpose in semitones (param 1).
+pub(crate) fn node_set_semitones_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_semitones(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_semitones_impl(&vm);
+}
+
+/// `Node.loopStart=(v)` — `SamplePlayer` loop start sample index (param 2).
+pub(crate) fn node_set_loop_start_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 2, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_loop_start(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_loop_start_impl(&vm);
+}
+
+/// `Node.loopEnd=(v)` — `SamplePlayer` loop end sample index (param 3).
+pub(crate) fn node_set_loop_end_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 3, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_loop_end(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_loop_end_impl(&vm);
+}
+
+/// `Node.loop=(v)` — `SamplePlayer` loop mode (param 4); the node arm maps
+/// `!= 0.0` to loop-on.
+pub(crate) fn node_set_loop_mode_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 4, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_loop_mode(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_loop_mode_impl(&vm);
+}
+
 /// `Node.wavetable_pooled_(wt, freq)` — the pooled-table counterpart of
 /// `node_wavetable_impl` (which binds a static/named table). Reads the
 /// `Wavetable` handle from slot 1: a bound handle emits `NewNode` + a
@@ -2226,6 +2303,12 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "pan_(_,_)", node_pan_impl::<S>);
     method("main", "Node", true, "wavetable_(_,_)", node_wavetable_impl::<S>);
     method("main", "Node", true, "wavetable_pooled_(_,_)", node_wavetable_pooled_impl::<S>);
+    method("main", "Node", true, "player_(_)", node_player_impl::<S>);
+    method("main", "Node", false, "speed=(_)", node_set_speed_impl::<S>);
+    method("main", "Node", false, "semitones=(_)", node_set_semitones_impl::<S>);
+    method("main", "Node", false, "loopStart=(_)", node_set_loop_start_impl::<S>);
+    method("main", "Node", false, "loopEnd=(_)", node_set_loop_end_impl::<S>);
+    method("main", "Node", false, "loop=(_)", node_set_loop_mode_impl::<S>);
     method("main", "Node", true, "delay_(_,_,_)", node_delay_impl::<S>);
     method("main", "Node", false, "mix=(_)", node_set_mix_impl::<S>);
     method("main", "Node", false, "damp=(_)", node_set_damp_impl::<S>);

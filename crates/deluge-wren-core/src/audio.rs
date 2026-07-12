@@ -325,6 +325,31 @@ pub fn new_delay(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, input:
     }
 }
 
+/// Create a `Kind::SamplePlayer` node (pure source — no signal inputs, all
+/// three `NewNode` args are unused `Const(0.0)`). A bound `handle` emits
+/// `NewNode` + `BindTable{Pooled}` + a `SetParam{param: 3}` seeding loop_end
+/// to the buffer's sample count (`len`) so the default loop region covers the
+/// whole sample; an unbound one (upload failed) still creates the node but
+/// skips both the bind and the loop_end seed — same graceful-degrade contract
+/// as [`new_delay`]/[`new_wavetable_pooled`].
+pub fn new_sample_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, len: u32) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind: Kind::SamplePlayer,
+        args: [Input::Const(0.0), Input::Const(0.0), Input::Const(0.0)],
+    });
+    if let Some(h) = handle {
+        host().audio_cmd(Cmd::BindTable {
+            node: NodeId(id),
+            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+        });
+        host().audio_cmd(Cmd::SetParam { node: NodeId(id), param: 3, value: len as f32 }); // loop_end = buffer len
+    }
+}
+
 /// Create a pooled effect node of `kind` with `input` on port 0, binding a
 /// pool ring if `handle` is `Some` (unbound → dry passthrough). Params are set
 /// separately by the caller via `set_param`. Used by `Chorus`/`Flanger`.
