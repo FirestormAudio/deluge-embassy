@@ -2105,7 +2105,7 @@ fn poly_sample_two_notes_two_voices() {
 
 #[test]
 fn keymap_and_scope_guard() {
-    // A 2-zone keymap builds + renders in a Synth: note 64 falls in zone 0
+    // A 2-zone keymap builds + renders in a Synth: note 48 falls in zone 0
     // (0..59, root 48), note 72 falls in zone 1 (60..127, root 72) — two
     // different zones latched by two different poly voices.
     //
@@ -2118,7 +2118,7 @@ fn keymap_and_scope_guard() {
     // list here.
     assert!(
         run_script_ok(
-            "var k = Keymap.from([[[0.5,0.5,-0.5,-0.5], 0, 59, 48], [[0.3,0.3,-0.3,-0.3], 60, 127, 72]])\nvar s = Synth.new { |p| Sample.new(p, k) * Env.adsr(0.001,0.5,1,0.2) }\nOut.patch(s.out)\ns.noteOn(64,100)\ns.noteOn(72,100)"
+            "var k = Keymap.from([[[0.5,0.5,-0.5,-0.5], 0, 59, 48], [[0.3,0.3,-0.3,-0.3], 60, 127, 72]])\nvar s = Synth.new { |p| Sample.new(p, k) * Env.adsr(0.001,0.5,1,0.2) }\nOut.patch(s.out)\ns.noteOn(48,100)\ns.noteOn(72,100)"
         ),
         "keymap synth builds/runs"
     );
