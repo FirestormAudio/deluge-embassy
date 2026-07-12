@@ -419,6 +419,17 @@ foreign class Wavetable {
   foreign static from2d(frames)
 }
 
+// A dynamically-uploaded raw-PCM buffer, for `Player` (Sa-1). Unlike
+// `Wavetable`, the samples are uploaded verbatim — no mip pyramid, no
+// band-limiting — since this is a one-shot/looped sample, not a
+// band-limited oscillator cycle. Same node-scoped-lifetime contract as
+// `Wavetable.from`: the pool region is freed when the node it's bound to is
+// freed, not by this object's GC.
+//   var s = SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])
+foreign class SampleBuffer {
+  foreign static from(samples)
+}
+
 class Osc {
   static sine(f) {
     if (Node.polyMode_ == 1) return Node.polyosc_(f, 0)

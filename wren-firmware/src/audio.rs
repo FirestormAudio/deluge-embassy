@@ -117,6 +117,21 @@ pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
     Some(h)
 }
 
+/// Write a single f32 at `index` into the pool region backing `h`. Called
+/// synchronously from `vm_task`'s `SampleBuffer.from` foreign method (via
+/// `FwHost::pool_set`), once per uploaded sample. Out-of-range `index` is
+/// silently ignored — see [`Host::pool_set`](deluge_wren_core::Host::pool_set)'s
+/// docs. Same synchronous, non-yielding, single-executor argument as
+/// [`upload_table`] applies here.
+pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+    // SAFETY: see `upload_table`'s SAFETY comment above.
+    let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
+    let region = eng.pool_slice_mut(h);
+    if index < region.len() {
+        region[index] = value;
+    }
+}
+
 // The firmware pool (PCAP in the `Eng` alias) must hold at least one full pyramid.
 const _: () = assert!(PCAP >= deluge_wren_core::PYRAMID_LEN);
 

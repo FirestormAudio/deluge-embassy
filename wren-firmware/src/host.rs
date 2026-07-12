@@ -83,4 +83,8 @@ impl Host for FwHost {
     ) -> Option<deluge_audio_graph::PoolHandle> {
         crate::audio::upload_table_2d(nframes, fill_frame)
     }
+
+    fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+        crate::audio::pool_set(h, index, value);
+    }
 }

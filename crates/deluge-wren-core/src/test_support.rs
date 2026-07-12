@@ -408,6 +408,12 @@ impl Host for EngineHost {
         self.eng.pool_slice_mut(h).fill(0.0); // ring buffers must start clean
         Some(h)
     }
+    fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+        let region = self.eng.pool_slice_mut(h);
+        if index < region.len() {
+            region[index] = value;
+        }
+    }
 }
 
 static mut ENGINE_HOST: Option<EngineHost> = None;

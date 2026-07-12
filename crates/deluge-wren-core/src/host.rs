@@ -98,6 +98,17 @@ pub trait Host {
         let _ = len;
         None
     }
+
+    /// Write a single f32 at `index` into the pool region backing `h` (a
+    /// handle previously returned by [`Host::alloc_buffer`] et al.), in the
+    /// host's `deluge_audio_graph::Engine`. Out-of-range `index` is silently
+    /// ignored. Used by `SampleBuffer.from` to upload raw PCM verbatim.
+    ///
+    /// Default: unsupported (no pool) → no-op, so hosts with no audio engine
+    /// (e.g. [`crate::test_support::CmdCaptureHost`]) need not override this.
+    fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+        let _ = (h, index, value);
+    }
 }
 
 /// Build a band-limited mip pyramid from `base` (one single cycle, padded or

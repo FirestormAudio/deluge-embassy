@@ -18,6 +18,7 @@ pub(crate) const TAG_NODE: u8 = 0;
 pub(crate) const TAG_PORT: u8 = 1;
 pub(crate) const TAG_BUS: u8 = 2;
 pub(crate) const TAG_WT: u8 = 3;
+pub(crate) const TAG_SAMPLE: u8 = 4;
 
 /// Ring-buffer length for a `Delay` node: ≈1.09 s @ 44.1 kHz, 1.0 s @ 48 kHz.
 /// The delay `time` (port 1) is clamped to this length inside the kernel.
@@ -205,6 +206,29 @@ impl WrenForeign for WtObj {
     }
     fn class_name() -> &'static str {
         "Wavetable"
+    }
+}
+
+/// A handle to a dynamically-uploaded (pooled) raw-PCM buffer, produced by
+/// `SampleBuffer.from([samples])` (Task 3). `handle` is `None` when the
+/// upload was rejected (bad host / pool exhaustion) — same graceful-degrade
+/// contract as [`WtObj`]: a node built from an unbound `SampleBuffer` skips
+/// its pool bind rather than panicking. `len` is the sample count uploaded
+/// (Rust already knows this without querying the pool — `PoolHandle`'s
+/// fields are private to `pool.rs`), read by `Player.new` (Task 4) to know
+/// the buffer's extent.
+#[repr(C)]
+pub(crate) struct SampleObj {
+    pub tag: u8,
+    pub handle: Option<deluge_audio_graph::PoolHandle>,
+    pub len: u32,
+}
+impl WrenForeign for SampleObj {
+    fn module_name() -> &'static str {
+        "main"
+    }
+    fn class_name() -> &'static str {
+        "SampleBuffer"
     }
 }
 
@@ -638,6 +662,41 @@ pub(crate) fn wavetable_from2d_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn wavetable_from2d(raw: *mut WrenVM) {
     let vm = Vm(raw);
     wavetable_from2d_impl(&vm);
+}
+
+/// `SampleBuffer.from([samples])` — read the Wren list arg (slot 1) and
+/// upload it *verbatim* (no mip pyramid, no band-limiting — raw PCM) into a
+/// freshly-allocated pool region, returning a `SampleBuffer` handle wrapping
+/// the resulting `Option<PoolHandle>` (`None` on a host with no pool, e.g.
+/// the Cmd-capture test host — the handle stays unbound rather than
+/// panicking, same contract as [`wavetable_from_impl`]).
+///
+/// Unlike `Wavetable.from`, there's no fixed-size stack scratch buffer here:
+/// the list can be arbitrarily long (a sample, not a single cycle), so each
+/// element is written straight into the pool region via `audio::pool_set`
+/// as it's read off the Wren list, one at a time.
+///
+/// Same node-scoped-lifetime caveat as `WtObj` applies: the pool region is
+/// freed by `Cmd::Free` on whichever node gets bound to this `SampleBuffer`,
+/// not by the Wren object's GC.
+pub(crate) fn sample_from_impl<S: SlotApi>(vm: &S) {
+    let count = vm.get_list_count(1).max(0) as usize;
+    let handle = audio::alloc_buffer(count); // pool_allocs + zero-fills `count`
+    if let Some(h) = handle {
+        vm.ensure_slots(3); // guarantee slot 2 (scratch, for list-element reads) is valid
+        for i in 0..count {
+            vm.get_list_element(1, i as i32, 2); // element -> slot 2
+            audio::pool_set(h, i, vm.get_f(2) as f32);
+        }
+    }
+    unsafe {
+        vm.new_foreign_in::<SampleObj>(0, SampleObj { tag: TAG_SAMPLE, handle, len: count as u32 })
+    };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    sample_from_impl(&vm);
 }
 
 /// `Node.wavetable_pooled_(wt, freq)` — the pooled-table counterpart of
@@ -2269,4 +2328,5 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Bus", false, "write_(_)", bus_write_impl::<S>);
     method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
     method("main", "Wavetable", true, "from2d(_)", wavetable_from2d_impl::<S>);
+    method("main", "SampleBuffer", true, "from(_)", sample_from_impl::<S>);
 }

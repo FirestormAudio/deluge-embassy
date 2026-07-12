@@ -296,6 +296,13 @@ pub fn alloc_buffer(len: usize) -> Option<deluge_audio_graph::PoolHandle> {
     host().alloc_buffer(len)
 }
 
+/// Write a single f32 at `index` into the pool region backing `h` (no-op on a
+/// host with no pool, or out-of-range `index`). Used by `SampleBuffer.from`
+/// to upload raw PCM verbatim, one element at a time.
+pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+    host().pool_set(h, index, value);
+}
+
 /// Create a `Kind::Delay` node (ports 0/1/2 = input/time/feedback). A bound
 /// `handle` emits `NewNode` + `BindTable{Pooled}`; an unbound one (alloc
 /// failed) still creates the node but skips the bind, so it renders as dry

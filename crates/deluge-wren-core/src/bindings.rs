@@ -993,6 +993,7 @@ pub static METHODS: &[MethodEntry] = &[
     method("Bus", "write_(_)", bindings_audio::bus_write),
     static_method("Wavetable", "from(_)", bindings_audio::wavetable_from),
     static_method("Wavetable", "from2d(_)", bindings_audio::wavetable_from2d),
+    static_method("SampleBuffer", "from(_)", bindings_audio::sample_from),
 ];
 
 /// Terse instance-`MethodEntry` constructor for the `main` module.
