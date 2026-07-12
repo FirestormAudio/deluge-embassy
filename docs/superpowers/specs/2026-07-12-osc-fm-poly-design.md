@@ -40,7 +40,22 @@ pre-existing mono gap, orthogonal to this poly work).
   `f32x8` fast path. `poly_in_count == 2` (pitch=port0, width=port1). **No pm, no
   feedback today.**
 - **`PolyWt`** (poly.rs) — pooled wavetable poly source, `poly_in_count == 1`
-  (pitch=port0), per-voice phase. **No pm, no feedback today.**
+  (pitch=port0), per-voice phase. Wraps `[WtOsc; VOICES]`. **`WtOsc` ALREADY has a
+  `pmod: In`** (`WtOsc::process(mips, freq, pmod, dt, out)`, phase read `ph =
+  phase + pmod.at(i)`), and the node arm already threads it — but from the **mono**
+  input `ins[1]` (shared across voices), NOT a per-voice poly edge. **`WtOsc` has
+  NO feedback** (`WtOsc { phase: f32 }` only) — unlike mono `Osc`.
+
+**Scope decision (from a code-reality discovery during planning):** PolyWt gets
+FULL parity with PolyOsc — per-voice `pm` AND `feedback`. Two consequences:
+1. **`pm`** is a *conversion*, not an addition: PolyWt's existing MONO pmod
+   (`ins[1]`) becomes a per-voice **poly edge**, because the modulator inside a
+   Synth is itself poly (VOICES-wide) and a mono port would misread an interleaved
+   tile.
+2. **`feedback`** is added to the shared **`WtOsc`** kernel (`last`/`last2` +
+   scalar `feedback`, mirroring mono `Osc`). Since `WtOsc` also backs the **mono
+   `Wavetable`** oscillator, mono `Wavetable` gains a `feedback=` too — an accepted
+   bonus, and the mono path must be tested for non-regression.
 - **Poly edges** are voice-interleaved `VOICES*BLOCK` tiles, de-interleaved per
   lane in `node.rs::poly_process`. The modulator inside a Synth is itself a poly
   oscillator, so its output is a VOICES-wide tile — `pm` must be a **poly edge**,
@@ -67,25 +82,37 @@ Mirror the mono `Osc` model onto both poly kernels.
     `y`, then `last2[v]=last[v]; last[v]=y`. `set_feedback(f)` clamps [-1,1].
   - `f32x8` path: load `pm`, `last`, `last2` as `f32x8`, `fb = splat(feedback)*0.5*(last+last2)`,
     add to the phase vector; update `last2=last; last=y_vec` per block sample.
-- **`PolyWt`** gains the same `pm` per-voice phase-offset input and the same
-  per-voice `last`/`last2` + scalar `feedback`, applied as a phase-read offset in
-  its wavetable read (mirroring how `PolyOsc` offsets phase). Signature extended
-  with a `pm: &[f32]` param.
+- **`WtOsc`** (`wavetable.rs`, SHARED with mono `Wavetable`): add `last`/`last2`
+  state + scalar `feedback` + `set_feedback` (clamp [-1,1]), mirroring mono `Osc`.
+  The phase read becomes `ph = phase + pmod.at(i) + feedback*0.5*(last+last2)`, and
+  `last2=last; last=y` each sample. `feedback == 0` (default) → bit-identical to
+  today (mono `Wavetable` non-regression). The `pmod` input is unchanged.
+- **`PolyWt`** (`poly.rs`): already forwards `pmod` per voice via `[WtOsc; VOICES]`
+  (`process_voice`/`process_voice_morph` take `pmod: In`) — the kernel just gains a
+  `set_feedback(f)` that fans to all 8 `WtOsc`s. Making PolyWt's `pm` **per-voice**
+  is a GRAPH change (convert the mono `ins[1]` pmod source into a poly edge), not a
+  kernel signature change — see below.
 
 ### Graph changes (`crates/deluge-audio-graph/src/node.rs`)
 
 - `poly_in_count`: `PolyOsc` 2 → **3** (pitch=0, width=1, **pm=2**); `PolyWt` 1 →
   **2** (pitch=0, **pm=1**). Update the existing assertions
   (`poly_in_count(PolyOsc)==2` at node.rs:1839, and any PolyWt count assertion).
-- `poly_process` arms for `PolyOsc` and `PolyWt`: de-interleave the new `pm` poly
-  edge per lane into a `MAX_BLOCK` scratch column (exactly like the existing
-  `pitch` de-interleave), pass it to the extended `process`. When the `pm` edge is
-  **unconnected**, it must resolve to a per-voice **zero** tile (so an un-patched
-  poly osc is byte-identical to today — see Non-breaking).
-- `set_param` arm: `PolyOsc` and `PolyWt` `param == <feedback slot>` →
-  `set_feedback(value)` (clamped in the kernel), mirroring mono `Osc`'s
-  `param==0 => o.set_feedback(value)`. Pick the slot to match the existing mono
-  `feedback=` param index so the shared Wren setter maps cleanly.
+- `poly_process` arms: **`PolyOsc`** de-interleaves the new `pm` poly edge per lane
+  into a `MAX_BLOCK` scratch column (like the existing `pitch` de-interleave) and
+  passes it to the extended `process`. **`PolyWt`** already calls `process_voice(v,
+  …, pmod, …)` with `ins[1]` as the mono pmod; change that to de-interleave the new
+  `pm` poly edge (`poly_in[1]`) into a per-lane column and pass `In::A(&pmcol)` as
+  the pmod. When the `pm` edge is **unconnected**, it must resolve to a per-voice
+  **zero** tile (so an un-patched poly osc is byte-identical to today — see
+  Non-breaking).
+- `set_param` feedback arms: `PolyOsc` and `PolyWt` `param == <feedback slot>` →
+  `set_feedback(value)`; the mono `Wavetable`'s node arm (`State::Wt`/`WtOsc`) also
+  gets a `param == <feedback slot> => set_feedback` arm now that `WtOsc` has it. The
+  slot must align with what the `feedback=` Wren setter emits per node kind (see
+  Wren surface — the setter is poly/kind-aware). Mono `Osc` today uses `param 0`;
+  `PolyOsc`'s `param 0` may be `set_shape`, so the poly feedback slot is chosen to
+  avoid collision and the setter emits it — resolved in the plan.
 - `State::PolyOsc(PolyOsc)` / `State::PolyWt(PolyWt)` construction unchanged
   (kernel `new()` initializes the new state to zero).
 
@@ -178,7 +205,9 @@ oscillator tests stay green in BOTH feature configs.
 - Multi-operator DX-style algorithm routing (fixed carrier/modulator matrices,
   N>2 operators, per-op ratio/level tables) — a possible follow-on built on
   these primitives.
-- Mono `WtOsc` pm (pre-existing mono gap; orthogonal).
+- Mono `WtOsc`/`Wavetable` PER-VOICE pm is N/A (mono); the mono `Wavetable`
+  `pmod` input already exists. Mono `Wavetable` `feedback=` is now IN scope as a
+  side-effect of adding feedback to the shared `WtOsc` kernel (accepted bonus).
 - True linear FM (freq-domain) as distinct from phase modulation — PM is the
   DX-style, already-modeled approach; `freq=` audio-rate patching remains
   available for the mono case.
@@ -188,10 +217,15 @@ oscillator tests stay green in BOTH feature configs.
 1. `PolyOsc` kernel: add `pm` param + `last/last2/feedback` state + `set_feedback`,
    both scalar & `f32x8` paths; oracle tests (sidebands, bounded, pm=0 identity,
    scalar==simd).
-2. `PolyWt` kernel: same pm + feedback addition; tests.
-3. Graph wiring for both: `poly_in_count` bumps + assertions, `poly_process` pm
-   de-interleave (zero when unconnected), `set_param` feedback arm; node tests.
-4. Wren `pm=`/`feedback=` poly routing (confirm set_input/set_param target the new
-   port/slot for poly nodes); binding tests.
-5. e2e poly-FM tests (poly sine-FM + wavetable-FM render non-silent/polyphonic;
-   no-pm/feedback=0 non-breaking baseline).
+2. `WtOsc` kernel: add `last/last2/feedback` + `set_feedback` (SHARED — mono
+   `Wavetable` gains feedback), `feedback==0` bit-identity; `PolyWt::set_feedback`
+   fans to all 8 voices; tests (mono `WtOsc` feedback bounded + feedback=0 identity,
+   both paths).
+3. Graph wiring: `poly_in_count` bumps (PolyOsc 2→3, PolyWt 1→2) + assertions;
+   `poly_process` pm de-interleave for `PolyOsc` (new edge) and `PolyWt` (mono
+   `ins[1]` → poly edge), zero when unconnected; `set_param` feedback arms for
+   `PolyOsc`, `PolyWt`, AND mono `Wavetable`; node tests.
+4. Wren `pm=`/`feedback=` poly/kind-aware routing (branch on `NodeObj.poly` /
+   width to emit the correct port/slot per node kind); binding tests.
+5. e2e: poly sine-FM + poly wavetable-FM render non-silent/polyphonic; mono
+   `Wavetable.feedback=` renders bounded; no-pm/feedback=0 non-breaking baseline.
