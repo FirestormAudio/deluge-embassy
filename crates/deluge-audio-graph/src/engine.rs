@@ -178,7 +178,7 @@ impl<
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
             let mut scratch = [[0.0f32; BLOCK]; MAX_INPUTS];
-            let mut poly_scratch = [[[0.0f32; BLOCK]; VOICES]; 2];
+            let mut poly_scratch = [[[0.0f32; BLOCK]; VOICES]; 3];
             {
                 // SAFETY: read-only view of the output arena; no writer is live.
                 let arr = unsafe { &*self.outs.get() };
@@ -244,9 +244,10 @@ impl<
             if Node::is_poly(kind) {
                 // Poly path: voice-interleaved tile in/out, isolated dispatch.
                 let count = Node::poly_in_count(kind);
-                let poly_in: [Option<&[f32]>; 2] = [
+                let poly_in: [Option<&[f32]>; 3] = [
                     if count > 0 { Some(poly_scratch[0].as_flattened()) } else { None },
                     if count > 1 { Some(poly_scratch[1].as_flattened()) } else { None },
+                    if count > 2 { Some(poly_scratch[2].as_flattened()) } else { None },
                 ];
                 let out = arr[base..base + width].as_flattened_mut(); // width*BLOCK
                 // Resolve a pooled node's region MUTABLY before the node's

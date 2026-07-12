@@ -294,14 +294,18 @@ impl Node {
         match kind {
             Kind::PolySvf | Kind::PolySlew | Kind::VoiceSum | Kind::StereoVoiceSum | Kind::PolyMtof
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
-                | Kind::PolyWt | Kind::PolyWtMorph | Kind::PolySamplePlayer => 1,
+                | Kind::PolySamplePlayer => 1,
             // PolyOsc: port 0 = pitch, port 1 = PWM width (unconnected ⇒
             // Const(0.0) ⇒ all-zero tile ⇒ 0.5 duty, bit-identical to the
-            // pre-width PolyOsc). PolySync: port 0 = master, port 1 = slave.
-            // PolyWt/PolyWtMorph: port 0 = pitch (poly edge); pmod (port 1)
-            // and morph position (port 2) are trailing mono controls, matching
-            // mono `Kind::Wavetable`'s port order.
-            Kind::PolyOsc | Kind::PolyMul | Kind::PolyAdd
+            // pre-width PolyOsc), port 2 = pm (unconnected ⇒ all-zero tile ⇒
+            // no phase modulation, bit-identical to pre-pm PolyOsc).
+            // PolySync: port 0 = master, port 1 = slave.
+            // PolyWt/PolyWtMorph: port 0 = pitch, port 1 = morph position
+            // (moved from the old mono `ins[2]`), port 2 = pm (moved from the
+            // old mono `ins[1]`) — both now poly edges, matching PolyOsc's
+            // pm=port2 convention.
+            Kind::PolyOsc | Kind::PolyWt | Kind::PolyWtMorph => 3,
+            Kind::PolyMul | Kind::PolyAdd
                 | Kind::PolySyncSine | Kind::PolySyncSaw | Kind::PolySyncSquare | Kind::PolySyncTri => 2,
             _ => 0, // PolyCtrl, PolyAr, PolyNoise/PolyPink/PolyBrown, and all mono kinds
         }
@@ -351,6 +355,7 @@ impl Node {
     pub fn set_param(&mut self, param: u8, value: f32) {
         match &mut self.state {
             State::Osc(o) if param == 0 => o.set_feedback(value),
+            State::Wt(o) if param == 0 => o.set_feedback(value),
             State::Adsr(a) if param == 0 => a.set_sustain(value),
             State::PolyAdsr(a) if param == 0 => a.set_sustain(value),
             State::PolySlew(s) if param == 0 => s.set_time(value),
@@ -479,8 +484,10 @@ impl Node {
             State::PolyCtrl(c) => c.set_voice(param as usize, value),
             State::PolyOsc(o) => match param {
                 0 => o.set_shape(value as u8),
+                1 => o.set_feedback(value),
                 _ => {}
             },
+            State::PolyWt(w) if param == 1 => w.set_feedback(value),
             State::PolyMtof(m) => match param {
                 0 => m.set_ref(value),
                 _ => {}
@@ -901,7 +908,7 @@ impl Node {
     pub fn poly_process(
         &mut self,
         ins: &[In; MAX_INPUTS],
-        poly_in: [Option<&[f32]>; 2],
+        poly_in: [Option<&[f32]>; 3],
         dt: f32,
         out: &mut [f32],
         pool_region: Option<&mut [f32]>,
@@ -911,11 +918,12 @@ impl Node {
                 if let State::PolyCtrl(c) = &mut self.state { c.process(out); }
             }
             Kind::PolyOsc => {
-                // width port optional: unconnected ⇒ Const(0.0) ⇒ engine
-                // broadcasts an all-zero tile ⇒ 0.5 duty (backward-compat).
-                if let (State::PolyOsc(o), Some(pitch), Some(width)) =
-                    (&mut self.state, poly_in[0], poly_in[1]) {
-                    o.process(pitch, width, dt, out);
+                // width/pm ports optional: unconnected ⇒ Const(0.0) ⇒ engine
+                // broadcasts an all-zero tile ⇒ 0.5 duty / no phase mod
+                // (backward-compat).
+                if let (State::PolyOsc(o), Some(pitch), Some(width), Some(pm)) =
+                    (&mut self.state, poly_in[0], poly_in[1], poly_in[2]) {
+                    o.process(pitch, width, pm, dt, out);
                 }
             }
             Kind::VoiceSum => {
@@ -1007,7 +1015,14 @@ impl Node {
                 // (resolved by the engine, mirroring `process_resolved`'s param).
                 let kind = self.kind;
                 let pool_region: Option<&[f32]> = pool_region.as_deref();
-                if let (State::PolyWt(w), Some(pitch)) = (&mut self.state, poly_in[0]) {
+                // pm (port 2) and morph position (port 1) are now poly edges
+                // (previously trailing mono controls `ins[1]`/`ins[2]`),
+                // matching PolyOsc's pm=port2 convention. Un-patched edges
+                // arrive as engine-broadcast all-zero tiles, matching the old
+                // mono defaults (both `ins[1]`/`ins[2]` resolved to
+                // `Const(0.0)` when unset — see `Node::new`).
+                if let (State::PolyWt(w), Some(pitch), Some(pos), Some(pm)) =
+                    (&mut self.state, poly_in[0], poly_in[1], poly_in[2]) {
                     let region: Option<&[f32]> = match self.table {
                         Some(TableSrc::Static(id)) => static_table_flat(id),
                         Some(TableSrc::Pooled(_)) => {
@@ -1019,18 +1034,27 @@ impl Node {
                         let frames = region.len() / COMPACT_LEN;
                         let n = out.len() / VOICES;
                         let mut col = [0.0f32; MAX_BLOCK];
+                        let mut pmcol = [0.0f32; MAX_BLOCK];
+                        let mut poscol = [0.0f32; MAX_BLOCK]; // morph position, per lane
                         let mut ocol = [0.0f32; MAX_BLOCK];
                         if matches!(kind, Kind::PolyWtMorph) {
                             for v in 0..VOICES {
-                                for i in 0..n { col[i] = pitch[i * VOICES + v]; }
-                                w.process_voice_morph(v, region, frames, In::A(&col[..n]), ins[1], ins[2], dt, &mut ocol[..n]);
+                                for i in 0..n {
+                                    col[i] = pitch[i * VOICES + v];
+                                    pmcol[i] = pm[i * VOICES + v];
+                                    poscol[i] = pos[i * VOICES + v];
+                                }
+                                w.process_voice_morph(v, region, frames, In::A(&col[..n]), In::A(&pmcol[..n]), In::A(&poscol[..n]), dt, &mut ocol[..n]);
                                 for i in 0..n { out[i * VOICES + v] = ocol[i]; }
                             }
                         } else {
                             let levels = compact_levels(region);
                             for v in 0..VOICES {
-                                for i in 0..n { col[i] = pitch[i * VOICES + v]; }
-                                w.process_voice(v, MipSet { levels: &levels }, In::A(&col[..n]), ins[1], dt, &mut ocol[..n]);
+                                for i in 0..n {
+                                    col[i] = pitch[i * VOICES + v];
+                                    pmcol[i] = pm[i * VOICES + v];
+                                }
+                                w.process_voice(v, MipSet { levels: &levels }, In::A(&col[..n]), In::A(&pmcol[..n]), dt, &mut ocol[..n]);
                                 for i in 0..n { out[i * VOICES + v] = ocol[i]; }
                             }
                         }
@@ -1836,7 +1860,7 @@ mod tests {
         assert_eq!(Node::out_width(Kind::VoiceSum), 1);
         assert!(Node::is_poly(Kind::PolyCtrl) && Node::is_poly(Kind::PolyOsc) && Node::is_poly(Kind::VoiceSum));
         assert!(!Node::is_poly(Kind::Saw));
-        assert_eq!(Node::poly_in_count(Kind::PolyOsc), 2); // pitch (port 0) + PWM width (port 1)
+        assert_eq!(Node::poly_in_count(Kind::PolyOsc), 3); // pitch (port 0) + PWM width (port 1) + pm (port 2)
         assert_eq!(Node::poly_in_count(Kind::VoiceSum), 1);
         assert_eq!(Node::poly_in_count(Kind::PolyCtrl), 0);
         assert_eq!(Node::poly_in_count(Kind::PolyMul), 2);
@@ -1853,7 +1877,7 @@ mod tests {
         }
         let mut tile = [0.0f32; VOICES * 4];
         let dummy: [In; MAX_INPUTS] = [In::K(0.0); MAX_INPUTS];
-        ctrl.poly_process(&dummy, [None, None], 1.0 / 48_000.0, &mut tile, None);
+        ctrl.poly_process(&dummy, [None, None, None], 1.0 / 48_000.0, &mut tile, None);
         for i in 0..n {
             for v in 0..VOICES {
                 assert_eq!(tile[i * VOICES + v], (v + 1) as f32);
@@ -1861,7 +1885,7 @@ mod tests {
         }
         let mut sum = Node::new(Kind::VoiceSum, 0);
         let mut mono = [0.0f32; 4];
-        sum.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono, None);
+        sum.poly_process(&dummy, [Some(&tile), None, None], 1.0 / 48_000.0, &mut mono, None);
         let want: f32 = (1..=VOICES).map(|x| x as f32).sum(); // 36
         assert!(mono.iter().all(|&s| (s - want).abs() < 1e-4), "each sample sums to {want}");
     }
@@ -1876,12 +1900,12 @@ mod tests {
         }
         let mut tile = [0.0f32; VOICES * 4];
         let dummy: [In; MAX_INPUTS] = [In::K(0.0); MAX_INPUTS];
-        ctrl.poly_process(&dummy, [None, None], 1.0 / 48_000.0, &mut tile, None);
+        ctrl.poly_process(&dummy, [None, None, None], 1.0 / 48_000.0, &mut tile, None);
 
         // Default gain 1.0 → plain sum.
         let mut n1 = Node::new(Kind::VoiceSum, 0);
         let mut mono1 = [0.0f32; 4];
-        n1.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono1, None);
+        n1.poly_process(&dummy, [Some(&tile), None, None], 1.0 / 48_000.0, &mut mono1, None);
         let want: f32 = (1..=VOICES).map(|x| x as f32).sum(); // 36
         assert!(mono1.iter().all(|&s| (s - want).abs() < 1e-4), "default gain 1.0 = plain sum, got {mono1:?}");
 
@@ -1889,7 +1913,7 @@ mod tests {
         let mut n2 = Node::new(Kind::VoiceSum, 0);
         n2.set_param(0, 0.5);
         let mut mono2 = [0.0f32; 4];
-        n2.poly_process(&dummy, [Some(&tile), None], 1.0 / 48_000.0, &mut mono2, None);
+        n2.poly_process(&dummy, [Some(&tile), None, None], 1.0 / 48_000.0, &mut mono2, None);
         assert!(mono2.iter().all(|&s| (s - want * 0.5).abs() < 1e-4), "gain 0.5 halves the sum, got {mono2:?}");
     }
 
@@ -1910,21 +1934,21 @@ mod tests {
         let ins: [In; MAX_INPUTS] = [In::K(0.0); MAX_INPUTS];
         let mut out = [0.0f32; 2 * BLOCK];
         // default (center, gain 1.0): L[0] == R[0] == sum.
-        node.poly_process(&ins, [Some(&tile[..]), None], 0.0, &mut out, None);
+        node.poly_process(&ins, [Some(&tile[..]), None, None], 0.0, &mut out, None);
         assert!((out[0] - sum).abs() < 1e-6, "L center == sum");
         assert!((out[BLOCK] - sum).abs() < 1e-6, "R center == sum");
 
         // set_param(0)=gain 0.5 halves both.
         node.set_param(0, 0.5);
         let mut out2 = [0.0f32; 2 * BLOCK];
-        node.poly_process(&ins, [Some(&tile[..]), None], 0.0, &mut out2, None);
+        node.poly_process(&ins, [Some(&tile[..]), None, None], 0.0, &mut out2, None);
         assert!((out2[0] - 0.5 * sum).abs() < 1e-6 && (out2[BLOCK] - 0.5 * sum).abs() < 1e-6);
 
         // set_param(1)=pan lane 0 hard right (+1): lane 0 drops from L, stays in R.
         node.set_param(0, 1.0); // gain back to 1.0
         node.set_param(1, 1.0); // pan[0] = +1
         let mut out3 = [0.0f32; 2 * BLOCK];
-        node.poly_process(&ins, [Some(&tile[..]), None], 0.0, &mut out3, None);
+        node.poly_process(&ins, [Some(&tile[..]), None, None], 0.0, &mut out3, None);
         let drop0: f32 = (2..=VOICES).map(|v| v as f32).sum(); // lanes 1..VOICES
         assert!((out3[0] - drop0).abs() < 1e-6, "lane0 absent from L");
         assert!((out3[BLOCK] - sum).abs() < 1e-6, "lane0 present in R");
@@ -1943,7 +1967,7 @@ mod tests {
         }
         let dummy = [In::K(0.0); MAX_INPUTS];
         let mut out = [0.0f32; VOICES * 2];
-        n.poly_process(&dummy, [Some(&semis), None], 1.0 / 48_000.0, &mut out, None);
+        n.poly_process(&dummy, [Some(&semis), None, None], 1.0 / 48_000.0, &mut out, None);
         assert!((out[0] - 440.0).abs() < 1e-2 && (out[1] - 880.0).abs() < 1e-2);
     }
 
@@ -1967,7 +1991,7 @@ mod tests {
             target[i * VOICES] = 1.0;
         }
         let mut out = [0.0f32; VOICES * 8];
-        n.poly_process(&dummy, [Some(&target), None], dt, &mut out, None);
+        n.poly_process(&dummy, [Some(&target), None, None], dt, &mut out, None);
         let last = out[(n_samples - 1) * VOICES];
         assert!(last > 0.0 && last < 1.0, "lane 0 glides partway toward target, got {last}");
 
@@ -1979,7 +2003,7 @@ mod tests {
             target2[i * VOICES] = -0.5;
         }
         let mut out2 = [0.0f32; VOICES * 4];
-        n.poly_process(&dummy, [Some(&target2), None], dt, &mut out2, None);
+        n.poly_process(&dummy, [Some(&target2), None, None], dt, &mut out2, None);
         assert!((out2[0] - (-0.5)).abs() < 1e-6, "lane 0 snaps to target, got {}", out2[0]);
 
         // Snap isn't sticky across calls: a later target change without a
@@ -1989,7 +2013,7 @@ mod tests {
             target3[i * VOICES] = 0.5;
         }
         let mut out3 = [0.0f32; VOICES * 4];
-        n.poly_process(&dummy, [Some(&target3), None], dt, &mut out3, None);
+        n.poly_process(&dummy, [Some(&target3), None, None], dt, &mut out3, None);
         assert!(
             out3[0] > -0.5 && out3[0] < 0.5,
             "no snap-stick: lane 0 glides toward new target, got {}",
@@ -2009,11 +2033,34 @@ mod tests {
         n.set_param(0, 1.0); // Saw
         let pitch = [220.0f32; VOICES * 4];
         let width = [0.0f32; VOICES * 4]; // unconnected ⇒ 0.5 duty default
+        let pm = [0.0f32; VOICES * 4]; // unconnected ⇒ no phase mod
         let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
         let mut out = [0.0f32; VOICES * 4];
-        n.poly_process(&ins, [Some(&pitch), Some(&width)], 1.0 / 48_000.0, &mut out, None);
+        n.poly_process(&ins, [Some(&pitch), Some(&width), Some(&pm)], 1.0 / 48_000.0, &mut out, None);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out.iter().any(|&s| s != 0.0), "saw renders");
+    }
+
+    #[test]
+    fn polyosc_polywt_pm_ports() {
+        assert_eq!(Node::poly_in_count(Kind::PolyOsc), 3); // pitch,width,pm
+        assert_eq!(Node::poly_in_count(Kind::PolyWt), 3);  // pitch,position,pm
+    }
+
+    #[test]
+    fn polyosc_feedback_setparam_reaches_kernel() {
+        // set_param(1, x) is feedback (param 0 is shape); must build/drive
+        // without panic and render finite output (pitch nonzero, width+pm
+        // zero — mirrors polyosc_shape_and_new_kinds's harness).
+        let mut n = Node::new(Kind::PolyOsc, 0);
+        n.set_param(1, 0.5); // feedback
+        let pitch = [220.0f32; VOICES * 4];
+        let width = [0.0f32; VOICES * 4];
+        let pm = [0.0f32; VOICES * 4];
+        let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
+        let mut out = [0.0f32; VOICES * 4];
+        n.poly_process(&ins, [Some(&pitch), Some(&width), Some(&pm)], 1.0 / 48_000.0, &mut out, None);
+        assert!(out.iter().all(|s| s.is_finite()), "feedback set_param drives kernel without panic: {out:?}");
     }
 
     #[test]
@@ -2021,7 +2068,7 @@ mod tests {
         let mut n = Node::new(Kind::PolyNoise, 0);
         let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
         let mut out = [0.0f32; VOICES * 4];
-        n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out, None);
+        n.poly_process(&ins, [None, None, None], 1.0 / 48_000.0, &mut out, None);
         assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0) && out.iter().any(|&s| s != 0.0));
     }
 
@@ -2037,7 +2084,7 @@ mod tests {
             let mut n = Node::new(kind, 0);
             let ins = [In::A(&[0.0; VOICES * 4]); MAX_INPUTS];
             let mut out = [0.0f32; VOICES * 4];
-            n.poly_process(&ins, [None, None], 1.0 / 48_000.0, &mut out, None);
+            n.poly_process(&ins, [None, None, None], 1.0 / 48_000.0, &mut out, None);
             assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0), "kind={kind:?} bounded");
             assert!(out.iter().any(|&s| s != 0.0), "kind={kind:?} non-silent");
         }
@@ -2067,7 +2114,7 @@ mod tests {
         // Render enough blocks that attack (1ms) + decay (1ms) settle into
         // sustain well before the end (16*100 samples @ 48kHz ≈ 33ms).
         for _ in 0..100 {
-            n.poly_process(&ins, [None, None], dt, &mut out, None);
+            n.poly_process(&ins, [None, None, None], dt, &mut out, None);
         }
         for v in 0..VOICES {
             let last = out[(block - 1) * VOICES + v];
@@ -2232,7 +2279,7 @@ mod tests {
         // BLOCK-chunk of the interleaved tile, not a single voice's trace,
         // when `port` doesn't divide evenly; going through `Node` directly
         // sidesteps that entirely).
-        assert_eq!(Node::poly_in_count(Kind::PolyWt), 1);
+        assert_eq!(Node::poly_in_count(Kind::PolyWt), 3);
         assert_eq!(Node::out_width(Kind::PolyWt), VOICES);
         assert!(Node::is_poly(Kind::PolyWt) && Node::is_poly(Kind::PolyWtMorph));
 
@@ -2249,9 +2296,10 @@ mod tests {
             }
         }
         let zero = std::vec![0.0f32; n];
+        let poly_zero = std::vec![0.0f32; VOICES * n]; // position/pm unpatched ⇒ broadcast zero
         let ins = [In::A(&zero), In::A(&zero), In::A(&zero)];
         let mut out = std::vec![0.0f32; VOICES * n];
-        poly.poly_process(&ins, [Some(&pitch), None], dt, &mut out, None);
+        poly.poly_process(&ins, [Some(&pitch), Some(&poly_zero), Some(&poly_zero)], dt, &mut out, None);
 
         for v in 0..VOICES {
             let mut mono = Node::new(Kind::Wavetable, 0);
@@ -2303,9 +2351,11 @@ mod tests {
         }
         let zero = std::vec![0.0f32; n];
         let pos = std::vec![position; n];
+        let poly_pos = std::vec![position; VOICES * n]; // morph position, poly port 1
+        let poly_zero = std::vec![0.0f32; VOICES * n]; // pm unpatched ⇒ broadcast zero
         let ins = [In::A(&zero), In::A(&zero), In::A(&pos)];
         let mut out = std::vec![0.0f32; VOICES * n];
-        poly.poly_process(&ins, [Some(&pitch), None], dt, &mut out, None);
+        poly.poly_process(&ins, [Some(&pitch), Some(&poly_pos), Some(&poly_zero)], dt, &mut out, None);
 
         for v in 0..VOICES {
             let mut mono = Node::new(Kind::Wavetable, 0);
@@ -2329,7 +2379,7 @@ mod tests {
         // Static table 6 (HarmonicSweep) is a baked-in 2D (multi-frame) morph
         // bank (see `TableId`'s doc comment). PolyWtMorph must render finite,
         // bounded, non-silent audio for every voice, and moving `position`
-        // (port 2, a shared mono control) must change the output.
+        // (poly port 1) must change the output.
         let dt = 1.0 / 48_000.0;
         let n = 128usize;
         let mut pitch = std::vec![0.0f32; VOICES * n];
@@ -2344,9 +2394,11 @@ mod tests {
             let mut node = Node::new(Kind::PolyWtMorph, 0);
             node.bind_table(TableSrc::Static(TableId(6)));
             let pos = std::vec![position; n];
+            let poly_pos = std::vec![position; VOICES * n]; // morph position, poly port 1
+            let poly_zero = std::vec![0.0f32; VOICES * n]; // pm unpatched ⇒ broadcast zero
             let ins = [In::A(&zero), In::A(&zero), In::A(&pos)];
             let mut out = std::vec![0.0f32; VOICES * n];
-            node.poly_process(&ins, [Some(&pitch), None], dt, &mut out, None);
+            node.poly_process(&ins, [Some(&pitch), Some(&poly_pos), Some(&poly_zero)], dt, &mut out, None);
             out
         };
 
@@ -2409,8 +2461,8 @@ mod tests {
     #[test]
     fn polywtmorph_pooled_table_renders_via_engine_voicesum() {
         // Same as above but `PolyWtMorph` with a 2-frame pooled bank (saw +
-        // square) and a `position` control (port 2), driven through the full
-        // engine (pool_region resolved by `render_block`'s poly branch).
+        // square) and a `position` control (poly port 1), driven through the
+        // full engine (pool_region resolved by `render_block`'s poly branch).
         use crate::cmd::Cmd;
         use crate::engine::Engine;
         use crate::ids::NodeId;
@@ -2438,7 +2490,7 @@ mod tests {
         }
         e.create(NodeId(1), Kind::PolyWtMorph);
         *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
-        *e.node_input_mut(NodeId(1), 2).unwrap() = Input::Const(0.5); // position
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.5); // position (poly port 1)
         e.apply(Cmd::BindTable { node: NodeId(1), src: TableSrc::Pooled(h) });
         e.create(NodeId(2), Kind::VoiceSum);
         *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
@@ -2494,7 +2546,7 @@ mod tests {
         let mut pitch = [0.0f32; VOICES]; pitch[0] = hz;
         let ins: [In; MAX_INPUTS] = core::array::from_fn(|_| In::K(0.0));
         let mut out = [0.0f32; VOICES]; // out_width VOICES, 1 sample
-        n.poly_process(&ins, [Some(&pitch[..]), None], 1.0 / 48_000.0, &mut out, Some(&mut region));
+        n.poly_process(&ins, [Some(&pitch[..]), None, None], 1.0 / 48_000.0, &mut out, Some(&mut region));
         // lane 0 at root → pcm[0] = 0.5
         assert!((out[0] - 0.5).abs() < 1e-4, "lane 0 plays pool PCM at root pitch, got {}", out[0]);
     }
