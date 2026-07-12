@@ -9,7 +9,7 @@ use deluge_audio_graph::{Input, Kind, NodeId};
 use wren_sys::{Vm, WrenVM};
 
 use crate::audio;
-use crate::slotapi::{SlotApi, WrenForeign, WrenType, checked_list_count, checked_tagged_foreign};
+use crate::slotapi::{SlotApi, WrenForeign, WrenType, checked_list_count, checked_str, checked_tagged_foreign};
 
 // All audio foreign objects lead with a `tag: u8` (offset 0 under `repr(C)`) so
 // `arg_input` can discriminate a Node/Port/Bus argument by reading that byte —
@@ -2115,6 +2115,31 @@ pub(crate) unsafe extern "C" fn node_polysampleplayer(raw: *mut WrenVM) {
     node_polysampleplayer_impl(&vm);
 }
 
+/// `Node.stream_(pitch, path)` — a poly streaming sample voice source. Allocates a
+/// `VOICES*cap` ring, creates a `Kind::StreamPlayer`, registers the file with the
+/// host prefetch (`Host::stream_register`), and records the trigger so `note_on`
+/// fans `TriggerVoice` — same poly-source shape as `node_polysampleplayer_impl`,
+/// but the PCM lives in a host-filled streaming ring rather than an
+/// upload-once pool region. `path` is read with `checked_str` (slot 2 may not
+/// be a String — e.g. `Sample.stream(p, 5)` — and `get_str` on a non-String
+/// slot is UB; `checked_str` degrades to `""` instead).
+pub(crate) fn node_stream_impl<S: SlotApi>(vm: &S) {
+    const STREAM_RING_CAP: usize = 8192; // samples per voice (~0.19 s @ 44.1 kHz lookahead)
+    let pitch = arg_input(vm, 1);
+    let path = checked_str(vm, 2);
+    let handle = audio::alloc_buffer(deluge_audio_graph::VOICES * STREAM_RING_CAP);
+    let id = audio::alloc_node_id();
+    audio::new_stream_player(id, handle, pitch, 60.0); // root C4 (setter deferred)
+    audio::stream_register(id, handle, path);
+    audio::poly_record_trigger(id);
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_stream(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_stream_impl(&vm);
+}
+
 /// `Node.root=(v)` — set zone 0's root note on a `PolySamplePlayer` node
 /// (param `2 + 0*5 + 4 = 6`, per `new_poly_sample_player`'s zone-block
 /// scheme). Backs `Sample.new`'s single-`SampleBuffer` form, whose synthesized
@@ -2674,6 +2699,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polywt_(_,_)", node_polywt_impl::<S>);
     method("main", "Node", true, "polywt_pooled_(_,_)", node_polywt_pooled_impl::<S>);
     method("main", "Node", true, "polysampleplayer_(_,_)", node_polysampleplayer_impl::<S>);
+    method("main", "Node", true, "stream_(_,_)", node_stream_impl::<S>);
     method("main", "Node", false, "root=(_)", node_set_root_impl::<S>);
     method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
     method("main", "Node", true, "monoBegin_()", node_mono_begin_impl::<S>);

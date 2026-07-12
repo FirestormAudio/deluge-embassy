@@ -109,6 +109,14 @@ pub trait Host {
     fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
         let _ = (h, index, value);
     }
+
+    /// Register that `node` (a `Kind::StreamPlayer`) should stream from `path`,
+    /// with its ring at pool `handle`. Default no-op (hosts with no filesystem /
+    /// prefetch, e.g. tests, ignore it). The firmware host wires it to a prefetch
+    /// task; see the Sa-3b slice-4 design.
+    fn stream_register(&mut self, node: deluge_audio_graph::NodeId, handle: deluge_audio_graph::PoolHandle, path: &str) {
+        let _ = (node, handle, path);
+    }
 }
 
 /// Build a band-limited mip pyramid from `base` (one single cycle, padded or

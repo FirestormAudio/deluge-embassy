@@ -417,6 +417,34 @@ pub fn new_poly_sample_player(
     }
 }
 
+/// Create a `Kind::StreamPlayer` node bound to a `VOICES*cap` ring `handle`,
+/// wired to `pitch`, with `root` note (param 0). Streaming data is filled by the
+/// host prefetch task (registered separately via `stream_register`).
+pub fn new_stream_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, pitch: Input, root: f32) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind: Kind::StreamPlayer,
+        args: [pitch, Input::Const(0.0), Input::Const(0.0)],
+    });
+    if let Some(h) = handle {
+        host().audio_cmd(Cmd::BindTable {
+            node: NodeId(id),
+            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+        });
+    }
+    host().audio_cmd(Cmd::SetParam { node: NodeId(id), param: 0, value: root });
+}
+
+/// Register a streamed node+ring with the host's prefetch (no-op host → ignored).
+pub fn stream_register(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, path: &str) {
+    if let Some(h) = handle {
+        host().stream_register(NodeId(id), h, path);
+    }
+}
+
 /// Create a pooled effect node of `kind` with `input` on port 0, binding a
 /// pool ring if `handle` is `Some` (unbound → dry passthrough). Params are set
 /// separately by the caller via `set_param`. Used by `Chorus`/`Flanger`.

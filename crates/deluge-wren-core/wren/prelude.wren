@@ -201,6 +201,7 @@ foreign class Node {
   foreign static polywt_(table, freq)
   foreign static polywt_pooled_(wt, freq)
   foreign static polysampleplayer_(pitch, source)
+  foreign static stream_(pitch, path)
   foreign root=(v)      // PolySamplePlayer zone-0 root note (Sample.new default: 60/C4)
   foreign static polyEnd_(out)
   foreign value=(v)     // Ctrl (Macro) held value
@@ -480,6 +481,10 @@ class Sample {
   static new(pitch, source) {
     if (Node.polyMode_ != 1) Fiber.abort("Sample.new is a poly voice source — use it inside Synth.new/Synth.mono (top-level one-shot playback is Player)")
     return Node.polysampleplayer_(pitch, source)
+  }
+  static stream(pitch, path) {
+    if (Node.polyMode_ != 1) Fiber.abort("Sample.stream is a poly voice source — use it inside Synth.new/Synth.mono")
+    return Node.stream_(pitch, path)
   }
 }
 

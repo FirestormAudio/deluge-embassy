@@ -2372,3 +2372,44 @@ fn mono_wavetable_feedback_plays() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0) && out.iter().any(|f| f.l.abs() > 1e-3), "mono wavetable feedback bounded + sounds");
 }
 
+// Sa-3b slice 4 Task 1 — `Sample.stream(pitch, path)`: a poly streaming
+// sample voice source (`Kind::StreamPlayer`), mirroring `Sample.new`'s
+// poly-voice-closure shape and outside-a-Synth scope guard, but backed by a
+// host-filled streaming ring (registered via `Host::stream_register`) rather
+// than an upload-once pool region.
+
+#[test]
+fn sample_stream_emits_streamplayer_and_registers() {
+    use deluge_wren_core::test_support::run_and_capture_cmds_stream;
+    // `run_and_capture_cmds_stream` uses `StreamCaptureHost`, not the plain
+    // `CmdCaptureHost`: it has a working `alloc_buffer` (a small real pool),
+    // so `Sample.stream`'s ring handle is `Some` — exercising the
+    // `BindTable` + `Host::stream_register` paths, not just the degrade-to-
+    // unbound shape `CmdCaptureHost` forces (see
+    // `delay_on_cmd_capture_host_creates_node_without_bindtable`).
+    let (cmds, registered) = run_and_capture_cmds_stream(
+        "var b = Synth.new { |p| Sample.stream(p, \"cello.wav\") * Env.adsr(0.001,0.5,1,0.2) }",
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::StreamPlayer, .. })),
+        "expected a NewNode(StreamPlayer): {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
+        "expected a SetParam(0) (root): {cmds:?}"
+    );
+    let (_, path) = registered.expect("Host::stream_register should have been called");
+    assert_eq!(path, "cello.wav", "the registered path must match Sample.stream's second argument");
+}
+
+#[test]
+fn sample_stream_outside_synth_aborts() {
+    // Mirrors `sample_new_outside_synth_aborts_cleanly` — `Sample.stream` is
+    // a poly-only voice source; used outside a `Synth.new`/`Synth.mono`
+    // builder closure it must `Fiber.abort`, not build a bogus top-level node.
+    assert!(
+        !run_script_ok("var s = Sample.stream(Osc.saw(110), \"x.wav\")"),
+        "Sample.stream aborts outside a Synth (poly-only source)"
+    );
+}
+

@@ -280,6 +280,90 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
     }
 }
 
+/// A [`CmdCaptureHost`]-alike (records every `Cmd`, same as `CmdCaptureHost`)
+/// but with a working, pool-backed `alloc_buffer` — `CmdCaptureHost` is
+/// deliberately poolless (see
+/// `delay_on_cmd_capture_host_creates_node_without_bindtable` in
+/// `tests/audio_bindings.rs`), so it can't exercise a bound `handle`. This
+/// host backs a small real [`deluge_audio_graph::Pool`] so `Sample.stream`'s
+/// ring `alloc_buffer` call returns `Some`, which in turn exercises the
+/// `BindTable` + [`Host::stream_register`] paths — plus a minimal recording
+/// override of `stream_register` (`last_stream_register`), read back by
+/// `sample_stream_emits_streamplayer_and_registers`. Does NOT change
+/// `CmdCaptureHost`'s own (poolless) semantics.
+pub struct StreamCaptureHost {
+    pub cmds: Vec<crate::Cmd>,
+    pool: deluge_audio_graph::Pool<65536, 64>,
+    /// Set by the last `Host::stream_register` call this host received.
+    pub last_stream_register: Option<(deluge_audio_graph::NodeId, std::string::String)>,
+}
+impl StreamCaptureHost {
+    pub fn new() -> Self {
+        StreamCaptureHost { cmds: Vec::new(), pool: deluge_audio_graph::Pool::new(), last_stream_register: None }
+    }
+}
+impl Host for StreamCaptureHost {
+    fn now_ms(&mut self) -> u64 {
+        0
+    }
+    fn cv_set(&mut self, _ch: u8, _v: f32) {}
+    fn gate_set(&mut self, _ch: u8, _on: bool) {}
+    fn midi_tx(&mut self, _m: &[u8]) {}
+    fn led(&mut self, _id: u8, _on: bool) {}
+    fn oled_clear(&mut self) {}
+    fn oled_text(&mut self, _x: usize, _y: usize, _t: &[u8]) {}
+    fn oled_pixel(&mut self, _x: usize, _y: usize, _on: bool) {}
+    fn oled_show(&mut self) {}
+    fn audio_cmd(&mut self, cmd: crate::Cmd) {
+        self.cmds.push(cmd);
+    }
+    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+        self.pool.alloc(len)
+    }
+    fn stream_register(&mut self, node: deluge_audio_graph::NodeId, _handle: deluge_audio_graph::PoolHandle, path: &str) {
+        self.last_stream_register = Some((node, path.into()));
+    }
+}
+
+static mut STREAM_CAP_HOST: Option<StreamCaptureHost> = None;
+
+/// Boot a VM, run `src`, and return (the audio commands it emitted, the last
+/// `Host::stream_register` recorded, if any) — the [`run_and_capture_cmds`]
+/// twin for scripts that touch `Sample.stream` (needs a bound `alloc_buffer`,
+/// which the plain [`CmdCaptureHost`] never provides — see
+/// [`StreamCaptureHost`]'s docs).
+pub fn run_and_capture_cmds_stream(src: &str) -> (Vec<crate::Cmd>, Option<(deluge_audio_graph::NodeId, std::string::String)>) {
+    // Serialize: shares `crate::set_host`/VM-boot/`reset` process-globals with
+    // `run_and_capture_cmds` et al. — see `CAP_LOCK`'s docs.
+    let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: single-threaded test helper (serialized by `_guard` above); VM
+    // freed before return.
+    unsafe {
+        *core::ptr::addr_of_mut!(STREAM_CAP_HOST) = Some(StreamCaptureHost::new());
+        crate::set_host((*core::ptr::addr_of_mut!(STREAM_CAP_HOST)).as_mut().unwrap());
+        let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
+        assert!(!vm.is_null(), "VM boot failed");
+        let r = wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr());
+        assert_eq!(r, wren_sys::WREN_RESULT_SUCCESS, "prelude failed");
+        let mut buf = [0u8; 8192];
+        let n = src.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&src.as_bytes()[..n]);
+        buf[n] = 0;
+        let r = wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char);
+        assert_eq!(
+            r,
+            wren_sys::WREN_RESULT_SUCCESS,
+            "script failed (line {})",
+            LAST_ERR_LINE.load(Ordering::Relaxed)
+        );
+        let host = (*core::ptr::addr_of_mut!(STREAM_CAP_HOST)).as_ref().unwrap();
+        let out = (host.cmds.clone(), host.last_stream_register.clone());
+        wren_sys::wrenFreeVM(vm);
+        crate::reset();
+        out
+    }
+}
+
 /// Interpret `setup`, feed one DIN-MIDI message, capture the `Cmd`s it emits.
 ///
 /// Mirrors [`run_and_capture_cmds`], but after `setup` interprets it clears
