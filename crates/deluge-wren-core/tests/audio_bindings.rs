@@ -2248,3 +2248,87 @@ fn out_patch_malformed_non_source_does_not_crash() {
     assert!(run_script_ok("Out.patch(\"x\")"), "Out.patch(String) -> patches silence, no crash");
     assert!(run_script_ok("Out.patch([1, 2])"), "Out.patch(List) -> patches silence, no crash");
 }
+
+// ── Poly FM Task 5: end-to-end poly FM ──────────────────────────────────────
+//
+// Tasks 1-4 built the chain: PolyOsc/WtOsc per-voice pm + self-feedback
+// kernels (T1/T2), engine `poly_in` widened 2->3 + poly pm/position edges +
+// feedback set_param (T3), and `poly_mode()`-aware `pm=`/`feedback=`/
+// `position=` Wren routing that mirrors the existing `width=` split (T4,
+// see `poly_osc_pm_emits_setinput_port2` / `poly_osc_feedback_emits_setparam_param1`
+// above). These four tests prove the whole chain actually renders finite,
+// bounded, non-silent audio end-to-end through a real `Synth` (mirroring
+// `poly_sample_voice_plays_in_synth`/`poly_sample_two_notes_two_voices`
+// above for the render-harness idiom): poly sine-carrier FM, poly
+// self-feedback, poly WAVETABLE-carrier FM (this is also the first e2e
+// coverage of poly `position=` routing on `PolyWt`, deferred from Task 4),
+// and mono wavetable self-feedback (the WtOsc side of T2's shared feedback
+// kernel, which only had unit/Cmd-shape coverage before now).
+//
+// NB on the scripts below vs. the brief's literal text: (1) the brief's
+// `c.pm = m * 3` / `c.pm = m * 2` index-scale multiplies a poly AUDIO node
+// (`m`, `Osc.sine(p).isPoly_ == 1`) by a bare Num — that's the pre-existing,
+// unrelated-to-this-subproject `*` guard in prelude.wren ("multiply by a
+// constant inside a Synth isn't supported yet — the amp comes from Env.ar",
+// see `synth_error_cases_abort`'s "poly * scalar aborts" case), so it
+// aborts the whole script before `pm=` is even reached; dropped to a bare
+// `c.pm = m` (the same idiom already proven by `poly_osc_pm_emits_setinput_port2`
+// above) — `pm` is added directly as a phase offset in the kernel
+// (`rp = p + pm + fb`, deluge-dsp-kernels/src/poly.rs), so an unscaled
+// full-amplitude ([-1,1]) modulator is already strongly audible FM, no
+// index multiply needed to prove the chain sounds. (2) multi-statement
+// Synth builder blocks need an explicit `return` on the last line — Wren
+// only auto-returns a block's value for a *single-expression* body; a
+// `{ |p|\n  var c = ...\n  c.pm = m\n  c * Env.adsr(...)\n}` block (as
+// literally written in the brief) evaluates `c * Env.adsr(...)` as a
+// statement and discards it, so the block implicitly returns `null` and
+// `Node.polyEnd_(out)` gets a null out-node — the `pm=`/`feedback=`
+// SetInput/SetParam commands still fire (confirmed via `run_and_capture_cmds`)
+// but the voice's audio path is never wired to `s.out`, rendering silence.
+// This was diagnosed by isolating single-expression vs. multi-statement
+// block bodies with `run_and_render` peak-amplitude probes (removed after
+// diagnosis) — not a kernel/graph/engine bug; every existing multi-statement
+// Synth-builder test in this file (`poly_osc_pm_emits_setinput_port2`,
+// `poly_osc_feedback_emits_setparam_param1`) already uses `return`.
+
+#[test]
+fn poly_sine_fm_plays_in_synth() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)\ns.noteOn(64, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "poly FM sounds");
+}
+
+#[test]
+fn poly_sine_fm_feedback_plays() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var s = Synth.new { |p|\n  var c = Osc.sine(p)\n  c.feedback = 0.6\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "feedback sounds");
+}
+
+#[test]
+fn poly_wavetable_fm_plays() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var wt = Wavetable.from([0.0, 0.7, 1.0, 0.7, 0.0, -0.7, -1.0, -0.7])\nvar s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.wavetable(wt, p)\n  c.pm = m\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "poly wavetable FM sounds");
+}
+
+#[test]
+fn mono_wavetable_feedback_plays() {
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var wt = Wavetable.from([0.0, 0.7, 1.0, 0.7, 0.0, -0.7, -1.0, -0.7])\nvar c = Osc.wavetable(wt, 220)\nc.feedback = 0.5\nOut.patch(c)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0) && out.iter().any(|f| f.l.abs() > 1e-3), "mono wavetable feedback bounded + sounds");
+}
+
