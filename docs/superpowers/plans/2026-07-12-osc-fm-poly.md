@@ -20,10 +20,15 @@
 
 ## Interfaces (locked indices — every task uses these verbatim)
 
-- **`pm` poly edge = port 2** for BOTH `PolyOsc` and `PolyWt` (uniform, so the setter routes on `poly` alone). `PolyOsc` poly ports: pitch=0, width=1, pm=2. `PolyWt` poly ports: pitch=0, **reserved=1** (ignored), pm=2.
+- **Engine** `poly_in`/`poly_scratch` widen from **2 → 3** (max `poly_in_count` becomes 3). REQUIRED by PolyOsc's 3rd poly edge.
+- **`pm` poly edge = port 2** for BOTH `PolyOsc` and `PolyWt` (uniform). `PolyOsc` poly ports: pitch=0, width=1, pm=2. `PolyWt` poly ports: pitch=0, **position=1**, pm=2.
 - **`feedback` param = 1** for both poly kinds; **param 0** for mono `Osc` and mono `Wavetable`.
+- **`position` (poly `PolyWt`) = poly port 1** (moved from the mono `ins[2]`=port 2 to make room for the unified pm=port 2). Mono `Wavetable` position stays port 2.
 - `poly_in_count`: `PolyOsc` 2→**3**, `PolyWt` 1→**3**.
-- Setters (bindings): `pm=` → `set_input(id, poly?2:1, arg_input)`, `feedback=` → `set_param(id, poly?1:0, get_f)`.
+- **Setters route on `audio::poly_mode()`** (true inside `Synth.new{}`), mirroring the existing `node_set_width_impl`:
+  - `pm=` → `set_input(id, if poly_mode() {2} else {1}, arg_input)`
+  - `feedback=` → `set_param(id, if poly_mode() {1} else {0}, get_f)`
+  - `position=` → `set_input(id, if poly_mode() {1} else {2}, arg_input)`
 - Kernel signatures after this plan: `PolyOsc::process(&mut self, pitch: &[f32], width: &[f32], pm: &[f32], dt: f32, out: &mut [f32])` + `PolyOsc::set_feedback(f32)`; `WtOsc::set_feedback(f32)` (process signature unchanged — `pmod` already exists); `PolyWt::set_feedback(f32)`.
 
 ---
@@ -355,15 +360,18 @@ git commit -m "feat(kernels): WtOsc self-feedback (shared; mono Wavetable gains 
 
 ---
 
-### Task 3: Graph wiring — poly `pm` edge, `poly_in_count`, feedback `set_param`
+### Task 3: Graph wiring — widen poly_in to 3, poly `pm`/`position` edges, feedback `set_param`
+
+This task ALSO un-breaks `deluge-audio-graph` (broken since Task 1 changed `PolyOsc::process`'s arity).
 
 **Files:**
+- Modify: `crates/deluge-audio-graph/src/engine.rs` (widen `poly_in`/`poly_scratch` 2→3)
 - Modify: `crates/deluge-audio-graph/src/node.rs` (`poly_in_count`, `poly_process` arms for `PolyOsc`+`PolyWt`, `set_param` arms, test-module assertions)
 - Test: `node.rs` test module
 
 **Interfaces:**
 - Consumes: Task 1/2 kernel APIs (`PolyOsc::process(pitch,width,pm,dt,out)`, `PolyOsc/PolyWt/WtOsc::set_feedback`).
-- Produces: `poly_in_count(PolyOsc)==3`, `poly_in_count(PolyWt)==3`; feedback params (PolyOsc/PolyWt param 1, mono Wt param 0). Consumed by Task 4.
+- Produces: `poly_in_count(PolyOsc)==3`, `poly_in_count(PolyWt)==3`; pm=poly port 2, PolyWt position=poly port 1; feedback params (PolyOsc/PolyWt param 1, mono Wt param 0). Consumed by Task 4.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -372,40 +380,52 @@ git commit -m "feat(kernels): WtOsc self-feedback (shared; mono Wavetable gains 
 #[test]
 fn polyosc_polywt_pm_ports() {
     assert_eq!(Node::poly_in_count(Kind::PolyOsc), 3); // pitch,width,pm
-    assert_eq!(Node::poly_in_count(Kind::PolyWt), 3);  // pitch,reserved,pm
+    assert_eq!(Node::poly_in_count(Kind::PolyWt), 3);  // pitch,position,pm
 }
 
 #[test]
 fn polyosc_feedback_setparam_reaches_kernel() {
-    // A PolyOsc set_param(1, x) must not touch shape (param 0); build + drive and
-    // assert it renders finite (feedback wired, no panic).
+    // set_param(1, x) is feedback (param 0 is shape); must build/drive without panic.
     let mut n = Node::new(Kind::PolyOsc, 0);
     n.set_param(1, 0.5); // feedback
-    // render a short block with a nonzero pitch tile + zero width/pm, assert finite
-    // (mirror the existing PolyOsc node render test's harness).
-    /* build poly_in tiles as the existing PolyOsc node test does; call poly_process;
-       assert all outputs finite */
+    /* build poly_in tiles (pitch nonzero, width+pm zero) as the existing PolyOsc node
+       test does (near node.rs:2008); call poly_process; assert all outputs finite */
 }
 ```
-> Copy the poly render-harness (poly_in tile construction, `poly_process` call) from the existing `PolyOsc` node test (near node.rs:2008). Add an analogous `polywt` feedback/pm smoke assertion if the existing PolyWt node test provides a pool-region harness; otherwise defer PolyWt render coverage to Task 5's e2e and note it.
+> Copy the poly render-harness (poly_in tile construction, `poly_process` call) from the existing `PolyOsc` node test (near node.rs:2008) — note it must now provide THREE poly_in tiles. Defer PolyWt render coverage to Task 5's e2e if no pool-region node harness exists; note it.
 
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `cargo test --target x86_64-unknown-linux-gnu -p deluge-audio-graph -- polyosc_polywt_pm_ports polyosc_feedback_setparam`
-Expected: FAIL (`poly_in_count` still 2/1).
+Expected: FAIL to COMPILE (engine `poly_in` is `[_;2]`, `PolyOsc::process` arity, `poly_in_count` 2/1).
 
-- [ ] **Step 3: Bump `poly_in_count`**
+- [ ] **Step 3: Widen the engine poly arrays 2 → 3**
 
-`node.rs:293` `poly_in_count`. Move `PolyOsc` to the `=> 3` group and `PolyWt`/`PolyWtMorph` to a `=> 3` result:
-- `PolyOsc` currently returns 2 (node.rs:304 group). Change to 3.
-- `PolyWt | PolyWtMorph` currently return 1 (node.rs:297 group). Change to 3.
-Update the existing assertion `poly_in_count(Kind::PolyOsc)==2` (node.rs:1839) to `== 3`, and any PolyWt count assertion to `== 3`.
-
-- [ ] **Step 4: Thread `pm` in the `poly_process` arms**
-
-`PolyOsc` arm (node.rs:913) — `pm` is a whole tile (port 2), passed straight through:
+`engine.rs` (~line 246). The poly path builds `poly_in: [Option<&[f32]>; 2]` from a 2-slot `poly_scratch`; widen both to 3:
 ```rust
+// BEFORE
+let poly_in: [Option<&[f32]>; 2] = [
+    if count > 0 { Some(poly_scratch[0].as_flattened()) } else { None },
+    if count > 1 { Some(poly_scratch[1].as_flattened()) } else { None },
+];
 // AFTER
+let poly_in: [Option<&[f32]>; 3] = [
+    if count > 0 { Some(poly_scratch[0].as_flattened()) } else { None },
+    if count > 1 { Some(poly_scratch[1].as_flattened()) } else { None },
+    if count > 2 { Some(poly_scratch[2].as_flattened()) } else { None },
+];
+```
+Find where `poly_scratch` is declared (a `[[f32; …]; 2]` or similar 2-element array of VOICES*BLOCK scratch buffers, and the resolve loop `for j in 0..Node::poly_in_count(kind)` at ~engine.rs:203 that fills it) and widen that array from 2 to 3 slots. `poly_process`'s signature already takes `poly_in: [Option<&[f32]>; N]` generically or as a fixed 2 — update its parameter type to `[Option<&[f32]>; 3]` in `node.rs` (the `poly_process` fn signature) to match. Grep for `[Option<&[f32]>; 2]` / `poly_scratch` across `engine.rs` + `node.rs` and bump every occurrence to 3.
+> This widening is byte-neutral for existing nodes: `count <= 2` still yields `None` for the 3rd slot, and no current node reads `poly_in[2]` until Task 3's PolyOsc/PolyWt arms below.
+
+- [ ] **Step 4: Bump `poly_in_count`**
+
+`node.rs:293` `poly_in_count`: `PolyOsc` 2 → **3**; `PolyWt | PolyWtMorph` 1 → **3**. Update the assertion `poly_in_count(Kind::PolyOsc)==2` (node.rs:1839) → `== 3`, any PolyWt assertion → `== 3`.
+
+- [ ] **Step 5: Thread `pm` (and PolyWt `position`) in the `poly_process` arms**
+
+`PolyOsc` arm (node.rs:913) — `pm` is a whole tile (poly port 2), passed straight:
+```rust
 Kind::PolyOsc => {
     if let (State::PolyOsc(o), Some(pitch), Some(width), Some(pm)) =
         (&mut self.state, poly_in[0], poly_in[1], poly_in[2]) {
@@ -413,69 +433,74 @@ Kind::PolyOsc => {
     }
 }
 ```
-(An un-patched `pm` (port 2) arrives as a broadcast zero tile — same mechanism as `width` today — so this is byte-identical for existing patches.)
+(Un-patched `pm` (port 2) arrives as a broadcast zero tile — same mechanism as `width` — so byte-identical for existing patches.)
 
-`PolyWt` arm (node.rs:1001) — currently passes the mono `ins[1]` as pmod; change to de-interleave the poly `pm` edge (port 2) per lane into a scratch column, ignoring the reserved port 1:
+`PolyWt` arm (node.rs:1001) — it loops voices with per-lane `In` columns. Today: pitch from `poly_in[0]`, pmod from mono `ins[1]`, position (morph) from mono `ins[2]`. Change to: pm from **poly_in[2]**, position (morph) from **poly_in[1]** — both de-interleaved per lane:
 ```rust
-// For the single-cycle branch (the process_voice call), BEFORE:
-//     w.process_voice(v, MipSet { levels: &levels }, In::A(&col[..n]), ins[1], dt, &mut ocol[..n]);
-// AFTER: build a per-lane pm column from poly_in[2] and pass it:
-if let (State::PolyWt(w), Some(pitch), Some(pm)) = (&mut self.state, poly_in[0], poly_in[2]) {
-    // ... existing per-frame region/levels resolution ...
+if let (State::PolyWt(w), Some(pitch), Some(pos), Some(pm)) =
+    (&mut self.state, poly_in[0], poly_in[1], poly_in[2]) {
+    // ... existing per-frame region/levels resolution UNCHANGED ...
     let mut col = [0.0f32; MAX_BLOCK];
     let mut pmcol = [0.0f32; MAX_BLOCK];
+    let mut poscol = [0.0f32; MAX_BLOCK]; // morph position, per lane
     let mut ocol = [0.0f32; MAX_BLOCK];
     for v in 0..VOICES {
-        for i in 0..n { col[i] = pitch[i * VOICES + v]; pmcol[i] = pm[i * VOICES + v]; }
-        // single-cycle:
+        for i in 0..n {
+            col[i] = pitch[i * VOICES + v];
+            pmcol[i] = pm[i * VOICES + v];
+            poscol[i] = pos[i * VOICES + v];
+        }
+        // single-cycle branch:
         w.process_voice(v, MipSet { levels: &levels }, In::A(&col[..n]), In::A(&pmcol[..n]), dt, &mut ocol[..n]);
-        // morph branch: w.process_voice_morph(v, region, frames, In::A(&col[..n]), In::A(&pmcol[..n]), ins[2], dt, &mut ocol[..n]);
+        // morph branch (replaces ins[1]→pmcol, ins[2]→poscol):
+        // w.process_voice_morph(v, region, frames, In::A(&col[..n]), In::A(&pmcol[..n]), In::A(&poscol[..n]), dt, &mut ocol[..n]);
         for i in 0..n { out[i * VOICES + v] = ocol[i]; }
     }
 }
 ```
-> Preserve the existing morph-vs-single-cycle branch structure; only replace the pmod argument (`ins[1]`) with `In::A(&pmcol[..n])` and add the `poly_in[2]` binding + `pmcol` de-interleave. The reserved `poly_in[1]` is intentionally unread. An un-patched `pm` (port 2) is a broadcast zero tile ⇒ `pmcol` all-zero ⇒ `pmod=0` ⇒ byte-identical to the prior `ins[1]`-was-unset behavior. (Note: this drops the old *mono* `ins[1]` pmod path for PolyWt; confirm no existing test/patch drove PolyWt's mono pmod — grep for a PolyWt pm usage; per the audit it was not reachable per-voice and PolyWt had no pm setter, so this is safe.)
+> Preserve the existing morph-vs-single-cycle branch structure; only swap the pmod arg (`ins[1]` → `In::A(&pmcol[..n])`) and the position arg (`ins[2]` → `In::A(&poscol[..n])`, morph only), and add the `poly_in[1]`/`poly_in[2]` bindings + de-interleave. Un-patched `pm`/`position` arrive as broadcast-zero tiles ⇒ `pmcol`/`poscol` all-zero. **Confirm the old mono defaults were also 0** (an unset `ins[1]`/`ins[2]` resolved to `Const(0.0)`): if so this is byte-identical; if the old position default was non-zero, match it by seeding `poscol` accordingly and NOTE it. (This drops PolyWt's old mono `ins[1]` pmod path; per the Osc-suite audit PolyWt had no pm setter and its mono pmod was not per-voice-reachable — grep to confirm nothing drove it.)
 
-- [ ] **Step 5: Add feedback `set_param` arms**
+- [ ] **Step 6: Add feedback `set_param` arms**
 
-`node.rs` set_param (near node.rs:480 for `State::PolyOsc`, node.rs:353 for mono `State::Osc`):
-- `PolyOsc`: extend its `match param` to add `1 => o.set_feedback(value)` (keep `0 => set_shape`).
-- `PolyWt`: add a new arm `State::PolyWt(w) if param == 1 => w.set_feedback(value)`.
-- mono `Wavetable`: add `State::Wt(o) if param == 0 => o.set_feedback(value)` (mirrors `State::Osc(o) if param == 0 => o.set_feedback(value)` at node.rs:353). Confirm param 0 is unused by the mono wavetable node today (position/morph is input port 2, not a param).
+`node.rs` set_param (`State::PolyOsc` near node.rs:480; mono `State::Osc` at node.rs:353):
+- `PolyOsc`: extend its `match param` — add `1 => o.set_feedback(value)` (keep `0 => set_shape`).
+- `PolyWt`: add `State::PolyWt(w) if param == 1 => w.set_feedback(value)`.
+- mono `Wavetable`: add `State::Wt(o) if param == 0 => o.set_feedback(value)` (mirrors `State::Osc(o) if param == 0 => o.set_feedback(value)`). Confirm param 0 is unused by the mono wavetable node (position is input port 2, not a param).
 
-- [ ] **Step 6: Run tests, both configs**
+- [ ] **Step 7: Run tests, both configs**
 
-Run the targeted tests, then the full graph crate both configs (`cargo test --target x86_64-unknown-linux-gnu -p deluge-audio-graph` ± `--features deluge-dsp-kernels/simd`). Expected: PASS — existing PolyOsc/PolyWt/Wavetable render tests stay green (feedback defaults 0, pm broadcasts zero).
+Targeted tests, then the full graph crate both configs (`cargo test --target x86_64-unknown-linux-gnu -p deluge-audio-graph` ± `--features deluge-dsp-kernels/simd`). Expected: PASS — existing PolyOsc/PolyWt/Wavetable render tests green (feedback defaults 0; pm/position broadcast zero).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add crates/deluge-audio-graph/src/node.rs
-git commit -m "feat(graph): poly pm edge (uniform port 2) + feedback set_param (PolyOsc/PolyWt param1, mono Wt param0)"
+git add crates/deluge-audio-graph/src/engine.rs crates/deluge-audio-graph/src/node.rs
+git commit -m "feat(graph): widen poly_in to 3, poly pm edge (port 2) + PolyWt position->poly port1, feedback set_param"
 ```
 
 ---
 
-### Task 4: Wren `pm=`/`feedback=` poly-aware routing
+### Task 4: Wren `pm=`/`feedback=`/`position=` `poly_mode()`-aware routing
 
 **Files:**
-- Modify: `crates/deluge-wren-core/src/bindings_audio.rs` (`node_set_pm_impl`, `node_set_feedback_impl`)
+- Modify: `crates/deluge-wren-core/src/bindings_audio.rs` (`node_set_pm_impl`, `node_set_feedback_impl`, `node_set_position_impl`)
 - Test: `crates/deluge-wren-core/tests/audio_bindings.rs`
 
 **Interfaces:**
-- Consumes: `NodeObj { poly: u8 }` (slot 0 receiver), `audio::set_input`/`set_param`, `arg_input`, `get_f`. The port/param map from Task 3.
-- Produces: poly-aware setters (no new Wren methods). Consumed by Task 5.
+- Consumes: `audio::poly_mode()` (the SAME flag `node_set_width_impl` uses), `audio::set_input`/`set_param`, `self_id`, `arg_input`, `get_f`. Port/param map from Task 3.
+- Produces: `poly_mode()`-aware setters (no new Wren methods). Consumed by Task 5.
+
+> **Pattern to copy verbatim:** `node_set_width_impl` (bindings_audio.rs:2474) already does `let port = if audio::poly_mode() { 1 } else { 2 }; audio::set_input(self_id(vm), port, v);`. All three setters below follow this exact shape — `poly_mode()` is true inside a `Synth.new{}` block (poly node), false at top level (mono).
 
 - [ ] **Step 1: Write the failing tests**
 
-`tests/audio_bindings.rs` (mirror existing `osc_pm_emits_setinput_port1` / `osc_feedback_emits_setparam` command-capture tests — find them):
+`tests/audio_bindings.rs` (mirror the existing `osc_pm_emits_setinput_port1` / `osc_feedback_emits_setparam` command-capture tests — find them and copy their harness):
 ```rust
 #[test]
 fn poly_osc_pm_emits_setinput_port2() {
-    // Inside a Synth, `car.pm = mod` must emit SetInput on port 2 (poly), not 1.
-    // Use the command-capture host + the poly-synth harness the existing poly tests use.
+    // Inside Synth (poly_mode true), `c.pm = m` emits SetInput on port 2, not 1.
     /* build: Synth.new { |p| var m = Osc.sine(p); var c = Osc.sine(p); c.pm = m; c }
-       assert a SetInput{port: 2} command was emitted for the carrier node */
+       assert a SetInput{port: 2} command was emitted for the carrier */
 }
 #[test]
 fn poly_osc_feedback_emits_setparam_param1() {
@@ -484,48 +509,52 @@ fn poly_osc_feedback_emits_setparam_param1() {
 }
 #[test]
 fn mono_osc_pm_feedback_unchanged() {
-    // Mono still emits port 1 / param 0 (non-regression).
-    /* top-level: var c = Osc.sine(440); c.pm = Osc.sine(110); c.feedback = 0.4
+    // Top-level (poly_mode false): still port 1 / param 0 (non-regression).
+    /* var c = Osc.sine(440); c.pm = Osc.sine(110); c.feedback = 0.4
        assert SetInput{port:1} and SetParam{param:0} */
 }
 ```
-> Use the exact command-capture assertions the existing `osc_pm_emits_setinput_port1` and `osc_feedback_emits_setparam` tests use; copy their harness. Confirm the Synth-body poly harness from the Sy-suite tests for the poly cases.
+> Use the exact command-capture assertions the existing `osc_pm_emits_setinput_port1` / `osc_feedback_emits_setparam` tests use. Use the Synth-body poly harness from the Sy-suite tests for the poly cases (so `poly_mode()` is true when the setter runs).
 
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `cargo test --target x86_64-unknown-linux-gnu -p deluge-wren-core -- poly_osc_pm poly_osc_feedback mono_osc_pm`
-Expected: the poly cases FAIL (setter still emits port 1 / param 0 unconditionally).
+Expected: the poly cases FAIL (setters still emit port 1 / param 0 unconditionally).
 
-- [ ] **Step 3: Make the setters poly-aware**
+- [ ] **Step 3: Make the three setters `poly_mode()`-aware**
 
-`bindings_audio.rs`. Read the receiver `NodeObj.poly` at slot 0 (safe slot-0 receiver read — the same `foreign_mut::<NodeObj>(0)` pattern `self_id` uses):
+`bindings_audio.rs`, mirroring `node_set_width_impl`:
 ```rust
 // node_set_pm_impl (bindings_audio.rs:2456)
 pub(crate) fn node_set_pm_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
-    let n = unsafe { vm.foreign_mut::<NodeObj>(0) };
-    let port = if n.poly != 0 { 2 } else { 1 }; // poly pm = port 2, mono = port 1
-    audio::set_input(n.id, port, v);
+    let port = if audio::poly_mode() { 2 } else { 1 }; // poly pm = port 2, mono = port 1
+    audio::set_input(self_id(vm), port, v);
 }
 // node_set_feedback_impl (bindings_audio.rs:2495)
 pub(crate) fn node_set_feedback_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32;
-    let n = unsafe { vm.foreign_mut::<NodeObj>(0) };
-    let param = if n.poly != 0 { 1 } else { 0 }; // poly feedback = param 1, mono = param 0
-    audio::set_param(n.id, param, v);
+    let param = if audio::poly_mode() { 1 } else { 0 }; // poly feedback = param 1, mono = param 0
+    audio::set_param(self_id(vm), param, v);
+}
+// node_set_position_impl (bindings_audio.rs:~2485) — poly PolyWt position = poly port 1
+pub(crate) fn node_set_position_impl<S: SlotApi>(vm: &S) {
+    let v = arg_input(vm, 1);
+    let port = if audio::poly_mode() { 1 } else { 2 }; // poly position = port 1, mono = port 2
+    audio::set_input(self_id(vm), port, v);
 }
 ```
-> Slot 0 is the receiver, guaranteed a `NodeObj` by Wren single-dispatch — no `checked_tagged_foreign` needed (see [[wren-binding-safety]]: slot-0 receiver reads are safe). `self_id(vm)` already does exactly this read; you're just also reading `.poly`.
+> If `audio::poly_mode()` isn't already re-exported for these fns, it is (node_set_width_impl calls it) — use the identical path. `self_id(vm)` reads the receiver NodeObj id at slot 0 (safe slot-0 receiver read, see [[wren-binding-safety]]).
 
 - [ ] **Step 4: Run tests, both configs**
 
-Run the targeted tests, then the full wren-core suite both configs. Expected: PASS — mono cases unchanged (port 1 / param 0), poly cases now port 2 / param 1.
+Targeted tests, then the full wren-core suite both configs. Expected: PASS — mono cases unchanged (pm port 1 / feedback param 0 / position port 2), poly cases now pm port 2 / feedback param 1 / position port 1. Existing mono `Osc.pm=`/`.feedback=` and mono `Wavetable.position=` tests stay green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add crates/deluge-wren-core/src/bindings_audio.rs crates/deluge-wren-core/tests/audio_bindings.rs
-git commit -m "feat(wren): poly-aware pm=/feedback= routing (poly -> port2/param1) via NodeObj.poly"
+git commit -m "feat(wren): poly_mode()-aware pm=/feedback=/position= routing (mirrors width=)"
 ```
 
 ---
@@ -601,8 +630,10 @@ git commit -m "test(wren): poly FM e2e — poly sine/wavetable FM + feedback ren
 
 ## Self-Review
 
-**Spec coverage:** Every spec section maps to a task — PolyOsc kernel (T1), WtOsc feedback + PolyWt::set_feedback (T2), graph poly_in_count/poly_process/set_param (T3), poly-aware Wren routing (T4), e2e incl. mono Wavetable feedback + non-breaking (T5). The locked indices (pm=port2, feedback=param1 poly / param0 mono; poly_in_count PolyOsc 3 / PolyWt 3) are identical across the Interfaces block and every task.
+**Spec coverage:** Every spec section maps to a task — PolyOsc kernel (T1), WtOsc feedback + PolyWt::set_feedback (T2), engine poly_in widen + graph poly_in_count/poly_process/set_param (T3), `poly_mode()`-aware Wren routing incl. `position=` (T4), e2e incl. mono Wavetable feedback + non-breaking (T5). The locked indices (pm=poly port 2, PolyWt position=poly port 1, feedback=param 1 poly / param 0 mono; poly_in_count PolyOsc 3 / PolyWt 3; engine poly_in widened 2→3) are identical across the Interfaces block and every task.
 
-**Placeholder scan:** Kernel code (the risk) is complete and verbatim. The graph/binding/e2e steps that say "copy the existing harness" point at a NAMED existing test to mirror (poly render harness near node.rs:2008; `osc_pm_emits_setinput_port1`; `run_and_render`) rather than leaving logic undefined — this is transcription guidance, not a design gap. The `MipSet` test setup and the exact Wren method names are explicitly "copy from the existing test in this file," because inventing them risks divergence.
+**Placeholder scan:** Kernel code (the risk) is complete and verbatim. The graph/binding/e2e steps that say "copy the existing harness" point at a NAMED existing test/fn to mirror (poly render harness near node.rs:2008; `osc_pm_emits_setinput_port1`; `node_set_width_impl` for the setter pattern; `run_and_render`) rather than leaving logic undefined — transcription guidance, not a design gap. The `MipSet` setup, `poly_scratch` array location, and exact Wren method names are "copy/grep from the existing code," because inventing them risks divergence.
 
-**Type consistency:** `PolyOsc::process(pitch,width,pm,dt,out)` + `set_feedback` (T1) is consumed with the same signature in T3's poly_process arm. `WtOsc::set_feedback`/`PolyWt::set_feedback` (T2) → set_param arms (T3). Setter port/param map (T4) matches T3's poly_in_count and set_param slots exactly (pm=2, feedback poly=1/mono=0). `NodeObj.poly` (T4) is the flag set by `return_poly_node`.
+**Type consistency:** `PolyOsc::process(pitch,width,pm,dt,out)` + `set_feedback` (T1) is consumed with the same signature in T3's poly_process arm. `WtOsc::set_feedback`/`PolyWt::set_feedback` (T2) → set_param arms (T3). T3 widens `poly_in` to `[Option<&[f32]>; 3]` (engine + `poly_process` signature must agree). Setter routing (T4) uses `audio::poly_mode()` — the SAME mechanism as `node_set_width_impl` — and its port/param map matches T3 exactly (pm poly 2 / mono 1; feedback poly 1 / mono 0; position poly 1 / mono 2). No `NodeObj` discriminator is used (poly_mode() supplies the mono-vs-poly split).
+
+**Correction note:** an earlier draft used a "reserved PolyWt port 1" + `NodeObj.poly` routing; that collided with PolyWt's morph `position` (mono port 2) and mis-modeled the setter mechanism. Corrected here to: PolyWt position moves to poly port 1, pm unified at poly port 2, engine `poly_in` widened 2→3, and all setters route on `poly_mode()` (mirroring the existing `width=`).

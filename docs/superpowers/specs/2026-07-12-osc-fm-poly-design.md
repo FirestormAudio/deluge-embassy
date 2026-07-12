@@ -93,31 +93,43 @@ Mirror the mono `Osc` model onto both poly kernels.
   is a GRAPH change (convert the mono `ins[1]` pmod source into a poly edge), not a
   kernel signature change — see below.
 
-### Graph changes (`crates/deluge-audio-graph/src/node.rs`)
+### Engine change (`crates/deluge-audio-graph/src/engine.rs`) — REQUIRED
+
+The engine's poly render path hardcodes **`poly_in: [Option<&[f32]>; 2]`** and a
+`poly_scratch` of 2 buffers — i.e. today's max `poly_in_count` is **2**. PolyOsc
+needs a 3rd poly edge (pitch/width/pm), so **widen `poly_in` and `poly_scratch`
+from 2 to 3** (add the `if count > 2 { Some(poly_scratch[2]…) }` arm and bump the
+scratch array). This is unavoidable for a 3-poly-edge oscillator and touches the
+shared poly render path — every poly node's render must stay green.
+
+### Port layout (locked) & graph changes (`node.rs`)
+
+Setters route on **`audio::poly_mode()`** (true inside a `Synth.new{}` block), the
+SAME mechanism `node_set_width_impl` already uses (`port = if poly_mode() {1}
+else {2}`). So the poly-vs-mono split needs no `NodeObj` discriminator. `pm` is
+unified at **poly port 2** across both poly oscillators; `position` moves to poly
+port 1 for the poly wavetable (mirroring how `width` moves to poly port 1 for
+PolyOsc).
 
 - `poly_in_count`: `PolyOsc` 2 → **3** (pitch=0, width=1, **pm=2**); `PolyWt` 1 →
-  **3** (pitch=0, **reserved=1**, **pm=2**). Update the existing assertions
-  (`poly_in_count(PolyOsc)==2` at node.rs:1839, and any PolyWt count assertion).
-  **Why PolyWt jumps to 3 (not 2):** the `pm` **port must be uniform (port 2)**
-  across both poly oscillators so the `pm=` setter can route on `NodeObj.poly`
-  alone (it has no per-kind discriminator — `{tag,width,poly,id}`). PolyWt's port 1
-  is a reserved/ignored poly edge (engine broadcasts zero; PolyWt's arm never reads
-  it). This costs one vestigial edge but keeps the setter trivially poly-aware.
+  **3** (pitch=0, **position=1**, **pm=2**). Update the assertions
+  (`poly_in_count(PolyOsc)==2` at node.rs:1839, any PolyWt assertion).
 - `poly_process` arms — the two kernels differ in shape:
-  - **`PolyOsc::process`** consumes WHOLE voice-interleaved tiles (it de-interleaves
-    internally, `pitch[i*VOICES+v]`). So `pm` is just another full tile passed
-    whole: bump the arm to `(…, Some(pitch), Some(width), Some(pm)) = (…, poly_in[0],
-    poly_in[1], poly_in[2])` and call `o.process(pitch, width, pm, dt, out)`. NO
-    manual de-interleave.
-  - **`PolyWt`** loops voices calling `process_voice(v, …, pmod: In, …)` with a
-    per-lane column, so its `pm` DOES need per-lane de-interleave: change the arm
-    from passing the mono `ins[1]` as pmod to de-interleaving `poly_in[1]` into a
-    per-lane `pmcol` and passing `In::A(&pmcol[..n])`.
-  - **Unconnected `pm` = automatic zero:** the engine already broadcasts an
-    all-zero tile for an unconnected poly edge (this is how `PolyOsc`'s optional
-    `width` port works today — see the arm's existing comment). So once
-    `poly_in_count` is bumped, an un-patched `pm` edge arrives as a zero tile →
-    `pm == 0` → byte-identical to today. No special-casing needed in the arm.
+  - **`PolyOsc::process`** consumes WHOLE voice-interleaved tiles (de-interleaves
+    internally). `pm` is another full tile passed whole: bump the arm to
+    `(…, Some(pitch), Some(width), Some(pm)) = (…, poly_in[0], poly_in[1],
+    poly_in[2])`, call `o.process(pitch, width, pm, dt, out)`.
+  - **`PolyWt`** loops voices calling `process_voice(v, …, pmod: In, …)` /
+    `process_voice_morph(v, …, pmod, position, …)` with per-lane columns. Change
+    the arm: de-interleave `poly_in[2]` (pm) into a `pmcol` and pass
+    `In::A(&pmcol[..n])` as pmod (replacing the old mono `ins[1]`); for the MORPH
+    branch, de-interleave `poly_in[1]` (position) into a `poscol` and pass
+    `In::A(&poscol[..n])` as position (replacing the old mono `ins[2]`).
+  - **Unconnected `pm`/`position` = automatic zero:** the engine broadcasts an
+    all-zero tile for an unconnected poly edge (how PolyOsc's optional `width`
+    works today). So an un-patched `pm` arrives as zero → `pm==0` → byte-identical.
+    A poly wavetable with no `.position=` gets a zero position tile — matching the
+    old unset-`ins[2]` behavior (confirm the old default was also 0).
 - `set_param` feedback arms (slots locked to match the setter):
   - `PolyOsc`: its `match param` currently has `0 => set_shape`; ADD `1 =>
     o.set_feedback(value)` (poly feedback = **param 1**).
@@ -130,30 +142,28 @@ Mirror the mono `Osc` model onto both poly kernels.
 - `State::PolyOsc(PolyOsc)` / `State::PolyWt(PolyWt)` construction unchanged
   (kernel `new()` initializes the new state to zero).
 
-### Wren surface (no new API — but poly-aware routing)
+### Wren surface (no new API — `poly_mode()`-aware routing)
 
-Reuse the existing `pm=` / `feedback=` Node setter METHOD NAMES — no new prelude
-methods, no new factories, identical script API. BUT the setter *implementations*
-must become **poly-aware**, because the mono and poly nodes use different
-port/param indices for these:
-- **`pm`**: mono `Osc` `pmod` is input **port 1**; on `PolyOsc` it's poly edge
-  **port 2** (pitch=0, width=1, pm=2) and on `PolyWt` **port 1** (pitch=0, pm=1).
-- **`feedback`**: mono `Osc` uses `set_param(id, 0, v)`; on the poly kernels
-  param 0 may already be `set_shape` (PolyOsc), so the poly feedback param slot
-  must be chosen NOT to collide and the setter must emit that slot for poly nodes.
+Reuse the existing `pm=` / `feedback=` (and now `position=`) Node setter METHOD
+NAMES — no new prelude methods, no new factories, identical script API. The setter
+*implementations* become **`poly_mode()`-aware**, EXACTLY mirroring the existing
+`node_set_width_impl` (`let port = if audio::poly_mode() { 1 } else { 2 };`).
+`poly_mode()` is true inside a `Synth.new{}` block (where the node is poly) and
+false at top level (mono). Locked routing:
+- `node_set_pm_impl`: `let port = if audio::poly_mode() { 2 } else { 1 };
+  set_input(self_id(vm), port, arg_input(vm,1))`. (mono `Osc` pmod=port 1; poly=port 2)
+- `node_set_feedback_impl`: `let param = if audio::poly_mode() { 1 } else { 0 };
+  set_param(self_id(vm), param, get_f(vm,1))`. (mono feedback=param 0; poly=param 1)
+- `node_set_position_impl`: `let port = if audio::poly_mode() { 1 } else { 2 };
+  set_input(self_id(vm), port, arg_input(vm,1))`. (mono `Wavetable` position=port 2;
+  poly `PolyWt` position=poly port 1 — moved to make room for the unified pm=port 2)
 
-The `NodeObj` returned by every factory carries a `poly: u8` flag (see
-`return_node_ex`). Because the pm port and feedback param are unified across the
-two poly kinds (pm=port 2, feedback=param 1 for both), the setters branch on
-`poly` ALONE — no per-`Kind` discriminator needed:
-- `node_set_pm_impl`: `let port = if node.poly != 0 { 2 } else { 1 };
-  set_input(id, port, arg_input(vm,1))`.
-- `node_set_feedback_impl`: `let param = if node.poly != 0 { 1 } else { 0 };
-  set_param(id, param, get_f(vm,1))`.
-
-(Both read the receiver `NodeObj` at slot 0 for its `poly` flag — a safe slot-0
-receiver read.) Mono paths (port 1 / param 0) are unchanged; existing mono
-`Osc.pm=`/`.feedback=` behavior is byte-identical. Inside a Synth:
+Mono paths (pm port 1 / feedback param 0 / position port 2) are unchanged →
+existing mono `Osc.pm=`/`.feedback=` and mono `Wavetable.position=` behavior is
+byte-identical. This is the identical pattern and limitation as the existing
+`width=` setter (it assumes the setter is called while `poly_mode()` reflects the
+target node — true for the Synth DSL, which calls these inside the block). Inside
+a Synth:
 
 ```wren
 Synth.new { |p|
