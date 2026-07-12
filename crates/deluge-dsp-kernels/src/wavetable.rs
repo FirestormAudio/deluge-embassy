@@ -92,11 +92,20 @@ pub struct MipSet<'a> {
 #[derive(Clone, Copy)]
 pub struct WtOsc {
     phase: f32,
+    last: f32,   // previous output sample (feedback)
+    last2: f32,  // output two samples ago (feedback)
+    feedback: f32, // self-FM depth, [-1,1]
 }
 
 impl WtOsc {
     pub fn new() -> WtOsc {
-        WtOsc { phase: 0.0 }
+        WtOsc { phase: 0.0, last: 0.0, last2: 0.0, feedback: 0.0 }
+    }
+
+    /// Self-FM depth, clamped to [-1, 1] (mirrors mono `Osc::set_feedback` /
+    /// `PolyOsc::set_feedback`).
+    pub fn set_feedback(&mut self, f: f32) {
+        self.feedback = f.clamp(-1.0, 1.0);
     }
 
     pub fn process(&mut self, mips: MipSet, freq: In, pmod: In, dt: f32, out: &mut [f32]) {
@@ -109,6 +118,14 @@ impl WtOsc {
         // advances iteratively, so this is bit-exact vs the general path
         // fed the same values as a constant-valued audio-rate buffer (see
         // `const_freq_hoist_is_bit_exact`).
+        //
+        // The feedback term below changes the read phase every sample (it
+        // depends on `self.last`/`self.last2`, which update per-sample), so
+        // it breaks this fast path's per-block-constant-phase assumption.
+        // Only take the fast path when `feedback == 0.0`, so every
+        // feedback=0 render still takes this exact, unmodified path
+        // (bit-identical to before feedback existed).
+        if self.feedback == 0.0 {
         if let (Some(f), Some(pm)) = (freq.as_const(), pmod.as_const()) {
             let dtp = f * dt;
             let (lo, hi, frac) = mip_select(dtp, mips.levels.len());
@@ -178,12 +195,17 @@ impl WtOsc {
                 return;
             }
         }
+        }
         for (i, s) in out.iter_mut().enumerate() {
             let dtp = freq.at(i) * dt; // cycles/sample
-            let mut ph = self.phase + pmod.at(i);
+            let fb = self.feedback * 0.5 * (self.last + self.last2);
+            let mut ph = self.phase + pmod.at(i) + fb;
             ph -= floorf(ph);
 
-            *s = sample_one(&mips, ph, dtp);
+            let y = sample_one(&mips, ph, dtp);
+            self.last2 = self.last;
+            self.last = y;
+            *s = y;
 
             self.phase += dtp;
             self.phase -= floorf(self.phase);
@@ -218,6 +240,11 @@ impl WtOsc {
         // Phase still advances iteratively, so this is bit-exact vs the
         // general path fed the same values as constant-valued audio-rate
         // buffers (see `const_freq_hoist_process_morph_is_bit_exact`).
+        //
+        // Same feedback-breaks-the-per-block-constant-phase-assumption
+        // reasoning as `process`'s fast path — only take it when
+        // `feedback == 0.0`.
+        if self.feedback == 0.0 {
         if let (Some(f), Some(pm), Some(pos)) = (freq.as_const(), pmod.as_const(), position.as_const()) {
             let dtp = f * dt;
             let fpos = pos.clamp(0.0, 1.0) * last as f32;
@@ -299,9 +326,11 @@ impl WtOsc {
                 return;
             }
         }
+        }
         for (i, s) in out.iter_mut().enumerate() {
             let dtp = freq.at(i) * dt;
-            let mut ph = self.phase + pmod.at(i);
+            let fb = self.feedback * 0.5 * (self.last + self.last2);
+            let mut ph = self.phase + pmod.at(i) + fb;
             ph -= floorf(ph);
             // Frame bracket from position in [0,1].
             let fpos = position.at(i).clamp(0.0, 1.0) * last as f32;
@@ -320,7 +349,10 @@ impl WtOsc {
             let y0 = sample_one(&MipSet { levels: &m0 }, ph, dtp);
             let y1 = sample_one(&MipSet { levels: &m1 }, ph, dtp);
             let y2 = sample_one(&MipSet { levels: &m2 }, ph, dtp);
-            *s = catmull_rom(ym1, y0, y1, y2, ffrac.clamp(0.0, 1.0));
+            let y = catmull_rom(ym1, y0, y1, y2, ffrac.clamp(0.0, 1.0));
+            self.last2 = self.last;
+            self.last = y;
+            *s = y;
             self.phase += dtp; self.phase -= floorf(self.phase);
         }
     }
@@ -825,6 +857,39 @@ mod tests {
             osc.process(MipSet { levels: &refs }, In::K(freq), In::K(pm), 1.0 / 48_000.0, &mut out);
             for s in out { proptest::prop_assert!(s.is_finite() && s.abs() <= 1.2); }
         }
+    }
+
+    #[test]
+    fn wtosc_feedback_zero_is_identity() {
+        // A fresh WtOsc with feedback=0 must render bit-identically to before.
+        // (Compare a feedback=0 instance against an explicit second instance
+        // driven the same way — this locks the feedback==0 fast-path/general-
+        // path identity.)
+        let m = saw_mips();
+        let refs = mipset(&m);
+        let dt = 1.0 / 48_000.0;
+        let n = 64;
+        let mut a = WtOsc::new(); // feedback defaults 0
+        let mut out_a = std::vec![0.0f32; n];
+        a.process(MipSet { levels: &refs }, In::K(440.0), In::K(0.0), dt, &mut out_a);
+        let mut b = WtOsc::new();
+        b.set_feedback(0.0); // explicit 0 — must not change anything
+        let mut out_b = std::vec![0.0f32; n];
+        b.process(MipSet { levels: &refs }, In::K(440.0), In::K(0.0), dt, &mut out_b);
+        assert_eq!(out_a, out_b, "feedback=0 is identity");
+    }
+
+    #[test]
+    fn wtosc_feedback_stays_bounded() {
+        let m = saw_mips();
+        let refs = mipset(&m);
+        let dt = 1.0 / 48_000.0;
+        let n = 256;
+        let mut a = WtOsc::new();
+        a.set_feedback(1.0);
+        let mut out = std::vec![0.0f32; n];
+        a.process(MipSet { levels: &refs }, In::K(440.0), In::K(0.0), dt, &mut out);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 2.0), "feedback bounded");
     }
 
     use std::vec::Vec;

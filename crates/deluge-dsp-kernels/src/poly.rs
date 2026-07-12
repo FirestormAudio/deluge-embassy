@@ -714,6 +714,12 @@ impl PolyWt {
         PolyWt { voices: [WtOsc::new(); VOICES] }
     }
 
+    /// Self-FM depth, clamped to [-1, 1] (mirrors `PolyOsc::set_feedback`).
+    /// Fans out to every voice's `WtOsc` (shared feedback across all 8 lanes).
+    pub fn set_feedback(&mut self, f: f32) {
+        for w in &mut self.voices { w.set_feedback(f); }
+    }
+
     /// Single-cycle: process voice `v` into a mono `out` block, sharing `mips`.
     pub fn process_voice(&mut self, v: usize, mips: MipSet, freq: In, pmod: In, dt: f32, out: &mut [f32]) {
         self.voices[v].process(mips, freq, pmod, dt, out);
@@ -1600,6 +1606,42 @@ mod tests {
         assert!(out_hi.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out_lo.iter().any(|&s| s != 0.0) && out_hi.iter().any(|&s| s != 0.0));
         assert!(out_lo != out_hi, "position 0 (saw) vs 1 (square) must differ");
+    }
+
+    #[test]
+    fn polywt_set_feedback_fans_out_to_all_voices() {
+        // PolyWt::set_feedback must fan out to every voice's WtOsc, so a
+        // fed-back PolyWt voice matches a standalone WtOsc driven with the
+        // same feedback and inputs bit-for-bit — and diverges from the
+        // feedback=0 (default) render.
+        use crate::wavetable::{compact_levels, COMPACT_LEN};
+        let n = mipgen::N;
+        let mut base = std::vec![0.0f32; n];
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / n as f32) - 1.0; // saw
+        }
+        let mut region = std::vec![0.0f32; COMPACT_LEN];
+        mipgen::build_pyramid_flat_compact(&base, &mut region);
+        let levels = compact_levels(&region);
+
+        let dt = 1.0 / 48_000.0;
+        let nsamp = 200;
+        let mut poly = PolyWt::new();
+        poly.set_feedback(0.6);
+        let v = 3usize;
+        let mut out = std::vec![0.0f32; nsamp];
+        poly.process_voice(v, MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut out);
+
+        let mut refosc = WtOsc::new();
+        refosc.set_feedback(0.6);
+        let mut want = std::vec![0.0f32; nsamp];
+        refosc.process(MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut want);
+        assert_eq!(out, want, "fed-back voice {v} must match standalone WtOsc with same feedback");
+
+        let mut poly0 = PolyWt::new(); // feedback defaults 0
+        let mut out0 = std::vec![0.0f32; nsamp];
+        poly0.process_voice(v, MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut out0);
+        assert!(out != out0, "feedback=0.6 must diverge from feedback=0");
     }
 
     #[test]
