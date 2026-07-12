@@ -91,4 +91,16 @@ impl Host for FwHost {
     fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
         crate::audio::alloc_buffer(len)
     }
+
+    // Host (sim): hand the node+ring+path off to the host-only WAV prefetch
+    // (`crate::stream::stream_task`), which loads/decodes the file and fills
+    // the ring as playback advances — see `stream.rs`'s module docs. Device:
+    // no filesystem/prefetch yet (device streaming is Sa-3b slice 5); the
+    // node simply stays silent until then.
+    fn stream_register(&mut self, node: deluge_audio_graph::NodeId, handle: deluge_audio_graph::PoolHandle, path: &str) {
+        #[cfg(not(target_os = "none"))]
+        crate::stream::register(node, handle, path);
+        #[cfg(target_os = "none")]
+        let _ = (node, handle, path); // device prefetch is slice 5
+    }
 }

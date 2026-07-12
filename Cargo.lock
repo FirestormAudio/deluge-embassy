@@ -6853,6 +6853,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "deluge-audio-graph",
+ "deluge-dsp-kernels",
  "deluge-sdk",
  "deluge-wren-core",
  "embassy-executor",

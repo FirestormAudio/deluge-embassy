@@ -3,10 +3,14 @@
 //! DEVICE prefetch (async `sd::read_sectors`, no-heap) is slice 5.
 #![cfg(not(target_os = "none"))]
 
-use deluge_audio_graph::{NodeId, PoolHandle};
+use deluge_audio_graph::{Cmd, NodeId, PoolHandle, VOICES};
 
 extern crate std;
 use std::{string::String, vec::Vec};
+
+use core::cell::RefCell;
+use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
+use embassy_time::{Duration, Timer};
 
 /// How far ahead of the read cursor to keep resident (≤ ring_cap).
 const LOOKAHEAD: u64 = 6144;
@@ -35,6 +39,120 @@ pub struct StreamReg {
     pub pcm: Vec<f32>,
     pub total: u64,
     pub loaded: bool,
+}
+
+// ── Registry + prefetch task ─────────────────────────────────────────────────
+
+/// Streamed nodes registered via [`register`] (called from
+/// `FwHost::stream_register`, i.e. `Sample.stream`'s `Node.stream_` binding).
+/// Drained/serviced each tick by [`stream_task`]. Mirrors `audio.rs`'s
+/// `CMD_RING` `Mutex<CriticalSectionRawMutex, RefCell<...>>` static style —
+/// the one cooperative executor never contends this lock across a yield.
+static REGISTRY: Mutex<CriticalSectionRawMutex, RefCell<Vec<StreamReg>>> =
+    Mutex::new(RefCell::new(Vec::new()));
+
+/// Register a `Kind::StreamPlayer` node's ring + source path with the host
+/// prefetch. The WAV itself is loaded+decoded lazily, on `stream_task`'s first
+/// tick after registration (never inline here — this runs synchronously from
+/// the Wren foreign call).
+pub fn register(node: NodeId, handle: PoolHandle, path: &str) {
+    REGISTRY.lock(|r| {
+        r.borrow_mut().push(StreamReg {
+            node,
+            handle,
+            path: String::from(path),
+            pcm: Vec::new(),
+            total: 0,
+            loaded: false,
+        })
+    });
+}
+
+/// The simulated SD-card root directory (`DELUGE_SIM_SD` env var, default
+/// `./sim-sd`), joined with `path`. Mirrors `deluge_sdk::sd`'s private
+/// `sim_sd_root` (duplicated rather than depended on — that crate's `Sd::read`
+/// is a fixed-buffer root-file API, not what a `Vec`-growing WAV load wants,
+/// and this prefetch is bin-local sim-only code).
+fn sim_sd_join(path: &str) -> std::path::PathBuf {
+    std::env::var_os("DELUGE_SIM_SD")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("sim-sd"))
+        .join(path)
+}
+
+/// Host-only WAV prefetch: every 20 ms, for each registered streamed node,
+/// lazily load+decode its WAV (once, on the first tick after registration),
+/// then recompute and push each voice's resident ring window
+/// (`plan_window`, Task 2) from its current playback read-cursor.
+///
+/// A bad path or unparsable WAV leaves `pcm` empty and `total` at `0` — the
+/// node just never advances past silence (`Engine::stream_read_cursor` stays
+/// `0`, `plan_window(0, cap, 0)` keeps re-planning the same empty-ish window,
+/// and `pcm.get(a).unwrap_or(0.0)` always reads zero); no panic either way.
+///
+/// The per-voice full-window rewrite each tick is O(ring_cap) — acceptable
+/// for the sim; the device prefetch (slice 5) will instead write only the
+/// newly-exposed `[old_fill_hi, hi)` delta each tick.
+///
+/// ## Concurrency
+/// Runs on the same one cooperative embassy executor as `audio_task`/`vm_task`
+/// (see `audio.rs`'s `## Concurrency`). This task's body is synchronous
+/// between `.await`s (the `REGISTRY.lock` closure and every
+/// `crate::audio::*` call inside it never yield), so its `assume_init_ref`
+/// engine borrows (via `stream_read_cursor`/`pool_len`/`pool_write`) never
+/// overlap `audio_task`'s per-block `assume_init_mut` borrow — same argument
+/// as `upload_table`'s.
+#[embassy_executor::task]
+pub async fn stream_task() {
+    loop {
+        Timer::after(Duration::from_millis(20)).await;
+        REGISTRY.lock(|r| {
+            for reg in r.borrow_mut().iter_mut() {
+                if !reg.loaded {
+                    if let Ok(bytes) = std::fs::read(sim_sd_join(&reg.path)) {
+                        if let Ok(info) = deluge_dsp_kernels::wav::parse(&bytes) {
+                            let n_samples = info.data_len / 2;
+                            reg.pcm.resize(n_samples, 0.0);
+                            let end = (info.data_offset + info.data_len).min(bytes.len());
+                            if info.data_offset <= end {
+                                deluge_dsp_kernels::wav::decode_i16_le(
+                                    &bytes[info.data_offset..end],
+                                    &mut reg.pcm,
+                                );
+                            }
+                            reg.total = n_samples as u64;
+                        }
+                    }
+                    reg.loaded = true; // bad path/WAV → pcm stays empty, total 0 (silence)
+                }
+
+                let cap = (crate::audio::pool_len(reg.handle) / VOICES) as u64;
+                if cap == 0 {
+                    continue; // unbound/empty ring — nothing to fill
+                }
+                for v in 0..VOICES {
+                    let rc = crate::audio::stream_read_cursor(reg.node, v).unwrap_or(0);
+                    let (lo, hi) = plan_window(rc, cap, reg.total);
+                    // Write pcm[lo..hi) into voice v's sub-ring
+                    // `region[v*cap..(v+1)*cap]` at offset `a % cap` — mirrors
+                    // `Kind::StreamPlayer`'s render-side indexing exactly (see
+                    // `deluge_audio_graph::node`'s `Kind::StreamPlayer` arm).
+                    for a in lo..hi {
+                        let val = reg.pcm.get(a as usize).copied().unwrap_or(0.0);
+                        let idx = (v as u64 * cap + (a % cap)) as usize;
+                        crate::audio::pool_write(reg.handle, idx, val);
+                    }
+                    crate::audio::submit(Cmd::StreamFill {
+                        node: reg.node,
+                        voice: v as u8,
+                        fill_lo: lo,
+                        fill_hi: hi,
+                        total: reg.total,
+                    });
+                }
+            }
+        });
+    }
 }
 
 #[cfg(all(test, not(target_os = "none")))]

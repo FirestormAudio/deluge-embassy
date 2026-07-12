@@ -132,6 +132,39 @@ pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
     }
 }
 
+/// Read a `StreamPlayer` voice's playback read-cursor from the engine — `&self`
+/// read (even safer than `pool_set`'s mutable access), same single-executor
+/// SAFETY as [`upload_table`]. Device-safe in principle (no `std`), but the
+/// only caller is the host-only prefetch (`crate::stream::stream_task`) — the
+/// device prefetch is slice 5 — so this is gated host-only with the rest of
+/// that prefetch rather than left dead-code on device.
+#[cfg(not(target_os = "none"))]
+pub fn stream_read_cursor(node: deluge_audio_graph::NodeId, voice: usize) -> Option<u64> {
+    // SAFETY: see `upload_table`'s SAFETY comment above — read-only borrow,
+    // same synchronous, non-yielding, single-executor argument applies.
+    let eng: &Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_ref() };
+    eng.stream_read_cursor(node, voice)
+}
+
+/// Query a pool region's length (f32 count) — used by the prefetch task to
+/// derive a `StreamPlayer` ring's per-voice sub-ring capacity (`len /
+/// VOICES`). Host-only for the same reason as [`stream_read_cursor`].
+#[cfg(not(target_os = "none"))]
+pub fn pool_len(h: deluge_audio_graph::PoolHandle) -> usize {
+    // SAFETY: see `upload_table`'s SAFETY comment above — read-only borrow.
+    let eng: &Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_ref() };
+    eng.pool_slice(h).len()
+}
+
+/// Bulk-write a single decoded PCM sample into a pool region — the prefetch
+/// fill's per-sample write. Thin alias over [`pool_set`] naming the intent
+/// (out-of-range `index` is silently ignored, per `pool_set`'s docs).
+/// Host-only for the same reason as [`stream_read_cursor`].
+#[cfg(not(target_os = "none"))]
+pub fn pool_write(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+    pool_set(h, index, value);
+}
+
 /// Allocate a zeroed pool region of `len` f32s — the ring buffer for a
 /// delay/chorus/reverb effect or the PCM region for a `SampleBuffer`. Returns
 /// `None` on pool exhaustion, in which case the owning node degrades to

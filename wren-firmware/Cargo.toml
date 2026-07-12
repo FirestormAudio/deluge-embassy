@@ -34,6 +34,10 @@ deluge-wren-core = { path = "../crates/deluge-wren-core" }
 # The DSP graph engine backing the audio task. Sized to satisfy
 # deluge_wren_core's binding contract (NODES >= WREN_MAX_NODES, BUSES >= 8).
 deluge-audio-graph = { path = "../crates/deluge-audio-graph" }
+# Named directly (not just transitively, via deluge-audio-graph) so the
+# host-only stream prefetch (`src/stream.rs`) can reach `deluge_dsp_kernels::
+# wav::{parse, decode_i16_le}` to decode a streamed sample's WAV file.
+deluge-dsp-kernels = { path = "../crates/deluge-dsp-kernels" }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-sync.workspace = true
 embassy-futures.workspace = true

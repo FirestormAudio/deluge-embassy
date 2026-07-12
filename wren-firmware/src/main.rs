@@ -470,6 +470,12 @@ async fn main(dlg: Deluge) {
     spawner.spawn(cv_task(cv, gate).unwrap());
     spawner.spawn(audio::audio_task(audio).unwrap());
 
+    // Host-only WAV prefetch for `Sample.stream`-backed nodes (`Sample.stream`'s
+    // `Node.stream_` binding registers with it via `FwHost::stream_register`).
+    // Device streaming (SD-card, no-heap) is Sa-3b slice 5.
+    #[cfg(not(target_os = "none"))]
+    spawner.spawn(stream::stream_task().unwrap());
+
     // SD-card persistence is best-effort: if the card is absent/unformatted we
     // simply don't spawn the task (REPL-only, no save/load).
     match dlg.sd().await {
