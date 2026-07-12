@@ -1069,7 +1069,10 @@ mod tests {
         build_voice(&mut e);
         let mut gates = [NodeId(0); crate::voice::MAX_GATES];
         gates[0] = NodeId(5);
-        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), gates, 1, None, NodeId(99));
+        let mut alloc = crate::voice::VoiceAllocator::new(
+            NodeId(0), gates, 1, None, NodeId(99),
+            [NodeId(0); crate::voice::MAX_TRIGGERS], 0,
+        );
 
         { let mut emit = |c: Cmd| e.apply(c); alloc.note_on(69, 100, &mut emit); }
         for _ in 0..8 { e.render_block(); } // let the fast envelope attack
@@ -1090,7 +1093,10 @@ mod tests {
         build_voice(&mut e);
         let mut gates = [NodeId(0); crate::voice::MAX_GATES];
         gates[0] = NodeId(5);
-        let mut alloc = crate::voice::VoiceAllocator::new(NodeId(0), gates, 1, None, NodeId(99));
+        let mut alloc = crate::voice::VoiceAllocator::new(
+            NodeId(0), gates, 1, None, NodeId(99),
+            [NodeId(0); crate::voice::MAX_TRIGGERS], 0,
+        );
         {
             let mut emit = |c: Cmd| e.apply(c);
             for k in 0..9u8 {
