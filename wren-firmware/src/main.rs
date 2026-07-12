@@ -58,6 +58,8 @@ use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, init_device_mode};
 
 mod audio;
 mod host;
+#[cfg(not(target_os = "none"))]
+mod stream;
 
 // Boot, heaps, clocks, the executor, and the panic handler are all provided by
 // `#[deluge::app]` (see `main` below); this crate owns product behaviour only.

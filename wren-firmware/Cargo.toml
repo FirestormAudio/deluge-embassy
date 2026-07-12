@@ -5,6 +5,19 @@ edition = "2024"
 license.workspace = true
 description = "Deluge on-device Wren scripting firmware (RZ/A1L) via Embassy"
 
+[lib]
+# A thin lib target exists solely so the host-only `stream` module (Sa-3b
+# slice 4's pure `plan_window` planner + `StreamReg`) is unit-testable via
+# `cargo test -p wren-firmware --lib --target x86_64-unknown-linux-gnu`. The
+# device build (`.cargo/config.toml`'s default `armv7a-none-eabihf` target)
+# never runs this test harness, so it's untouched by `[lib] test = false`
+# elsewhere in this workspace (e.g. deluge-alloc, rza1l-hal) — this lib is
+# cfg-trivial (empty) on device, since `stream` is `#![cfg(not(target_os =
+# "none"))]`. All product behavior stays in the `[[bin]]` below; nothing
+# depends on this crate as a library.
+name = "wren_firmware"
+path = "src/lib.rs"
+
 [[bin]]
 name = "wren-firmware"
 test = false
