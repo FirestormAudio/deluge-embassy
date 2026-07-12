@@ -54,8 +54,13 @@ pub fn parse(bytes: &[u8]) -> Result<WavInfo, WavErr> {
             let len = size.min(bytes.len().saturating_sub(payload));
             data = Some((payload, len));
         }
-        // advance past this chunk (payload padded to even length)
-        pos = payload.saturating_add(size).saturating_add(size & 1);
+        // Advance past this chunk (payload padded to even length), clamped to
+        // `bytes.len()`. A crafted `size` near `u32::MAX` can drive the raw
+        // sum to `usize::MAX` on a 32-bit target (where `usize == u32`); the
+        // `.min(bytes.len())` is what prevents that from ever overflowing the
+        // `pos + 8` check below — saturating_add alone is NOT sufficient on
+        // 32-bit, since the saturated value can still be reached exactly.
+        pos = payload.saturating_add(size).saturating_add(size & 1).min(bytes.len());
     }
 
     let (channels, sample_rate, bits) = fmt.ok_or(WavErr::UnsupportedFormat)?;
@@ -140,6 +145,27 @@ mod tests {
         let fpos2 = w2.windows(4).position(|c| c == b"fmt ").unwrap() + 8;
         w2[fpos2 + 14] = 24; // bits low byte
         assert!(matches!(parse(&w2), Err(WavErr::UnsupportedFormat)));
+    }
+
+    #[test]
+    fn malicious_chunk_size_does_not_panic() {
+        // A `data` chunk whose 4-byte LE size field is near `u32::MAX`. On a
+        // 32-bit target (`usize == u32`) the raw chunk-advance
+        // `payload.saturating_add(size)` can saturate to `usize::MAX` and
+        // (without the `.min(bytes.len())` clamp) blow up the `pos + 8` loop
+        // guard / `&bytes[pos..pos + 4]` chunk-id read. This does not
+        // reproduce on the x86-64 test host, where `usize` is 64-bit and
+        // `payload + u32::MAX` never actually reaches `usize::MAX` — the
+        // point of this test is to lock in the graceful-return *intent* so a
+        // regression here would be caught by a 32-bit runner (or a future
+        // usize-width-generic test harness), not to reproduce the panic
+        // itself. The real fix is the `.min(bytes.len())` clamp in `parse`.
+        let mut w = wav16(1, 44100, &[1, 0, 2, 0]);
+        let dpos = w.windows(4).position(|c| c == b"data").unwrap();
+        w[dpos + 4..dpos + 8].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        // Must return (Ok or Err) without panicking.
+        let result = parse(&w);
+        assert!(matches!(result, Ok(_) | Err(_)));
     }
 
     #[test]
