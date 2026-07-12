@@ -2455,7 +2455,8 @@ pub(crate) unsafe extern "C" fn node_set_res(raw: *mut WrenVM) {
 
 pub(crate) fn node_set_pm_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
-    audio::set_input(self_id(vm), 1, v); // port 1 = phase-mod
+    let port = if audio::poly_mode() { 2 } else { 1 }; // poly pm = port 2, mono = port 1
+    audio::set_input(self_id(vm), port, v);
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_set_pm(raw: *mut WrenVM) {
@@ -2484,7 +2485,9 @@ pub(crate) unsafe extern "C" fn node_set_width(raw: *mut WrenVM) {
 
 pub(crate) fn node_set_position_impl<S: SlotApi>(vm: &S) {
     let v = arg_input(vm, 1);
-    audio::set_input(self_id(vm), 2, v); // port 2 = morph position (Kind::Wavetable, FRAMES>1)
+    // poly PolyWt position = poly port 1, mono Wavetable position = port 2 (FRAMES>1 morph)
+    let port = if audio::poly_mode() { 1 } else { 2 };
+    audio::set_input(self_id(vm), port, v);
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_set_position(raw: *mut WrenVM) {
@@ -2494,7 +2497,8 @@ pub(crate) unsafe extern "C" fn node_set_position(raw: *mut WrenVM) {
 
 pub(crate) fn node_set_feedback_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32; // scalar param, not a Node/Input
-    audio::set_param(self_id(vm), 0, v);
+    let param = if audio::poly_mode() { 1 } else { 0 }; // poly feedback = param 1, mono = param 0
+    audio::set_param(self_id(vm), param, v);
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_set_feedback(raw: *mut WrenVM) {

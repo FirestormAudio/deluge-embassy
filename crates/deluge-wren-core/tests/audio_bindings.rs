@@ -301,6 +301,45 @@ fn osc_feedback_emits_setparam() {
 }
 
 #[test]
+fn poly_osc_pm_emits_setinput_port2() {
+    // Task 4: inside Synth (poly_mode true), `c.pm = m` targets the poly pm
+    // edge (port 2), not the mono pm port (1).
+    let cmds = run_and_capture_cmds(
+        "var b = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m\n  return c * Env.ar(0.01,0.3)\n}",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 2, .. })), "poly pm= sets port 2");
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 1, .. })), "poly pm= does not touch mono port 1");
+}
+
+#[test]
+fn poly_osc_feedback_emits_setparam_param1() {
+    // Task 4: inside Synth (poly_mode true), `c.feedback = v` targets the poly
+    // feedback param (1), not the mono feedback param (0). NOTE: PolyOsc
+    // construction itself emits `SetParam{param: 0, value: <shape>}` (the
+    // sine/saw/square/tri shape selector, e.g. 0.0 for `Osc.sine`) —
+    // unrelated to feedback — so we assert on the 0.4 *value* landing on
+    // param 1, rather than a blanket absence of param 0.
+    let cmds = run_and_capture_cmds(
+        "var b = Synth.new { |p|\n  var c = Osc.sine(p)\n  c.feedback = 0.4\n  return c * Env.ar(0.01,0.3)\n}",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, value, .. } if (*value - 0.4).abs() < 1e-6)), "poly feedback= sets param 1 to 0.4");
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.4).abs() < 1e-6)), "poly feedback= value does not land on mono param 0");
+}
+
+#[test]
+fn mono_osc_pm_feedback_unchanged() {
+    // Non-regression: at top level (poly_mode false) pm=/feedback= still emit
+    // the pre-Task-4 mono indices (pm port 1, feedback param 0).
+    let cmds = run_and_capture_cmds(
+        "var c = Osc.sine(440)\nc.pm = Osc.sine(110)\nc.feedback = 0.4",
+    );
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetInput { node: NodeId(0), port: 1, .. })), "mono pm= still port 1");
+    assert!(cmds.iter().any(|c| *c == Cmd::SetParam {
+        node: NodeId(0), param: 0, value: 0.4
+    }), "mono feedback= still param 0");
+}
+
+#[test]
 fn osc_wavetable_emits_newnode_and_bindtable() {
     let cmds = run_and_capture_cmds("var s = Osc.wavetable(WT.Saw, 220)");
     assert!(cmds.iter().any(|c| matches!(c,
