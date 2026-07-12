@@ -87,4 +87,8 @@ impl Host for FwHost {
     fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
         crate::audio::pool_set(h, index, value);
     }
+
+    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+        crate::audio::alloc_buffer(len)
+    }
 }

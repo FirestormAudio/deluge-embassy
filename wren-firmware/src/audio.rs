@@ -132,6 +132,20 @@ pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
     }
 }
 
+/// Allocate a zeroed pool region of `len` f32s — the ring buffer for a
+/// delay/chorus/reverb effect or the PCM region for a `SampleBuffer`. Returns
+/// `None` on pool exhaustion, in which case the owning node degrades to
+/// dry/silence (the documented pooled-node contract). Called synchronously from
+/// Wren foreign factories (via `FwHost::alloc_buffer`). Same single-executor,
+/// non-yielding SAFETY argument as [`upload_table`].
+pub fn alloc_buffer(len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+    // SAFETY: see `upload_table`'s SAFETY comment above.
+    let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
+    let h = eng.pool_alloc(len)?;
+    eng.pool_slice_mut(h).fill(0.0); // ring buffers / sample regions must start clean
+    Some(h)
+}
+
 // The firmware pool (PCAP in the `Eng` alias) must hold at least one full pyramid.
 const _: () = assert!(PCAP >= deluge_wren_core::PYRAMID_LEN);
 
