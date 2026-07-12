@@ -169,14 +169,24 @@ a Synth:
 Synth.new { |p|
   var mod = Osc.sine(p * 2)   // poly modulator (VOICES-wide tile)
   var car = Osc.sine(p)       // poly carrier
-  car.pm = mod * 3            // per-voice phase modulation (index 3)
-  car.feedback = 0.4          // optional per-voice self-FM
-  car
+  car.pm = mod                // per-voice phase modulation (unity ~±1-cycle depth)
+  car.feedback = 0.4          // optional per-voice self-FM (continuous depth)
+  return car
 }
 ```
 
-(`mod * 3` is already a poly `Mul` tile — the Sy voice layer threads math over
-VOICES-wide signals.)
+> **KNOWN LIMITATION (v1) — constant FM index not yet settable via `mod * n`.**
+> A pre-existing Synth-DSL guard (`prelude.wren:238`/`:357`, locked by
+> `synth_error_cases_abort`) ABORTS `poly-audio-node * constant` inside a Synth
+> ("multiply by a constant inside a Synth isn't supported yet — the amp comes
+> from `Env.ar`"). So `car.pm = mod * 3` (a static modulation index) does NOT
+> work today. What DOES work as a depth control: `car.pm = mod` (fixed unity),
+> `car.feedback = f` (continuous self-FM), and `car.pm = mod * Env.ar(...)`
+> (envelope-shaped index, poly×poly). The kernel adds `pm` UNSCALED
+> (`rp = p + pm + fb`), so it is forward-compatible: relaxing the guard or adding
+> a depth idiom (`car.pm(mod, index)` / a `Gain` node) later needs no kernel
+> change. **Follow-up sub-project:** a static FM-index depth idiom.
+> (Multi-statement Synth block bodies also require an explicit `return`.)
 
 ## Non-breaking guarantee
 
