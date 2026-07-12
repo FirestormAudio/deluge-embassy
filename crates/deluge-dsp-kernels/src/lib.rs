@@ -13,6 +13,7 @@ pub mod dynamics;
 pub mod env;
 pub mod eq;
 pub mod filter;
+pub mod granular;
 pub mod lfo;
 pub mod lofi;
 pub mod math;

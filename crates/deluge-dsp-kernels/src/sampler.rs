@@ -23,7 +23,7 @@ fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, frac: f32) -> f32 {
 /// 4-point Hermite read of `pcm` at absolute fractional position `pos`, with
 /// taps clamped (one-shot) or wrapped (loop) inside the window `[lo, lo+span)`.
 #[inline]
-fn hermite_read(pcm: &[f32], pos: f32, lo: isize, span: isize, loopable: bool) -> f32 {
+pub(crate) fn hermite_read(pcm: &[f32], pos: f32, lo: isize, span: isize, loopable: bool) -> f32 {
     let i = libm::floorf(pos) as isize;
     let frac = pos - (i as f32);
     let tap = |idx: isize| -> f32 {
