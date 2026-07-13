@@ -39,10 +39,16 @@ existing `Mul`/`Pan`/bus/`Out.patch` nodes.
   length guard: for `i in 0..BLOCK`, `in_l[i] = input.get(i).map_or(0.0, |f| f.l)` (and
   `.r`), so any frame beyond `input.len()` — including an empty slice — reads as `0.0`
   (silence). No panic on a short/empty/over-long input.
-- **Threading to the node:** `render_block` passes the input rows down to
-  `Node::process_resolved` via a new trailing parameter (see below), exactly as the Sa-3b
-  stream cursors were threaded into `poly_process`. The engine reads `in_l`/`in_r` (disjoint
-  from the per-node `arena.node_mut` borrow, like `bus_l`/`bus_r` and `stream_state`).
+- **Threading to the node:** `render_block` already dispatches by kind-category (poly kinds
+  → `poly_process`, mono kinds → `process_resolved`). `Kind::Input` becomes a third small
+  branch in that same dispatch: the engine copies `in_l[i]`/`in_r[i]` directly into the
+  node's two output rows (`arr[base][i]`/`arr[base+1][i]`), reading `in_l`/`in_r` disjointly
+  from the `outs` raw-pointer borrow (the same disjoint-field pattern as `bus_l`/`bus_r`).
+  This keeps `process_resolved`'s signature UNCHANGED — `Kind::Input` never reaches it (and
+  falls into its existing `_ => {}` if it ever did), so none of its ~45 test call sites
+  churn. (An earlier draft threaded a param through `process_resolved`; the engine-branch is
+  chosen instead — same result, ~45 fewer mechanical edits, consistent with the existing
+  poly/mono kind-dispatch.)
 - **Existing call sites:** every current `render(out)` caller (inline engine tests, the
   firmware `audio_task`, the sim/host paths) is updated to pass an `input` slice — a
   silence slice where input is irrelevant. This is the one unavoidable signature ripple
@@ -56,11 +62,10 @@ existing `Mul`/`Pan`/bus/`Out.patch` nodes.
 - **Predicates:** `out_width => 2` (stereo, alongside `Pan`/`StereoVoiceSum`); NOT added to
   `is_poly` (mono-style dispatch → `process_resolved`); `poly_in_count` default 0 (pure
   source, no signal inputs).
-- **`process_resolved` signature:** gains a trailing `input: Option<(&[f32], &[f32])>`
-  parameter (the `(in_l, in_r)` rows, or `None`). Every existing arm ignores it — identical
-  to how the `pool_region`/stream params thread through. The `Kind::Input` arm copies per
-  sample `out.port(0)[i] = in_l[i]`, `out.port(1)[i] = in_r[i]` (from the `Some` tuple; if
-  `None`, write silence — defensive, never hit in the real engine path).
+- **No `process_resolved` change:** `Kind::Input` is handled by the `render_block` engine
+  branch (above), not by `process_resolved` — its signature is untouched and `Kind::Input`
+  needs no arm (it lands in the existing `_ => {}`). The per-sample copy `arr[base][i] =
+  in_l[i]`, `arr[base+1][i] = in_r[i]` lives in `render_block`.
 - **No DSP kernel** — the node is a straight block copy. Per [[prefer-neon-simd]]'s "don't
   force it": a memcpy-shaped copy is already optimal; there is no data-parallel DSP loop to
   vectorize. No new `deluge-dsp-kernels` file.
@@ -103,13 +108,12 @@ away. Purely additive to the task loop.
 
 ## Non-breaking
 
-Purely additive except two signature ripples, both threaded with a silence/`None` default
-so **no existing node or render behavior changes**: (1) `Engine::render` gains `input:
-&[StereoFrame]` (existing callers pass a silence slice); (2) `Node::process_resolved` gains
-a trailing `input: Option<(&[f32], &[f32])>` (every existing arm ignores it, exactly like
-the `pool_region`/stream params). No new `Cmd`, no `Kind` removed, no existing binding
-touched. Existing suites stay green in both configs (default + `--features
-deluge-dsp-kernels/simd`); the device build cross-compiles.
+Purely additive except ONE signature ripple: `Engine::render` gains `input: &[StereoFrame]`
+(all ~11 existing callers pass a silence slice where input is irrelevant). The new
+`render_block` `Kind::Input` branch and the new engine `in_l`/`in_r` fields do not alter any
+existing node's or render's behavior. `process_resolved` is UNCHANGED. No new `Cmd`, no
+`Kind` removed, no existing binding touched. Existing suites stay green in both configs
+(default + `--features deluge-dsp-kernels/simd`); the device build cross-compiles.
 
 ## Constraints (global)
 
@@ -141,13 +145,13 @@ engine input rows to read — neither is independently testable, so they are one
 
 1. **`Kind::Input` node + engine `render(out, input)` plumbing** (`node.rs` + `engine.rs`):
    the `Kind::Input` variant (stateless) + `Node::new` arm + `out_width==2` predicate; the
-   engine `in_l`/`in_r` rows + the `render(out, input)` signature (all engine-test call sites
-   updated to pass a silence slice) + the deinterleave-with-guard; the `process_resolved`
-   trailing `input: Option<(&[f32], &[f32])>` param threaded through `render_block` (every
-   other arm ignores it) + the `Kind::Input` copy arm. Tests: node predicates (`out_width==2`,
-   `!is_poly`, `poly_in_count==0`); engine round-trip — a fed input block through a
-   `Kind::Input` node routed to master mirrors both channels to output; short/empty input →
-   trailing silence, no panic.
+   engine `in_l`/`in_r` rows + the `render(out, input)` signature (all ~11 `render` call
+   sites updated to pass a silence slice) + the deinterleave-with-guard; the `render_block`
+   `Kind::Input` dispatch branch that copies `in_l`/`in_r` into the node's two output rows
+   (`process_resolved` untouched — `Kind::Input` lands in its existing `_ => {}`). Tests:
+   node predicates (`out_width==2`, `!is_poly`, `poly_in_count==0`); engine round-trip — a
+   fed input block through a `Kind::Input` node routed to master mirrors both channels to
+   output; short/empty input → trailing silence, no panic.
 2. **Wren `In.line()`** (`audio.rs`/`bindings_audio.rs`/`bindings.rs` + `prelude.wren`):
    `new_input` facade (`NewNode{Kind::Input, [Const,Const,Const]}`, no BindTable/SetParam) +
    `node_line_impl` (`alloc_node_id` → `new_input` → `return_node`, no foreign-arg reads) +
