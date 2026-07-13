@@ -24,6 +24,9 @@ pub enum Cmd {
     BusWrite { src: Input, bus: BusId },
     BusWriteGains { src: Input, bus: BusId, gl: f32, gr: f32 },
     SetRoot { bus: BusId },
+    /// Set a bus's mono gain (channel fader). Applied to the bus's L/R rows after
+    /// the write loop, before the master chain. Default 1.0 (unity).
+    BusGain { bus: BusId, gain: f32 },
     /// Enable/configure the master limiter on the root bus. Creates it if absent,
     /// else updates params in place (preserving the running gain envelope).
     SetMasterLimit { ceiling: f32, release: f32 },

@@ -37,6 +37,9 @@ pub struct Engine<
     dt: f32,
     pub(crate) bus_l: [[f32; BLOCK]; BUSES],
     pub(crate) bus_r: [[f32; BLOCK]; BUSES],
+    // Per-bus mono gain (channel fader), default 1.0. Applied to each bus's rows
+    // after the write loop, before the master chain.
+    pub(crate) bus_gain: [f32; BUSES],
     // Stereo line-in for the current block, filled by `render` from its `input`
     // arg and read by `render_block` for `Kind::Input` nodes.
     pub(crate) in_l: [f32; BLOCK],
@@ -79,6 +82,7 @@ impl<
             dt: 1.0 / sample_rate,
             bus_l: [[0.0; BLOCK]; BUSES],
             bus_r: [[0.0; BLOCK]; BUSES],
+            bus_gain: [1.0; BUSES],
             in_l: [0.0; BLOCK],
             in_r: [0.0; BLOCK],
             root: None,
@@ -174,6 +178,7 @@ impl<
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
             Cmd::BusWriteGains { src, bus, gl, gr } => self.bus_write_gains(src, bus, gl, gr),
             Cmd::SetRoot { bus } => self.set_root(bus),
+            Cmd::BusGain { bus, gain } => self.set_bus_gain(bus, gain),
             Cmd::SetMasterLimit { ceiling, release } => match &mut self.master_limiter {
                 Some(lim) => { lim.set_ceiling(ceiling); lim.set_release(release); }
                 None => self.master_limiter = Some(MasterLimiter::new(ceiling, release)),
@@ -217,6 +222,7 @@ impl<
                 self.master_limiter = None;
                 self.master_dcblock = None;
                 self.master_eq = None;
+                self.bus_gain = [1.0; BUSES];
             }
         }
     }
@@ -398,6 +404,14 @@ impl<
         self.root = Some(bus);
     }
 
+    /// Set a bus's mono gain (bounds-guarded; out-of-range is a no-op).
+    pub fn set_bus_gain(&mut self, bus: BusId, gain: f32) {
+        let b = bus.0 as usize;
+        if b < BUSES {
+            self.bus_gain[b] = gain;
+        }
+    }
+
     /// Render one block: clear buses, evaluate nodes, apply pending bus
     /// writes, then copy the root bus into `out`, clamped to `[-1, 1]`.
     pub fn render(&mut self, out: &mut [StereoFrame], input: &[StereoFrame]) {
@@ -432,6 +446,16 @@ impl<
                     };
                     self.bus_l[b][i] += v * gl;
                     self.bus_r[b][i] += v * gr;
+                }
+            }
+        }
+        // Per-bus gain (default 1.0 = no-op, byte-identical): fader before the master chain.
+        for b in 0..BUSES {
+            let g = self.bus_gain[b];
+            if g != 1.0 {
+                for i in 0..BLOCK {
+                    self.bus_l[b][i] *= g;
+                    self.bus_r[b][i] *= g;
                 }
             }
         }
@@ -1494,5 +1518,70 @@ mod tests {
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
         assert!((out[0].l - 0.4).abs() < 1e-6, "only node1's write is live: {}", out[0].l);
+    }
+
+    #[test]
+    fn bus_gain_scales_output() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::BusGain { bus: BusId(0), gain: 0.5 });
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.4).abs() < 1e-6, "0.8 * 0.5 = 0.4, got {}", out[0].l);
+    }
+
+    #[test]
+    fn bus_gain_default_is_byte_identical() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.7);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.7).abs() < 1e-6); // no BusGain → unity, unchanged
+    }
+
+    #[test]
+    fn bus_gain_reset_restores_unity() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::BusGain { bus: BusId(0), gain: 0.5 });
+        e.apply(Cmd::Reset);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.8).abs() < 1e-6, "Reset → unity, got {}", out[0].l);
+    }
+
+    #[test]
+    fn bus_gain_out_of_range_is_noop() {
+        let mut e = E::new(16.0);
+        e.apply(Cmd::BusGain { bus: BusId(99), gain: 0.5 }); // BUSES=4 → no-op, no panic
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.6);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.6).abs() < 1e-6); // unaffected
     }
 }
