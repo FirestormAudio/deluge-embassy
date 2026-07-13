@@ -540,6 +540,12 @@ pub fn set_root(bus: u16) {
     }
     host().audio_cmd(Cmd::SetRoot { bus: BusId(bus) });
 }
+pub fn set_bus_gain(bus: u16, gain: f32) {
+    if bus == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::BusGain { bus: BusId(bus), gain });
+}
 pub fn set_master_limit(ceiling: f32, release: f32) {
     host().audio_cmd(Cmd::SetMasterLimit { ceiling, release });
 }

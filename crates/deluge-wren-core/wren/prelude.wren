@@ -1004,6 +1004,7 @@ class Out {
 foreign class Bus {
   foreign static new_()      // returns a fresh Bus foreign in slot 0
   foreign write_(src)        // native bus write (renamed; guarded by `write` below)
+  foreign gain=(v)           // per-bus mono gain (channel fader)
   static new() { new_() }    // the public Bus.new() from the spec
   // Guard the Sy-2e silent-mono footgun: a poly voice signal written to a
   // (mono) bus inside a Synth bypasses the VoiceSum that `.out` inserts and is

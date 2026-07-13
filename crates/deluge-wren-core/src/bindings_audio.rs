@@ -2508,6 +2508,17 @@ pub(crate) unsafe extern "C" fn bus_write(raw: *mut WrenVM) {
     bus_write_impl(&vm);
 }
 
+pub(crate) fn bus_set_gain_impl<S: SlotApi>(vm: &S) {
+    let id = unsafe { vm.foreign_mut::<BusObj>(0) }.id;
+    let g = vm.get_f(1) as f32;
+    audio::set_bus_gain(id, g);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn bus_set_gain(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    bus_set_gain_impl(&vm);
+}
+
 // ── Out (patch / reset) — master-bus sugar, or set a Bus as root directly ───
 
 pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
@@ -2874,6 +2885,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", false, "free()", node_free_impl::<S>);
     method("main", "Bus", true, "new_()", bus_new_impl::<S>);
     method("main", "Bus", false, "write_(_)", bus_write_impl::<S>);
+    method("main", "Bus", false, "gain=(_)", bus_set_gain_impl::<S>);
     method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
     method("main", "Wavetable", true, "from2d(_)", wavetable_from2d_impl::<S>);
     method("main", "SampleBuffer", true, "from(_)", sample_from_impl::<S>);

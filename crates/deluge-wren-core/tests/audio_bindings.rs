@@ -2749,6 +2749,40 @@ fn out_eq_boost_raises_level() {
     assert!(eq_peak > base_peak * 1.1, "EQ boost should raise the level: base={} eq={}", base_peak, eq_peak);
 }
 
+#[test]
+fn bus_gain_setter_emits_bus_gain() {
+    let cmds = run_and_capture_cmds("var m = Bus.new()\nm.gain = 0.5");
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::BusGain { gain, .. } if (*gain - 0.5).abs() < 1e-6)),
+        "expected a BusGain{{gain:0.5}}, got {:?}",
+        cmds
+    );
+}
+
+// e2e (IO-2b): a source routed through a bus at gain 0.5 renders at ~half the
+// unity level. `run_and_render` fills the buffer in 32-frame chunks.
+#[test]
+fn bus_gain_halves_render() {
+    let mut base = [StereoFrame::default(); 64];
+    run_and_render("var m = Bus.new()\nm.write(Osc.saw(110) * 0.4)\nOut.patch(m)", &mut base);
+    let base_peak = base.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
+
+    let mut half = [StereoFrame::default(); 64];
+    run_and_render(
+        "var m = Bus.new()\nm.write(Osc.saw(110) * 0.4)\nOut.patch(m)\nm.gain = 0.5",
+        &mut half,
+    );
+    let half_peak = half.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
+
+    assert!(base_peak > 1e-3, "baseline not silent: {}", base_peak);
+    assert!(
+        (half_peak - base_peak * 0.5).abs() < base_peak * 0.1,
+        "half gain should ~halve the peak: base={} half={}",
+        base_peak,
+        half_peak
+    );
+}
+
 // End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
 // not just that it emits the right `Cmd` (the two tests above): a saw
 // overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5
