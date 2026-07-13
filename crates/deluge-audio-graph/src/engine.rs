@@ -198,9 +198,19 @@ impl<
                 let idx = node.0 as usize;
                 if idx < NODES { self.stream_state[idx] = None; }
                 self.arena.free(node);
+                // Invalidate this node's bus writes so a reused id inherits no
+                // stale routing (IO-2a). Const/Bus-sourced writes are untouched.
+                for w in self.writes.iter_mut() {
+                    if let Some((Input::Node { node: n, .. }, ..)) = w {
+                        if *n == node {
+                            *w = None;
+                        }
+                    }
+                }
             }
             Cmd::Reset => {
                 self.arena.reset();
+                self.writes = [None; NODES];
                 self.writes_len = 0;
                 self.root = None;
                 self.stream_state = [None; NODES];
@@ -368,6 +378,15 @@ impl<
     /// Record a bus write with per-side gains (`gl` → L, `gr` → R). A stereo
     /// source routes as two of these: `(port0, 1, 0)` and `(port1, 0, 1)`.
     pub fn bus_write_gains(&mut self, src: Input, bus: BusId, gl: f32, gr: f32) {
+        // Reuse a freed (`None`) slot first so free/patch cycles don't leak
+        // slots; otherwise append. No holes exist without a prior `Free`, so a
+        // fresh engine appends in the same order as before (byte-identical).
+        for w in 0..self.writes_len {
+            if self.writes[w].is_none() {
+                self.writes[w] = Some((src, bus, gl, gr));
+                return;
+            }
+        }
         if self.writes_len < self.writes.len() {
             self.writes[self.writes_len] = Some((src, bus, gl, gr));
             self.writes_len += 1;
@@ -1455,5 +1474,25 @@ mod tests {
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
         assert!((out[0].l - 0.5).abs() < 1e-6); // EQ cleared → 0.5 passes
+    }
+
+    #[test]
+    fn bus_write_reuses_freed_slot() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.25);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0)); // writes_len -> 1
+        e.apply(Cmd::Free { node: NodeId(0) }); // nulls that write (hole at 0)
+        // A new write should reuse the hole, not grow writes_len.
+        e.create(NodeId(1), Kind::Add);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Const(0.4);
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.4).abs() < 1e-6, "only node1's write is live: {}", out[0].l);
     }
 }

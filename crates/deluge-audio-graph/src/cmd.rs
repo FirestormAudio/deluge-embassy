@@ -85,17 +85,34 @@ mod tests {
         });
         e.apply(Cmd::BusWrite { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0) });
         e.apply(Cmd::SetRoot { bus: BusId(0) });
-        // Note: the bus_write list still holds the write recorded before the
-        // free/recreate (P0 has no persistent routing table to invalidate; see
-        // engine.rs). Both recorded `BusWrite`s name `NodeId(0)`, which now
-        // resolves at render time to the recreated Add node, so bus0 sums the
-        // SAME node's output twice: 0.25 + 0.25 = 0.5 (not two distinct
-        // sources).
+        // IO-2a: `Cmd::Free` invalidates `saw_patch`'s pre-free write (keyed by
+        // source node), so it no longer re-binds to the recreated `NodeId(0)`.
+        // Only the re-added `BusWrite` is live, so bus0 = 0.25 (single source).
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.5).abs() < 1e-6);
+        assert!((out[0].l - 0.25).abs() < 1e-6);
         assert!(out[0].l.is_finite() && out[0].l.abs() <= 1.0);
+    }
+
+    #[test]
+    fn free_then_reuse_no_stale_rebind() {
+        // Free a routed node, recreate the id WITHOUT re-adding a write: the
+        // recreated node inherits no routing (its predecessor's write was
+        // invalidated on Free), so its bus is silent.
+        let mut e = E::new(16.0);
+        saw_patch(&mut e); // node0 -> bus0, root = bus0
+        e.apply(Cmd::Free { node: NodeId(0) });
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Add,
+            args: [Input::Const(0.25), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!(out[0].l.abs() < 1e-6, "recreated node inherits no write: {}", out[0].l);
     }
 
     #[test]
