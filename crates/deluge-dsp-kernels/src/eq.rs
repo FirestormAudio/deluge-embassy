@@ -122,10 +122,55 @@ impl Eq {
             out[i] = self.biquad.tick(input.at(i));
         }
     }
+
+    /// Like `process`, but filters `buf` in place (reads index `i` before writing
+    /// it — the biquad state is internal, so same-index in-place is safe). Used by
+    /// the stereo `MasterEq` on the root bus.
+    pub fn process_in_place(&mut self, buf: &mut [f32], dt: f32) {
+        let (b0, b1, b2, a1, a2) = rbj_coeffs(self.ty, self.freq, self.gain, self.q, dt);
+        self.biquad.set_coeffs(b0, b1, b2, a1, a2);
+        for i in 0..buf.len() {
+            buf[i] = self.biquad.tick(buf[i]);
+        }
+    }
 }
 impl Default for Eq {
     fn default() -> Self {
         Self::new(EqType::Peak)
+    }
+}
+
+/// Stereo master EQ: two independent one-band `Eq`s (L/R) sharing the same
+/// params. Applied to the render root bus between the DC-block and the limiter.
+pub struct MasterEq {
+    ch: [Eq; 2], // [L, R]
+}
+
+impl MasterEq {
+    pub fn new(freq: f32, gain_db: f32, q: f32, eq_type: u8) -> MasterEq {
+        let mut m = MasterEq { ch: [Eq::new(EqType::Peak); 2] };
+        m.set_params(freq, gain_db, q, eq_type);
+        m
+    }
+    /// Set both channels' band params. Finite-guarded (NaN/inf → a safe default)
+    /// before `Eq`'s own range-clamps, so a bad param never poisons the output.
+    pub fn set_params(&mut self, freq: f32, gain_db: f32, q: f32, eq_type: u8) {
+        let freq = if freq.is_finite() { freq } else { 1000.0 };
+        let gain_db = if gain_db.is_finite() { gain_db } else { 0.0 };
+        let q = if q.is_finite() { q } else { 0.707 };
+        for e in self.ch.iter_mut() {
+            e.set_type(eq_type);
+            e.set_freq(freq);
+            e.set_gain(gain_db);
+            e.set_q(q);
+        }
+    }
+    /// EQ `l`/`r` in place. `dt` = 1/sample_rate (guarded — a non-finite dt would
+    /// otherwise poison the coeffs on the master output).
+    pub fn process(&mut self, l: &mut [f32], r: &mut [f32], dt: f32) {
+        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 1.0 / 48_000.0 };
+        self.ch[0].process_in_place(l, dt);
+        self.ch[1].process_in_place(r, dt);
     }
 }
 
@@ -137,6 +182,74 @@ mod tests {
     use deluge_dsp_test::filter_meas::magnitude_db;
 
     const FS: f32 = 48_000.0;
+
+    fn tail_peak(b: &[f32]) -> f32 {
+        b[b.len() / 2..].iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+    }
+
+    #[test]
+    fn mastereq_peak_boost_amplifies() {
+        const DT: f32 = 1.0 / 48_000.0;
+        let f = 1000.0f32;
+        let mut l = [0.0f32; 8192];
+        let mut r = [0.0f32; 8192];
+        for i in 0..8192 {
+            let s = 0.2 * libm::sinf(core::f32::consts::TAU * f * (i as f32) * DT);
+            l[i] = s;
+            r[i] = s;
+        }
+        let in_peak = tail_peak(&l);
+        let mut eq = MasterEq::new(f, 12.0, 2.0, 0); // +12 dB peak at 1 kHz
+        eq.process(&mut l, &mut r, DT);
+        let out_peak = tail_peak(&l);
+        assert!(out_peak > in_peak * 1.5, "peak boost should amplify: in={} out={}", in_peak, out_peak);
+        assert!((tail_peak(&l) - tail_peak(&r)).abs() < 1e-4, "L/R same response");
+    }
+
+    #[test]
+    fn mastereq_cut_attenuates() {
+        const DT: f32 = 1.0 / 48_000.0;
+        let f = 1000.0f32;
+        let mut l = [0.0f32; 8192];
+        let mut r = [0.0f32; 8192];
+        for i in 0..8192 {
+            let s = 0.2 * libm::sinf(core::f32::consts::TAU * f * (i as f32) * DT);
+            l[i] = s;
+            r[i] = s;
+        }
+        let in_peak = tail_peak(&l);
+        let mut eq = MasterEq::new(f, -12.0, 2.0, 0); // -12 dB cut at 1 kHz
+        eq.process(&mut l, &mut r, DT);
+        assert!(tail_peak(&l) < in_peak * 0.7, "cut should attenuate");
+    }
+
+    #[test]
+    fn mastereq_flat_passes_approximately() {
+        const DT: f32 = 1.0 / 48_000.0;
+        let f = 1000.0f32;
+        let mut l = [0.0f32; 8192];
+        let mut r = [0.0f32; 8192];
+        for i in 0..8192 {
+            let s = 0.2 * libm::sinf(core::f32::consts::TAU * f * (i as f32) * DT);
+            l[i] = s;
+            r[i] = s;
+        }
+        let in_peak = tail_peak(&l);
+        let mut eq = MasterEq::new(f, 0.0, 2.0, 0); // flat (0 dB peak)
+        eq.process(&mut l, &mut r, DT);
+        assert!((tail_peak(&l) - in_peak).abs() < in_peak * 0.1, "flat EQ ~unchanged");
+    }
+
+    #[test]
+    fn mastereq_no_panic_on_adversarial_params() {
+        let mut eq = MasterEq::new(f32::NAN, f32::INFINITY, -1.0, 99);
+        let mut l = [0.5f32; 16];
+        let mut r = [0.5f32; 16];
+        eq.process(&mut l, &mut r, 1.0 / 48_000.0);
+        eq.set_params(f32::NAN, f32::NAN, f32::NAN, 1);
+        eq.process(&mut l, &mut r, f32::NAN); // dt guarded → finite
+        assert!(l[15].is_finite(), "must stay finite: {}", l[15]);
+    }
 
     // Filter magnitude (dB) at `probe` Hz for an EQ band centered at `center`.
     fn mag(ty: EqType, center: f32, gain: f32, q: f32, probe: f32) -> f32 {
