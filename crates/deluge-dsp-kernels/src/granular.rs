@@ -125,8 +125,10 @@ impl PolyGranular {
                     // pass (grains only free up in the mix loop below, which runs
                     // after scheduling), so further iterations are guaranteed
                     // no-ops. Bail out rather than spinning up to `density * dt`
-                    // times (unbounded on a bad/unclamped density value).
-                    None => break,
+                    // times (unbounded on a bad/unclamped density value). Cap the
+                    // leftover backlog so a burst of pathological density doesn't
+                    // keep firing grains at max rate after density drops back down.
+                    None => { c.spawn_accum = c.spawn_accum.min(1.0); break; }
                 }
             }
             // mix + advance active grains
