@@ -2702,6 +2702,18 @@ fn out_limit_two_arg_emits_set_master_limit() {
     assert_eq!(cmds, vec![Cmd::SetMasterLimit { ceiling: 0.5, release: 0.1 }]);
 }
 
+#[test]
+fn out_dcblock_no_arg_emits_default_cutoff() {
+    let cmds = run_and_capture_cmds("Out.dcBlock()");
+    assert_eq!(cmds, vec![Cmd::SetMasterDcBlock { cutoff_hz: 20.0 }]);
+}
+
+#[test]
+fn out_dcblock_arg_emits_cutoff() {
+    let cmds = run_and_capture_cmds("Out.dcBlock(10)");
+    assert_eq!(cmds, vec![Cmd::SetMasterDcBlock { cutoff_hz: 10.0 }]);
+}
+
 // End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
 // not just that it emits the right `Cmd` (the two tests above): a saw
 // overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5

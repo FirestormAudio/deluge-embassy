@@ -126,6 +126,7 @@ foreign class Node {
   foreign static patch_(node)
   foreign static reset_()
   foreign static masterLimit_(ceiling, release)
+  foreign static masterDcBlock_(cutoff)
   foreign static split_(input)
   foreign static pan_(input, position)
   foreign static wavetable_(table, freq)
@@ -986,6 +987,8 @@ class Out {
   static reset() { Node.reset_() }
   static limit(ceiling) { Node.masterLimit_(ceiling, 0.05) }
   static limit(ceiling, release) { Node.masterLimit_(ceiling, release) }
+  static dcBlock() { Node.masterDcBlock_(20.0) }
+  static dcBlock(cutoff) { Node.masterDcBlock_(cutoff) }
 }
 
 // A bus is a mix/render target: `.write(src)` accumulates a signal into it,

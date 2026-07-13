@@ -2552,6 +2552,16 @@ pub(crate) unsafe extern "C" fn node_master_limit(raw: *mut WrenVM) {
     node_master_limit_impl(&vm);
 }
 
+pub(crate) fn node_master_dcblock_impl<S: SlotApi>(vm: &S) {
+    let cutoff = vm.get_f(1) as f32;
+    audio::set_master_dcblock(cutoff);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_master_dcblock(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_master_dcblock_impl(&vm);
+}
+
 // ── Instance methods (self = slot 0) ─────────────────────────────────────────
 
 pub(crate) fn node_set_freq_impl<S: SlotApi>(vm: &S) {
@@ -2732,6 +2742,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
     method("main", "Node", true, "reset_()", node_reset_impl::<S>);
     method("main", "Node", true, "masterLimit_(_,_)", node_master_limit_impl::<S>);
+    method("main", "Node", true, "masterDcBlock_(_)", node_master_dcblock_impl::<S>);
     method("main", "Node", true, "split_(_)", node_split_impl::<S>);
     method("main", "Node", true, "pan_(_,_)", node_pan_impl::<S>);
     method("main", "Node", true, "wavetable_(_,_)", node_wavetable_impl::<S>);

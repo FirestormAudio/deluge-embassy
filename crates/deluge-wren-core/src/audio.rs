@@ -543,6 +543,9 @@ pub fn set_root(bus: u16) {
 pub fn set_master_limit(ceiling: f32, release: f32) {
     host().audio_cmd(Cmd::SetMasterLimit { ceiling, release });
 }
+pub fn set_master_dcblock(cutoff_hz: f32) {
+    host().audio_cmd(Cmd::SetMasterDcBlock { cutoff_hz });
+}
 /// Free a node: return its id to the free-list and emit `Cmd::Free`.
 /// Used by `Node.free()`.
 pub fn free(id: u16) {

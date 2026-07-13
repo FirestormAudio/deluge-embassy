@@ -887,6 +887,7 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "patch_(_)", bindings_audio::node_patch),
     static_method("Node", "reset_()", bindings_audio::node_reset),
     static_method("Node", "masterLimit_(_,_)", bindings_audio::node_master_limit),
+    static_method("Node", "masterDcBlock_(_)", bindings_audio::node_master_dcblock),
     static_method("Node", "split_(_)", bindings_audio::node_split),
     static_method("Node", "pan_(_,_)", bindings_audio::node_pan),
     static_method("Node", "wavetable_(_,_)", bindings_audio::node_wavetable),
