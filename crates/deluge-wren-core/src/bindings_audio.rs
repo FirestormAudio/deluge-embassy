@@ -2519,6 +2519,22 @@ pub(crate) unsafe extern "C" fn bus_set_gain(raw: *mut WrenVM) {
     bus_set_gain_impl(&vm);
 }
 
+pub(crate) fn bus_send_impl<S: SlotApi>(vm: &S) {
+    let from = unsafe { vm.foreign_mut::<BusObj>(0) }.id; // receiver — guaranteed a Bus
+    // `dst` arg is user-supplied → the checked guard (degrade to no-op on non-Bus).
+    let to = match checked_tagged_foreign::<BusObj, _>(vm, 1, TAG_BUS) {
+        Some(o) => o.id,
+        None => return,
+    };
+    let level = vm.get_f(2) as f32;
+    audio::bus_send(from, to, level);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn bus_send(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    bus_send_impl(&vm);
+}
+
 // ── Out (patch / reset) — master-bus sugar, or set a Bus as root directly ───
 
 pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
@@ -2886,6 +2902,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Bus", true, "new_()", bus_new_impl::<S>);
     method("main", "Bus", false, "write_(_)", bus_write_impl::<S>);
     method("main", "Bus", false, "gain=(_)", bus_set_gain_impl::<S>);
+    method("main", "Bus", false, "send_(_,_)", bus_send_impl::<S>);
     method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
     method("main", "Wavetable", true, "from2d(_)", wavetable_from2d_impl::<S>);
     method("main", "SampleBuffer", true, "from(_)", sample_from_impl::<S>);

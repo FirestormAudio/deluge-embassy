@@ -546,6 +546,12 @@ pub fn set_bus_gain(bus: u16, gain: f32) {
     }
     host().audio_cmd(Cmd::BusGain { bus: BusId(bus), gain });
 }
+pub fn bus_send(from: u16, to: u16, gain: f32) {
+    if from == NULL_ID || to == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::BusSend { from: BusId(from), to: BusId(to), gain });
+}
 pub fn set_master_limit(ceiling: f32, release: f32) {
     host().audio_cmd(Cmd::SetMasterLimit { ceiling, release });
 }

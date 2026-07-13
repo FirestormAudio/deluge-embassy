@@ -1009,6 +1009,7 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Bus", "new_()", bindings_audio::bus_new),
     method("Bus", "write_(_)", bindings_audio::bus_write),
     method("Bus", "gain=(_)", bindings_audio::bus_set_gain),
+    method("Bus", "send_(_,_)", bindings_audio::bus_send),
     static_method("Wavetable", "from(_)", bindings_audio::wavetable_from),
     static_method("Wavetable", "from2d(_)", bindings_audio::wavetable_from2d),
     static_method("SampleBuffer", "from(_)", bindings_audio::sample_from),

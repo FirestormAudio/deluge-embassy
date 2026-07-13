@@ -2783,6 +2783,52 @@ fn bus_gain_halves_render() {
     );
 }
 
+#[test]
+fn bus_send_setter_emits_bus_send() {
+    let cmds = run_and_capture_cmds("var a = Bus.new()\nvar m = Bus.new()\na.send(m, 0.3)");
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::BusSend { gain, .. } if (*gain - 0.3).abs() < 1e-6)),
+        "expected a BusSend{{gain:0.3}}, got {:?}",
+        cmds
+    );
+}
+
+#[test]
+fn bus_send_non_bus_dst_is_noop() {
+    // dst is a number, not a Bus → checked_tagged_foreign degrades to no-op.
+    let cmds = run_and_capture_cmds("var a = Bus.new()\na.send(5, 0.3)");
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::BusSend { .. })),
+        "non-Bus dst must not emit BusSend, got {:?}",
+        cmds
+    );
+}
+
+// e2e (IO-2c): a source on an aux bus sent to master at 0.5 renders at ~half of
+// the same source patched directly at unity. `Bus.new()` allocates master=id1,
+// send=id2, so the send is from=2 → to=1 (from > to, correct).
+#[test]
+fn bus_send_aux_to_master_half_level() {
+    let mut direct = [StereoFrame::default(); 64];
+    run_and_render("var m = Bus.new()\nm.write(Osc.saw(110) * 0.4)\nOut.patch(m)", &mut direct);
+    let direct_peak = direct.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
+
+    let mut aux = [StereoFrame::default(); 64];
+    run_and_render(
+        "var master = Bus.new()\nvar send = Bus.new()\nsend.write(Osc.saw(110) * 0.4)\nsend.send(master, 0.5)\nOut.patch(master)",
+        &mut aux,
+    );
+    let aux_peak = aux.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
+
+    assert!(direct_peak > 1e-3, "direct not silent: {}", direct_peak);
+    assert!(
+        (aux_peak - direct_peak * 0.5).abs() < direct_peak * 0.1,
+        "aux→master at 0.5 should be ~half: direct={} aux={}",
+        direct_peak,
+        aux_peak
+    );
+}
+
 // End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
 // not just that it emits the right `Cmd` (the two tests above): a saw
 // overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5
