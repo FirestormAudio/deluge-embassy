@@ -22,7 +22,7 @@ use deluge_dsp_kernels::eq::MasterEq;
 
 use crate::arena::Arena;
 use crate::node::{Kind, OutView, MAX_BLOCK, MAX_INPUTS};
-use crate::{BusId, Input, Node, NodeId, StereoFrame};
+use crate::{BusId, Input, Node, NodeId, OutputSrc, StereoFrame, USB_CHANNELS};
 
 pub struct Engine<
     const BLOCK: usize,
@@ -58,6 +58,9 @@ pub struct Engine<
     // Per-`StreamPlayer`-node fill cursors (produced by the prefetch task via
     // `Cmd::StreamFill`, consumed at render). Keyed by node index.
     stream_state: [Option<crate::stream::StreamCursors>; NODES],
+    // USB output routing (IO-4): each of USB_CHANNELS mono slots routes from a
+    // bus side or a node port; read by `fill_usb`. Default `Silent`.
+    usb_out: [OutputSrc; USB_CHANNELS],
     // Opt-in master limiter on the root bus, applied at the render seam before
     // the output clamp. `None` = disabled (render path byte-unchanged).
     master_limiter: Option<MasterLimiter>,
@@ -96,6 +99,7 @@ impl<
             writes_len: 0,
             pool: crate::pool::Pool::new(),
             stream_state: [None; NODES],
+            usb_out: [OutputSrc::Silent; USB_CHANNELS],
             master_limiter: None,
             master_dcblock: None,
             master_eq: None,
@@ -184,6 +188,12 @@ impl<
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
             Cmd::BusWriteGains { src, bus, gl, gr } => self.bus_write_gains(src, bus, gl, gr),
             Cmd::SetRoot { bus } => self.set_root(bus),
+            Cmd::SetUsbOut { channel, src } => {
+                let c = channel as usize;
+                if c < USB_CHANNELS {
+                    self.usb_out[c] = src;
+                }
+            }
             Cmd::BusGain { bus, gain } => self.set_bus_gain(bus, gain),
             Cmd::BusSend { from, to, gain } => self.bus_send(from, to, gain),
             Cmd::SetMasterLimit { ceiling, release } => match &mut self.master_limiter {
@@ -226,6 +236,7 @@ impl<
                 self.writes_len = 0;
                 self.root = None;
                 self.stream_state = [None; NODES];
+                self.usb_out = [OutputSrc::Silent; USB_CHANNELS];
                 self.master_limiter = None;
                 self.master_dcblock = None;
                 self.master_eq = None;
@@ -437,6 +448,31 @@ impl<
         }
     }
 
+    /// Fill the USB output channels from their routed sources (IO-4). Call AFTER
+    /// `render` — buses hold this block's final content and node outputs are still
+    /// in the arena. Each channel is mono; a dangling/out-of-range source → silence.
+    pub fn fill_usb(&self, usb: &mut [[f32; BLOCK]; USB_CHANNELS]) {
+        // SAFETY: read-only view of the output arena; no writer is live here.
+        let arr = unsafe { &*self.outs.get() };
+        for ch in 0..USB_CHANNELS {
+            match self.usb_out[ch] {
+                OutputSrc::Silent => usb[ch] = [0.0; BLOCK],
+                OutputSrc::BusL(b) => {
+                    let bi = b.0 as usize;
+                    usb[ch] = if bi < BUSES { self.bus_l[bi] } else { [0.0; BLOCK] };
+                }
+                OutputSrc::BusR(b) => {
+                    let bi = b.0 as usize;
+                    usb[ch] = if bi < BUSES { self.bus_r[bi] } else { [0.0; BLOCK] };
+                }
+                OutputSrc::Node { node, port } => match self.arena.out_base(node) {
+                    Some(base) if base + (port as usize) < OUTS => usb[ch] = arr[base + port as usize],
+                    _ => usb[ch] = [0.0; BLOCK],
+                },
+            }
+        }
+    }
+
     /// Render one block: clear buses, evaluate nodes, apply pending bus
     /// writes, then copy the root bus into `out`, clamped to `[-1, 1]`.
     pub fn render(&mut self, out: &mut [StereoFrame], input: &[StereoFrame]) {
@@ -538,7 +574,7 @@ impl<
 mod tests {
     use super::*;
     use crate::node::{Kind, TableSrc};
-    use crate::{Cmd, Input, NodeId};
+    use crate::{Cmd, Input, NodeId, OutputSrc, USB_CHANNELS};
 
     type E = Engine<16, 8, 8, 4, 45056, 2048>;
 
@@ -1782,5 +1818,63 @@ mod tests {
         e.set_root(BusId(0));
         e.render(&mut out, &sil);
         assert!(out[0].l.abs() < 1e-6, "Reset must zero buses; got stale {}", out[0].l);
+    }
+
+    #[test]
+    fn fill_usb_routes_bus_side_and_node() {
+        let mut e = E::new(16.0);
+        // node0 = const 0.3 → bus1 (center write → bus_l[1] = 0.3).
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.3);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        e.set_root(BusId(0));
+        // Route USB ch0 = bus1 left, ch1 = node0 output port 0.
+        e.apply(Cmd::SetUsbOut { channel: 0, src: OutputSrc::BusL(BusId(1)) });
+        e.apply(Cmd::SetUsbOut { channel: 1, src: OutputSrc::Node { node: NodeId(0), port: 0 } });
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        let mut usb = [[0.0f32; 16]; USB_CHANNELS];
+        e.fill_usb(&mut usb);
+        assert!((usb[0][0] - 0.3).abs() < 1e-6, "ch0 = bus1 left: {}", usb[0][0]);
+        assert!((usb[1][0] - 0.3).abs() < 1e-6, "ch1 = node0 out: {}", usb[1][0]);
+        assert!(usb[2][0].abs() < 1e-6, "ch2 silent"); // default Silent
+        assert!(usb[7][0].abs() < 1e-6, "ch7 silent");
+    }
+
+    #[test]
+    fn set_usb_out_of_range_is_noop() {
+        let mut e = E::new(16.0);
+        e.apply(Cmd::SetUsbOut { channel: 99, src: OutputSrc::BusL(BusId(0)) }); // no panic
+        let mut usb = [[0.0f32; 16]; USB_CHANNELS];
+        e.fill_usb(&mut usb); // no panic
+        assert!(usb[0][0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn usb_dangling_node_is_silent() {
+        let mut e = E::new(16.0);
+        e.apply(Cmd::SetUsbOut { channel: 0, src: OutputSrc::Node { node: NodeId(50), port: 0 } });
+        let mut usb = [[0.0f32; 16]; USB_CHANNELS];
+        e.fill_usb(&mut usb); // dangling node → silence, no panic
+        assert!(usb[0][0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn reset_clears_usb_map() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.3);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        e.apply(Cmd::SetUsbOut { channel: 0, src: OutputSrc::BusL(BusId(1)) });
+        e.apply(Cmd::Reset);
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        let mut usb = [[0.0f32; 16]; USB_CHANNELS];
+        e.fill_usb(&mut usb);
+        assert!(usb[0][0].abs() < 1e-6, "Reset should clear the usb map, got {}", usb[0][0]);
     }
 }

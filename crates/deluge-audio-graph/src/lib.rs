@@ -21,7 +21,7 @@ pub use arena::Arena;
 pub use cmd::{Cmd, Host};
 pub use engine::Engine;
 pub use frame::StereoFrame;
-pub use ids::{BusId, Input, NodeId};
+pub use ids::{BusId, Input, NodeId, OutputSrc, USB_CHANNELS};
 pub use node::{In, Kind, Node};
 pub use pool::{Pool, PoolHandle};
 pub use voice::{MAX_GATES, MAX_TRIGGERS, MonoAllocator, VoiceAllocator};

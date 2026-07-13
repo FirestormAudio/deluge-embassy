@@ -17,6 +17,21 @@ pub enum Input {
     Bus(BusId),
 }
 
+/// The number of routable USB output channels (mono).
+pub const USB_CHANNELS: usize = 8;
+
+/// A mono source feeding one USB output channel (IO-4). `Silent` = off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OutputSrc {
+    Silent,
+    /// A bus's left row (e.g. `drums.left`).
+    BusL(BusId),
+    /// A bus's right row.
+    BusR(BusId),
+    /// A node's output port (already mono).
+    Node { node: NodeId, port: u8 },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

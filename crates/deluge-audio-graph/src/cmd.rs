@@ -2,7 +2,7 @@
 //! web direct) ships `Cmd`s to the engine's `apply`. Mirrors the prototype's
 //! `Cmd`/`audio_cmd`, generalized to the P0 model.
 
-use crate::{BusId, Input, NodeId};
+use crate::{BusId, Input, NodeId, OutputSrc};
 use crate::node::Kind;
 
 pub const MAX_ARGS: usize = 3;
@@ -24,6 +24,9 @@ pub enum Cmd {
     BusWrite { src: Input, bus: BusId },
     BusWriteGains { src: Input, bus: BusId, gl: f32, gr: f32 },
     SetRoot { bus: BusId },
+    /// Route USB output channel `channel` (0..USB_CHANNELS) from a mono source
+    /// (a bus side or a node port). Read by `Engine::fill_usb`.
+    SetUsbOut { channel: u8, src: OutputSrc },
     /// Set a bus's mono gain (channel fader). Applied to the bus's L/R rows after
     /// the write loop, before the master chain. Default 1.0 (unity).
     BusGain { bus: BusId, gain: f32 },
