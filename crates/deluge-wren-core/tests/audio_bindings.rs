@@ -2690,3 +2690,14 @@ fn granular_setters_change_render() {
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "granular voice still sounds after the setters fire");
 }
 
+#[test]
+fn out_limit_one_arg_emits_set_master_limit_with_default_release() {
+    let cmds = run_and_capture_cmds("Out.limit(0.9)");
+    assert_eq!(cmds, vec![Cmd::SetMasterLimit { ceiling: 0.9, release: 0.05 }]);
+}
+
+#[test]
+fn out_limit_two_arg_emits_set_master_limit() {
+    let cmds = run_and_capture_cmds("Out.limit(0.5, 0.1)");
+    assert_eq!(cmds, vec![Cmd::SetMasterLimit { ceiling: 0.5, release: 0.1 }]);
+}

@@ -125,6 +125,7 @@ foreign class Node {
   foreign static tb303_(input, cutoff, res)
   foreign static patch_(node)
   foreign static reset_()
+  foreign static masterLimit_(ceiling, release)
   foreign static split_(input)
   foreign static pan_(input, position)
   foreign static wavetable_(table, freq)
@@ -983,6 +984,8 @@ class Split {
 class Out {
   static patch(node) { Node.patch_(node) }
   static reset() { Node.reset_() }
+  static limit(ceiling) { Node.masterLimit_(ceiling, 0.05) }
+  static limit(ceiling, release) { Node.masterLimit_(ceiling, release) }
 }
 
 // A bus is a mix/render target: `.write(src)` accumulates a signal into it,

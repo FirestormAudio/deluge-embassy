@@ -540,6 +540,9 @@ pub fn set_root(bus: u16) {
     }
     host().audio_cmd(Cmd::SetRoot { bus: BusId(bus) });
 }
+pub fn set_master_limit(ceiling: f32, release: f32) {
+    host().audio_cmd(Cmd::SetMasterLimit { ceiling, release });
+}
 /// Free a node: return its id to the free-list and emit `Cmd::Free`.
 /// Used by `Node.free()`.
 pub fn free(id: u16) {
