@@ -2413,3 +2413,138 @@ fn sample_stream_outside_synth_aborts() {
     );
 }
 
+// Sa-4 Task 3 — `Granular.new(pitch, buffer)`: a poly grain-cloud voice
+// source (`Kind::PolyGranular`) over an in-RAM `SampleBuffer`, mirroring
+// `Sample.new`'s poly-voice-closure shape, outside-a-Synth scope guard, and
+// Cmd-capture/round-trip test structure exactly.
+
+#[test]
+fn granular_new_builds_and_emits() {
+    // `CmdCaptureHost` (plain `run_and_capture_cmds`) is deliberately
+    // poolless (see `delay_on_cmd_capture_host_creates_node_without_bindtable`),
+    // so `SampleBuffer.from`'s upload — and therefore `Granular.new`'s
+    // `SampleObj` handle — is `None` here: this asserts the `NewNode` shape
+    // and that no bogus `BindTable` fires on an unbound handle, same
+    // graceful-degrade contract `wavetable_from_unbound_on_cmd_capture_host_no_bogus_bindtable`
+    // asserts for `Wavetable`.
+    let cmds = run_and_capture_cmds(
+        "var b = Synth.new { |p| Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.adsr(0.01, 0.3, 0.6, 0.4) }",
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyGranular, .. })),
+        "expected a NewNode(PolyGranular): {cmds:?}"
+    );
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })),
+        "poolless CmdCaptureHost must not emit a BindTable on an unbound handle: {cmds:?}"
+    );
+    // Granular.new itself emits no SetParam for its own node (kernel defaults
+    // apply until a setter is called) — Env.adsr's own SetParam (sustain) is
+    // unrelated and expected, so scope this to the PolyGranular node's id.
+    let granular_id = cmds.iter().find_map(|c| match c {
+        Cmd::NewNode { node, kind: Kind::PolyGranular, .. } => Some(*node),
+        _ => None,
+    });
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::SetParam { node, .. } if Some(*node) == granular_id)),
+        "Granular.new itself must not emit a SetParam targeting its own node: {cmds:?}"
+    );
+}
+
+#[test]
+fn granular_new_binds_pooled_samplebuffer() {
+    use deluge_wren_core::test_support::run_and_capture_cmds_stream;
+    // `run_and_capture_cmds_stream` uses `StreamCaptureHost`, which has a
+    // working (real, pool-backed) `alloc_buffer` — so `SampleBuffer.from`'s
+    // upload succeeds, `Granular.new`'s `SampleObj` handle is `Some`, and
+    // `new_poly_granular` emits `BindTable{Pooled}` after the `NewNode`.
+    let (cmds, _) = run_and_capture_cmds_stream(
+        "var b = Synth.new { |p| Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.adsr(0.01, 0.3, 0.6, 0.4) }",
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyGranular, .. })),
+        "expected a NewNode(PolyGranular): {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::BindTable { src: TableSrc::Pooled(_), .. })),
+        "expected a BindTable{{Pooled}} once the SampleBuffer upload succeeds: {cmds:?}"
+    );
+}
+
+#[test]
+fn granular_setters_emit_setparam() {
+    // `.grainPosition =`/`.size =`/`.density =`/`.spray =` must emit
+    // `SetParam{node, {1,2,3,4}, value}` per `PolyGranular`'s
+    // `Node::set_param` scheme (`crates/deluge-audio-graph/src/node.rs`).
+    let cmds = run_and_capture_cmds(
+        "var b = Synth.new { |p|\n\
+         \x20 var g = Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]))\n\
+         \x20 g.grainPosition = 0.5\n\
+         \x20 g.size = 20\n\
+         \x20 g.density = 100\n\
+         \x20 g.spray = 0.3\n\
+         \x20 return g * Env.adsr(0.01, 0.3, 0.6, 0.4)\n\
+         }",
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, value, .. } if (*value - 0.5).abs() < 1e-6)),
+        "expected SetParam(1, 0.5) from grainPosition=: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, value, .. } if (*value - 20.0).abs() < 1e-6)),
+        "expected SetParam(2, 20.0) from size=: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, value, .. } if (*value - 100.0).abs() < 1e-6)),
+        "expected SetParam(3, 100.0) from density=: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 4, value, .. } if (*value - 0.3).abs() < 1e-6)),
+        "expected SetParam(4, 0.3) from spray=: {cmds:?}"
+    );
+}
+
+#[test]
+fn granular_new_builds_without_panicking() {
+    assert!(
+        run_script_ok(
+            "var b = Synth.new { |p| Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.adsr(0.01, 0.3, 0.6, 0.4) }"
+        ),
+        "Granular.new(SampleBuffer) builds inside a Synth voice without panicking"
+    );
+}
+
+#[test]
+fn granular_new_outside_synth_aborts_cleanly() {
+    // Mirrors `sample_new_outside_synth_aborts_cleanly` — `Granular.new` is a
+    // poly-only voice source; used outside a `Synth.new`/`Synth.mono`
+    // builder closure it must `Fiber.abort`, not build a bogus top-level node.
+    assert!(
+        !run_script_ok("var g = Granular.new(60, SampleBuffer.from([0, 0.5, 1, 0.5]))"),
+        "Granular.new outside a Synth voice must abort cleanly, not build"
+    );
+}
+
+#[test]
+fn granular_new_round_trip_renders_finite_nonsilent() {
+    // Real `EngineHost` (pool present): the SampleBuffer's PCM actually
+    // uploads, and `poly_record_trigger` wires the allocator's `note_on` to
+    // fire `trigger_voice` on this node — same shape as
+    // `sample_new_samplebuffer_round_trip_renders_finite_nonsilent`. Default
+    // kernel params (density=20/s) are enough to spawn grains within a
+    // 64-sample window at 44.1 kHz only occasionally, so bump density/size
+    // via the new setters to guarantee audible grains inside this short render.
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render(
+        "var g = Synth.new { |p|\n\
+         \x20 var v = Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]))\n\
+         \x20 v.density = 1000\n\
+         \x20 v.size = 5\n\
+         \x20 return v * Env.ar(0.001, 0.05)\n\
+         }\nOut.patch(g.out)\ng.noteOn(69, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a Granular voice");
+}
+

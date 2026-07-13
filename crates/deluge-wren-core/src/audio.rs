@@ -417,6 +417,36 @@ pub fn new_poly_sample_player(
     }
 }
 
+/// Create a `Kind::PolyGranular` node, wired to the per-voice `pitch`
+/// (PolyMtof Hz) tile on port 0 — mirrors [`new_poly_sample_player`]'s
+/// bound/unbound-`handle` shape, but emits NO `SetParam`s: the kernel's
+/// `PolyGranular::new()` defaults (root=60, position=0, size=50ms,
+/// density=20/s, spray=0 — see `deluge_dsp_kernels::granular::PolyGranular`)
+/// are used as-is, and `position=`/`size=`/`density=`/`spray=` retarget them
+/// afterward via the four Wren setters (a granular `root=` setter is
+/// deferred this slice, same as `new_stream_player`'s `root` param above —
+/// no setter, default 60 stands). A bound `handle` emits `NewNode` +
+/// `BindTable{Pooled}`; an unbound one (upload failed / no pool) still
+/// creates the node but skips the bind — same graceful-degrade contract as
+/// [`new_poly_sample_player`]/[`new_polywt_pooled`], never panics. Used by
+/// `Node.granular_(pitch, source)` (Sa-4 Task 3).
+pub fn new_poly_granular(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, pitch: Input) {
+    if id == NULL_ID {
+        return;
+    }
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind: Kind::PolyGranular,
+        args: [pitch, Input::Const(0.0), Input::Const(0.0)],
+    });
+    if let Some(h) = handle {
+        host().audio_cmd(Cmd::BindTable {
+            node: NodeId(id),
+            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+        });
+    }
+}
+
 /// Create a `Kind::StreamPlayer` node bound to a `VOICES*cap` ring `handle`,
 /// wired to `pitch`, with `root` note (param 0). Streaming data is filled by the
 /// host prefetch task (registered separately via `stream_register`).

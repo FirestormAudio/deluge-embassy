@@ -2115,6 +2115,39 @@ pub(crate) unsafe extern "C" fn node_polysampleplayer(raw: *mut WrenVM) {
     node_polysampleplayer_impl(&vm);
 }
 
+/// `Node.granular_(pitch, buffer)` — poly grain-cloud voice source
+/// (`Kind::PolyGranular`) bound to a `SampleBuffer` foreign at slot 2,
+/// backing `Granular.new(pitch, buffer)` (Sa-4 Task 3). Mirrors
+/// `node_polysampleplayer_impl`'s shape but reads only the `SampleObj`
+/// `handle` (no zone synthesis — `PolyGranular` scrubs the whole buffer,
+/// positioned/sized/densified/sprayed via later `SetParam`s, not zones).
+///
+/// `checked_tagged_foreign::<SampleObj, _>(vm, 2, TAG_SAMPLE)` guards slot 2:
+/// a non-`SampleObj` or missing argument (e.g. `Granular.new(p, 5)`) degrades
+/// to `handle: None` — the node still builds (silent, no bound PCM) — rather
+/// than reading a wrong-type/absent foreign, which the wren-sys VM's
+/// compiled-to-no-op ASSERTs would make UB (see the wren-binding-safety
+/// memory note; same defect class `node_polysampleplayer_impl`'s doc comment
+/// calls out for the Task 5 `Keymap.from` fix).
+///
+/// Ends by calling `audio::poly_record_trigger(id)` — wires this source into
+/// the `VoiceAllocator` so `note_on` fans `TriggerVoice` to it, exactly like
+/// `node_polysampleplayer_impl`/`node_stream_impl`; without it the node
+/// builds but a note-on never (re)triggers a grain cloud.
+pub(crate) fn node_granular_impl<S: SlotApi>(vm: &S) {
+    let pitch = arg_input(vm, 1);
+    let handle = checked_tagged_foreign::<SampleObj, _>(vm, 2, TAG_SAMPLE).and_then(|s| s.handle);
+    let id = audio::alloc_node_id();
+    audio::new_poly_granular(id, handle, pitch);
+    audio::poly_record_trigger(id);
+    unsafe { return_poly_node(vm, id) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_granular(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_granular_impl(&vm);
+}
+
 /// `Node.stream_(pitch, path)` — a poly streaming sample voice source. Allocates a
 /// `VOICES*cap` ring, creates a `Kind::StreamPlayer`, registers the file with the
 /// host prefetch (`Host::stream_register`), and records the trigger so `note_on`
@@ -2154,6 +2187,54 @@ pub(crate) fn node_set_root_impl<S: SlotApi>(vm: &S) {
 pub(crate) unsafe extern "C" fn node_set_root(raw: *mut WrenVM) {
     let vm = Vm(raw);
     node_set_root_impl(&vm);
+}
+
+/// `Node.grainPosition=(v)` — `PolyGranular` scrub position, 0..1 fraction of
+/// the bound buffer (param 1, per `Node::set_param`'s `State::PolyGranular`
+/// arm in `deluge-audio-graph`). NOT named `position=`: that name is already
+/// taken by `node_set_position_impl` (the Wavetable/PolyWt morph-position
+/// setter, which does a poly-aware `set_input` port write, not a
+/// `set_param`) — reusing it here would silently misroute a scalar float
+/// into a port-wire call on `PolyGranular` (which doesn't consume that
+/// port), a wrong-behavior collision the brief didn't anticipate. Same
+/// distinct-name precedent as `strike=` (see its doc comment/prelude
+/// comment: chosen over `position=` for the same reason, for `Modal`).
+pub(crate) fn node_set_grain_position_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 1, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_grain_position(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_grain_position_impl(&vm);
+}
+
+// `Node.size=(v)` (param 2, grain length in ms) is NOT redefined here:
+// `node_set_size_impl` above (`Node.size=`, already registered for
+// `Kind::Room`'s roomsize) already emits `set_param(self_id, 2, v)` — the
+// exact write `PolyGranular`'s `size=` needs, since both kinds happen to use
+// param index 2 for a "size" concept. Reused as-is; no new setter/name.
+
+/// `Node.density=(v)` — `PolyGranular` grain spawn rate, grains/sec (param 3).
+pub(crate) fn node_set_density_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 3, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_density(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_density_impl(&vm);
+}
+
+/// `Node.spray=(v)` — `PolyGranular` position-jitter fraction, 0..1 (param 4).
+pub(crate) fn node_set_spray_impl<S: SlotApi>(vm: &S) {
+    let v = vm.get_f(1) as f32;
+    audio::set_param(self_id(vm), 4, v);
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_set_spray(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_set_spray_impl(&vm);
 }
 
 /// `Node.polyEnd_(out)` — finish a voice: VoiceSum(out) → build a VoiceAllocator
@@ -2699,8 +2780,12 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "polywt_(_,_)", node_polywt_impl::<S>);
     method("main", "Node", true, "polywt_pooled_(_,_)", node_polywt_pooled_impl::<S>);
     method("main", "Node", true, "polysampleplayer_(_,_)", node_polysampleplayer_impl::<S>);
+    method("main", "Node", true, "granular_(_,_)", node_granular_impl::<S>);
     method("main", "Node", true, "stream_(_,_)", node_stream_impl::<S>);
     method("main", "Node", false, "root=(_)", node_set_root_impl::<S>);
+    method("main", "Node", false, "grainPosition=(_)", node_set_grain_position_impl::<S>);
+    method("main", "Node", false, "density=(_)", node_set_density_impl::<S>);
+    method("main", "Node", false, "spray=(_)", node_set_spray_impl::<S>);
     method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
     method("main", "Node", true, "monoBegin_()", node_mono_begin_impl::<S>);
     method("main", "Node", true, "monoEnd_(_)", node_mono_end_impl::<S>);

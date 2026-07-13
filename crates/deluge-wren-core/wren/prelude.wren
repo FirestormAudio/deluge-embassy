@@ -201,11 +201,15 @@ foreign class Node {
   foreign static polywt_(table, freq)
   foreign static polywt_pooled_(wt, freq)
   foreign static polysampleplayer_(pitch, source)
+  foreign static granular_(pitch, buffer)
   foreign static stream_(pitch, path)
   foreign root=(v)      // PolySamplePlayer zone-0 root note (Sample.new default: 60/C4)
+  foreign grainPosition=(v)  // PolyGranular scrub position 0..1 (NOT position= — that's the Wavetable's)
+  foreign density=(v)        // PolyGranular grain rate (grains/sec)
+  foreign spray=(v)          // PolyGranular position-jitter fraction 0..1
   foreign static polyEnd_(out)
   foreign value=(v)     // Ctrl (Macro) held value
-  foreign size=(v)
+  foreign size=(v)       // also PolyGranular grain length ms (both use param 2)
   foreign spread=(v)     // Room stereo width (NOT width= — that's the Osc's PWM)
   foreign rate=(v)
   foreign depth=(v)
@@ -485,6 +489,21 @@ class Sample {
   static stream(pitch, path) {
     if (Node.polyMode_ != 1) Fiber.abort("Sample.stream is a poly voice source — use it inside Synth.new/Synth.mono")
     return Node.stream_(pitch, path)
+  }
+}
+
+// `Granular.new(pitch, buffer)` — poly grain-cloud voice source over an
+// in-RAM `SampleBuffer` (Sa-4 Task 3), mirroring `Sample.new`'s poly-only
+// scope guard exactly. `.grainPosition =`/`.size =`/`.density =`/`.spray =`
+// retarget the cloud's scrub position (0..1), grain length (ms), spawn rate
+// (grains/sec), and position jitter (0..1) after construction — kernel
+// defaults (position=0, size=50ms, density=20/s, spray=0, root=60/C4) apply
+// otherwise. A `root=` setter is deferred this slice (default root stands).
+//   var g = Synth.new { |p| Granular.new(p, SampleBuffer.from([...])) * Env.adsr(0.01, 0.3, 0.6, 0.4) }
+class Granular {
+  static new(pitch, buffer) {
+    if (Node.polyMode_ != 1) Fiber.abort("Granular.new is a poly voice source — use it inside Synth.new/Synth.mono")
+    return Node.granular_(pitch, buffer)
   }
 }
 
