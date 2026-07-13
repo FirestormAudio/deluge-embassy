@@ -1278,17 +1278,20 @@ mod tests {
 
     #[test]
     fn master_limiter_disabled_is_raw_then_clamp() {
-        // Without SetMasterLimit, a 0.8 root bus passes at 0.8 (below the clamp).
+        // Without SetMasterLimit, a 0.98 root bus passes at 0.98 (below the clamp).
+        // 0.98 is deliberately ABOVE the limiter's 0.95 default ceiling, so this
+        // also catches an accidental `Some(default-limiter)` init: a default
+        // limiter would attenuate 0.98 toward 0.95 and fail this assertion.
         let mut e = E::new(48_000.0);
         e.create(NodeId(0), Kind::Add);
-        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.98);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
         e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.8).abs() < 1e-6); // unlimited, only the [-1,1] clamp would act
+        assert!((out[0].l - 0.98).abs() < 1e-6); // unlimited, only the [-1,1] clamp would act
     }
 
     #[test]
