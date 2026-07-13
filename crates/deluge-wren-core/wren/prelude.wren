@@ -1021,6 +1021,63 @@ foreign class Bus {
   }
 }
 
+// ── Aux / Mixer sugar (IO-2d) ─────────────────────────────────────────────────
+// Aux effect returns: each creates an aux bus, wires a FULLY-WET effect fed by
+// that bus back into `target`, and returns the aux bus to send dry sources to.
+// The effect reads the aux one block late (IO-2e) — fine for reverb/delay.
+// Top-level only (effects abort in poly mode). Create the target (e.g. a Mixer
+// master) BEFORE the aux so bus ids increase (the from > to send rule, IO-2c).
+//   var verb = Aux.reverb(master, 0.8, 0.4)
+//   ch.send(verb, 0.3)                        // dry send into the aux
+class Aux {
+  static reverb(target, roomsize, damp) {
+    var a = Bus.new()
+    target.write(Room.new(a, roomsize, damp, 1.0))
+    return a
+  }
+  static hall(target, size, damp) {
+    var a = Bus.new()
+    target.write(Hall.new(a, size, damp, 1.0))
+    return a
+  }
+  static plate(target, size, damp) {
+    var a = Bus.new()
+    target.write(Plate.new(a, size, damp, 1.0))
+    return a
+  }
+  static delay(target, time, feedback) {
+    var a = Bus.new()
+    target.write(Delay.new(a, time, feedback))
+    return a
+  }
+  static chorus(target, rate, depth) {
+    var a = Bus.new()
+    target.write(Chorus.new(a, rate, depth, 1.0))
+    return a
+  }
+}
+
+// A mixer: a master bus plus per-source channel strips. `channel(src)` returns a
+// channel Bus routed to the master — its `.gain=` is a real (post-fader, IO-2f)
+// fader and `.send(aux, level)` its aux sends. Create the mixer (master) FIRST,
+// then auxes, then channels, so send ids flow high→low (IO-2c from > to).
+//   var mix = Mixer.new()
+//   var verb = Aux.reverb(mix.master, 0.8, 0.4)
+//   var ch = mix.channel(synth); ch.gain = 0.8; ch.send(verb, 0.3)
+//   Out.patch(mix.master)
+class Mixer {
+  construct new() {
+    _master = Bus.new()
+  }
+  master { _master }
+  channel(src) {
+    var ch = Bus.new()
+    ch.write(src)
+    ch.send(_master, 1.0)
+    return ch
+  }
+}
+
 // ── Accessors ────────────────────────────────────────────────────────────────
 // Index 0 is left null so jacks read 1-based (output[1] = first CV jack).
 

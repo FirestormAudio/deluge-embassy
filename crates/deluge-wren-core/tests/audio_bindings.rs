@@ -2829,6 +2829,76 @@ fn bus_send_aux_to_master_half_level() {
     );
 }
 
+// ── IO-2d Aux/Mixer sugar ─────────────────────────────────────────────────────
+
+#[test]
+fn aux_reverb_wires_effect_into_target() {
+    let cmds = run_and_capture_cmds("var m = Bus.new()\nvar v = Aux.reverb(m, 0.8, 0.4)");
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Room, .. })),
+        "Aux.reverb should create a Room node: {:?}",
+        cmds
+    );
+    // The reverb (width-2) is written into the target bus (m = BusId(1)) as two per-side writes.
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::BusWriteGains { bus, .. } if bus.0 == 1)),
+        "Aux.reverb should write the effect into the target bus: {:?}",
+        cmds
+    );
+}
+
+#[test]
+fn mixer_channel_routes_to_master() {
+    let cmds = run_and_capture_cmds("var mix = Mixer.new()\nvar ch = mix.channel(Osc.saw(110))");
+    // master = Bus.new() id1, ch = Bus.new() id2 → ch.send(master) = from 2 to 1.
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::BusSend { from, to, gain } if from.0 == 2 && to.0 == 1 && (*gain - 1.0).abs() < 1e-6)),
+        "Mixer.channel should send the channel to master: {:?}",
+        cmds
+    );
+}
+
+#[test]
+fn aux_reverb_renders_wet() {
+    // A saw sent into an Aux.reverb, patched to master, renders a non-silent wet
+    // signal (the reverb reads the aux one block late, IO-2e; the reverb tail
+    // ramps up over ~tens of ms, so render a long window — ~93ms at 44.1kHz).
+    let mut out = [StereoFrame::default(); 4096];
+    run_and_render(
+        "var m = Bus.new()\nvar v = Aux.reverb(m, 0.8, 0.4)\nv.write(Osc.saw(110) * 0.5)\nOut.patch(m)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite()), "finite");
+    let peak = out.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
+    assert!(peak > 0.05, "reverb return should render non-silent wet, peak={}", peak);
+}
+
+#[test]
+fn mixer_channel_gain_is_a_real_fader() {
+    // ch.gain scales the channel's master contribution (post-fader sends, IO-2f).
+    let mut unity = [StereoFrame::default(); 64];
+    run_and_render(
+        "var mix = Mixer.new()\nvar ch = mix.channel(Osc.saw(110) * 0.4)\nOut.patch(mix.master)",
+        &mut unity,
+    );
+    let unity_peak = unity.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
+
+    let mut halved = [StereoFrame::default(); 64];
+    run_and_render(
+        "var mix = Mixer.new()\nvar ch = mix.channel(Osc.saw(110) * 0.4)\nch.gain = 0.5\nOut.patch(mix.master)",
+        &mut halved,
+    );
+    let halved_peak = halved.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
+
+    assert!(unity_peak > 1e-3, "unity channel not silent: {}", unity_peak);
+    assert!(
+        (halved_peak - unity_peak * 0.5).abs() < unity_peak * 0.1,
+        "ch.gain = 0.5 should ~halve the channel: unity={} halved={}",
+        unity_peak,
+        halved_peak
+    );
+}
+
 // End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
 // not just that it emits the right `Cmd` (the two tests above): a saw
 // overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5
