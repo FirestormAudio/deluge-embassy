@@ -86,6 +86,84 @@ impl AutoBoot {
             _ => AutoBoot::Never,
         }
     }
+
+    /// Move along the dial by `detents` (positive = wait longer), clamped at both
+    /// ends: `Instant → 1S → … → 20S → Never`.
+    pub fn step(self, detents: i8) -> Self {
+        let pos = i16::from(self.to_byte()) + i16::from(detents);
+        Self::from_byte(pos.clamp(0, i16::from(NEVER_BYTE)) as u8)
+    }
+
+    /// Render the setting as an OLED label (`INSTANT`, `5S`, `20S`, `NEVER`) into
+    /// `buf`, returning the used slice.
+    pub fn label(self, buf: &mut [u8; AUTO_BOOT_LABEL_MAX]) -> &[u8] {
+        match self {
+            AutoBoot::Instant => {
+                buf[..7].copy_from_slice(b"INSTANT");
+                &buf[..7]
+            }
+            AutoBoot::Never => {
+                buf[..5].copy_from_slice(b"NEVER");
+                &buf[..5]
+            }
+            AutoBoot::Secs(n) => {
+                let n = n.clamp(1, MAX_AUTO_BOOT_SECS);
+                let mut i = 0;
+                if n >= 10 {
+                    buf[i] = b'0' + n / 10;
+                    i += 1;
+                }
+                buf[i] = b'0' + n % 10;
+                i += 1;
+                buf[i] = b'S';
+                i += 1;
+                &buf[..i]
+            }
+        }
+    }
+}
+
+/// Longest label [`AutoBoot::label`] can produce (`INSTANT`).  Callers stack-
+/// allocate a buffer of this size.
+pub const AUTO_BOOT_LABEL_MAX: usize = 7;
+
+/// What the loader should do once it has probed the flash slot and the SD card.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BootMode {
+    /// Skip the menu entirely and launch the default entry.
+    Instant,
+    /// Draw the menu, auto-booting the default entry after `n` seconds.
+    Countdown(u8),
+    /// Draw the menu and wait for a selection.
+    Wait,
+}
+
+/// Decide how to boot.
+///
+/// * `boot_total` — the number of real boot targets (the flash image, if any,
+///   plus the SD `/APPS` entries).  The synthetic `DATA TRANSFER` / `SETTINGS`
+///   entries do not count.
+/// * `recovery` — SELECT was pressed or held between power-on and this decision.
+/// * `auto_boot_allowed` — this is the *first* pass of the boot loop.  Later
+///   passes (returning from `DATA TRANSFER`, from the settings screen, or from a
+///   flash write) are user-driven: the loader must not launch behind their back,
+///   which on an `Instant` unit would fire the moment they pressed BACK.
+///
+/// Precedence is first-match-wins, in the order written.
+pub fn boot_mode(
+    cfg: &Settings,
+    boot_total: usize,
+    recovery: bool,
+    auto_boot_allowed: bool,
+) -> BootMode {
+    if recovery || cfg.dev_mode || boot_total == 0 || !auto_boot_allowed {
+        return BootMode::Wait;
+    }
+    match cfg.auto_boot {
+        AutoBoot::Instant => BootMode::Instant,
+        AutoBoot::Secs(n) => BootMode::Countdown(n.clamp(1, MAX_AUTO_BOOT_SECS)),
+        AutoBoot::Never => BootMode::Wait,
+    }
 }
 
 /// Persistent loader settings.  Room to grow: add a field here plus a flag bit
@@ -284,5 +362,138 @@ mod tests {
         let d = Settings::default();
         assert!(!d.dev_mode);
         assert_eq!(d.auto_boot, AutoBoot::Secs(DEFAULT_AUTO_BOOT_SECS));
+    }
+
+    // ---- dial ---------------------------------------------------------------
+
+    #[test]
+    fn step_walks_the_dial_in_both_directions() {
+        assert_eq!(AutoBoot::Instant.step(1), AutoBoot::Secs(1));
+        assert_eq!(AutoBoot::Secs(1).step(-1), AutoBoot::Instant);
+        assert_eq!(AutoBoot::Secs(5).step(1), AutoBoot::Secs(6));
+        assert_eq!(AutoBoot::Secs(5).step(-1), AutoBoot::Secs(4));
+        // The top of the dial is NEVER, one step past the longest countdown.
+        assert_eq!(AutoBoot::Secs(MAX_AUTO_BOOT_SECS).step(1), AutoBoot::Never);
+        assert_eq!(AutoBoot::Never.step(-1), AutoBoot::Secs(MAX_AUTO_BOOT_SECS));
+    }
+
+    #[test]
+    fn step_clamps_at_both_ends() {
+        assert_eq!(AutoBoot::Instant.step(-1), AutoBoot::Instant);
+        assert_eq!(AutoBoot::Instant.step(-100), AutoBoot::Instant);
+        assert_eq!(AutoBoot::Never.step(1), AutoBoot::Never);
+        assert_eq!(AutoBoot::Never.step(100), AutoBoot::Never);
+    }
+
+    #[test]
+    fn step_handles_multi_detent_jumps() {
+        assert_eq!(AutoBoot::Instant.step(5), AutoBoot::Secs(5));
+        assert_eq!(AutoBoot::Secs(10).step(-4), AutoBoot::Secs(6));
+    }
+
+    // ---- label --------------------------------------------------------------
+
+    #[test]
+    fn labels_render_for_the_whole_dial() {
+        let mut buf = [0u8; AUTO_BOOT_LABEL_MAX];
+        assert_eq!(AutoBoot::Instant.label(&mut buf), b"INSTANT");
+        assert_eq!(AutoBoot::Never.label(&mut buf), b"NEVER");
+        assert_eq!(AutoBoot::Secs(1).label(&mut buf), b"1S");
+        assert_eq!(AutoBoot::Secs(9).label(&mut buf), b"9S");
+        // Two digits — the 10..=20 range the OLED title bar also has to handle.
+        assert_eq!(AutoBoot::Secs(10).label(&mut buf), b"10S");
+        assert_eq!(AutoBoot::Secs(20).label(&mut buf), b"20S");
+    }
+
+    #[test]
+    fn every_label_fits_the_buffer() {
+        // AUTO_BOOT_LABEL_MAX is what callers stack-allocate; nothing may exceed it.
+        let mut buf = [0u8; AUTO_BOOT_LABEL_MAX];
+        let mut all = vec![AutoBoot::Instant, AutoBoot::Never];
+        all.extend((1..=MAX_AUTO_BOOT_SECS).map(AutoBoot::Secs));
+        for ab in all {
+            assert!(ab.label(&mut buf).len() <= AUTO_BOOT_LABEL_MAX, "{ab:?}");
+        }
+    }
+
+    // ---- boot_mode ----------------------------------------------------------
+
+    /// Settings with everything at its default except the auto-boot dial.
+    fn cfg(auto_boot: AutoBoot, dev_mode: bool) -> Settings {
+        Settings {
+            dev_mode,
+            auto_boot,
+        }
+    }
+
+    #[test]
+    fn boot_mode_honours_the_dial() {
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Instant, false), 1, false, true),
+            BootMode::Instant
+        );
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Secs(5), false), 1, false, true),
+            BootMode::Countdown(5)
+        );
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Secs(20), false), 3, false, true),
+            BootMode::Countdown(20)
+        );
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Never, false), 1, false, true),
+            BootMode::Wait
+        );
+    }
+
+    #[test]
+    fn recovery_beats_every_setting() {
+        // The whole point of the gesture: an INSTANT unit must still reach the menu.
+        for auto_boot in [AutoBoot::Instant, AutoBoot::Secs(5), AutoBoot::Never] {
+            assert_eq!(
+                boot_mode(&cfg(auto_boot, false), 1, true, true),
+                BootMode::Wait,
+                "{auto_boot:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn dev_mode_never_auto_boots() {
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Instant, true), 1, false, true),
+            BootMode::Wait
+        );
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Secs(5), true), 1, false, true),
+            BootMode::Wait
+        );
+    }
+
+    #[test]
+    fn no_boot_targets_never_auto_boots() {
+        // Nothing to launch — the menu is all there is.
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Instant, false), 0, false, true),
+            BootMode::Wait
+        );
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Secs(5), false), 0, false, true),
+            BootMode::Wait
+        );
+    }
+
+    #[test]
+    fn later_menu_passes_never_auto_boot() {
+        // Returning from DATA TRANSFER must not launch the firmware out from
+        // under the user, nor restart the countdown behind their back.
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Instant, false), 1, false, false),
+            BootMode::Wait
+        );
+        assert_eq!(
+            boot_mode(&cfg(AutoBoot::Secs(5), false), 1, false, false),
+            BootMode::Wait
+        );
     }
 }
