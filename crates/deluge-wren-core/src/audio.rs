@@ -546,6 +546,9 @@ pub fn set_master_limit(ceiling: f32, release: f32) {
 pub fn set_master_dcblock(cutoff_hz: f32) {
     host().audio_cmd(Cmd::SetMasterDcBlock { cutoff_hz });
 }
+pub fn set_master_eq(freq: f32, gain_db: f32, q: f32, eq_type: u8) {
+    host().audio_cmd(Cmd::SetMasterEq { freq, gain_db, q, eq_type });
+}
 /// Free a node: return its id to the free-list and emit `Cmd::Free`.
 /// Used by `Node.free()`.
 pub fn free(id: u16) {

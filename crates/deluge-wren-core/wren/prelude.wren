@@ -127,6 +127,7 @@ foreign class Node {
   foreign static reset_()
   foreign static masterLimit_(ceiling, release)
   foreign static masterDcBlock_(cutoff)
+  foreign static masterEq_(freq, gain, q, type)
   foreign static split_(input)
   foreign static pan_(input, position)
   foreign static wavetable_(table, freq)
@@ -989,6 +990,9 @@ class Out {
   static limit(ceiling, release) { Node.masterLimit_(ceiling, release) }
   static dcBlock() { Node.masterDcBlock_(20.0) }
   static dcBlock(cutoff) { Node.masterDcBlock_(cutoff) }
+  static eq(freq, gain, q) { Node.masterEq_(freq, gain, q, 0) }
+  static eqLowShelf(freq, gain, q) { Node.masterEq_(freq, gain, q, 1) }
+  static eqHighShelf(freq, gain, q) { Node.masterEq_(freq, gain, q, 2) }
 }
 
 // A bus is a mix/render target: `.write(src)` accumulates a signal into it,

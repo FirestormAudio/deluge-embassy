@@ -2714,6 +2714,24 @@ fn out_dcblock_arg_emits_cutoff() {
     assert_eq!(cmds, vec![Cmd::SetMasterDcBlock { cutoff_hz: 10.0 }]);
 }
 
+#[test]
+fn out_eq_peak_emits_set_master_eq() {
+    let cmds = run_and_capture_cmds("Out.eq(1000, 6, 1.0)");
+    assert_eq!(cmds, vec![Cmd::SetMasterEq { freq: 1000.0, gain_db: 6.0, q: 1.0, eq_type: 0 }]);
+}
+
+#[test]
+fn out_eq_low_shelf_emits_type_1() {
+    let cmds = run_and_capture_cmds("Out.eqLowShelf(200, -3, 0.7)");
+    assert_eq!(cmds, vec![Cmd::SetMasterEq { freq: 200.0, gain_db: -3.0, q: 0.7, eq_type: 1 }]);
+}
+
+#[test]
+fn out_eq_high_shelf_emits_type_2() {
+    let cmds = run_and_capture_cmds("Out.eqHighShelf(8000, 4, 0.7)");
+    assert_eq!(cmds, vec![Cmd::SetMasterEq { freq: 8000.0, gain_db: 4.0, q: 0.7, eq_type: 2 }]);
+}
+
 // End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
 // not just that it emits the right `Cmd` (the two tests above): a saw
 // overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5
