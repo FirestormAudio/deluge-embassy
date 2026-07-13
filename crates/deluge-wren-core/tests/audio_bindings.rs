@@ -2732,6 +2732,23 @@ fn out_eq_high_shelf_emits_type_2() {
     assert_eq!(cmds, vec![Cmd::SetMasterEq { freq: 8000.0, gain_db: 4.0, q: 0.7, eq_type: 2 }]);
 }
 
+// e2e (Task 4): a saw through Out.eq with a big peak boost on a strong harmonic
+// renders with a higher peak than the un-EQ'd render. `run_and_render` fills the
+// buffer in 32-frame chunks (TestEng is 44.1 kHz), giving the biquad settle time.
+#[test]
+fn out_eq_boost_raises_level() {
+    let mut base = [StereoFrame::default(); 2048];
+    run_and_render("Out.patch(Osc.saw(220) * 0.2)", &mut base);
+    let base_peak = base[1024..].iter().fold(0.0f32, |m, f| m.max(f.l.abs()));
+
+    let mut eqd = [StereoFrame::default(); 2048];
+    run_and_render("Out.patch(Osc.saw(220) * 0.2)\nOut.eq(880, 18, 4.0)", &mut eqd);
+    let eq_peak = eqd[1024..].iter().fold(0.0f32, |m, f| m.max(f.l.abs()));
+
+    assert!(eqd.iter().all(|f| f.l.is_finite() && f.r.is_finite()), "finite");
+    assert!(eq_peak > base_peak * 1.1, "EQ boost should raise the level: base={} eq={}", base_peak, eq_peak);
+}
+
 // End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
 // not just that it emits the right `Cmd` (the two tests above): a saw
 // overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5
