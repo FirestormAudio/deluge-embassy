@@ -27,6 +27,9 @@ pub enum Cmd {
     /// Set a bus's mono gain (channel fader). Applied to the bus's L/R rows after
     /// the write loop, before the master chain. Default 1.0 (unity).
     BusGain { bus: BusId, gain: f32 },
+    /// Fold a source bus into a target bus at `gain` (stereo-preserving). Applied
+    /// after the node writes, before per-bus gain, descending `from` (rule from > to).
+    BusSend { from: BusId, to: BusId, gain: f32 },
     /// Enable/configure the master limiter on the root bus. Creates it if absent,
     /// else updates params in place (preserving the running gain envelope).
     SetMasterLimit { ceiling: f32, release: f32 },

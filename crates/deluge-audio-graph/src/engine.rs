@@ -40,6 +40,10 @@ pub struct Engine<
     // Per-bus mono gain (channel fader), default 1.0. Applied to each bus's rows
     // after the write loop, before the master chain.
     pub(crate) bus_gain: [f32; BUSES],
+    // Bus→bus sends: (from, to, gain), applied after the node-write loop,
+    // descending `from` id (rule: from > to). Stereo-preserving, pre-fader.
+    bus_sends: [Option<(BusId, BusId, f32)>; NODES],
+    bus_sends_len: usize,
     // Stereo line-in for the current block, filled by `render` from its `input`
     // arg and read by `render_block` for `Kind::Input` nodes.
     pub(crate) in_l: [f32; BLOCK],
@@ -83,6 +87,8 @@ impl<
             bus_l: [[0.0; BLOCK]; BUSES],
             bus_r: [[0.0; BLOCK]; BUSES],
             bus_gain: [1.0; BUSES],
+            bus_sends: [None; NODES],
+            bus_sends_len: 0,
             in_l: [0.0; BLOCK],
             in_r: [0.0; BLOCK],
             root: None,
@@ -179,6 +185,7 @@ impl<
             Cmd::BusWriteGains { src, bus, gl, gr } => self.bus_write_gains(src, bus, gl, gr),
             Cmd::SetRoot { bus } => self.set_root(bus),
             Cmd::BusGain { bus, gain } => self.set_bus_gain(bus, gain),
+            Cmd::BusSend { from, to, gain } => self.bus_send(from, to, gain),
             Cmd::SetMasterLimit { ceiling, release } => match &mut self.master_limiter {
                 Some(lim) => { lim.set_ceiling(ceiling); lim.set_release(release); }
                 None => self.master_limiter = Some(MasterLimiter::new(ceiling, release)),
@@ -223,6 +230,8 @@ impl<
                 self.master_dcblock = None;
                 self.master_eq = None;
                 self.bus_gain = [1.0; BUSES];
+                self.bus_sends = [None; NODES];
+                self.bus_sends_len = 0;
             }
         }
     }
@@ -412,6 +421,20 @@ impl<
         }
     }
 
+    /// Record a bus→bus send (reuses a freed slot first, else appends).
+    pub fn bus_send(&mut self, from: BusId, to: BusId, gain: f32) {
+        for s in 0..self.bus_sends_len {
+            if self.bus_sends[s].is_none() {
+                self.bus_sends[s] = Some((from, to, gain));
+                return;
+            }
+        }
+        if self.bus_sends_len < self.bus_sends.len() {
+            self.bus_sends[self.bus_sends_len] = Some((from, to, gain));
+            self.bus_sends_len += 1;
+        }
+    }
+
     /// Render one block: clear buses, evaluate nodes, apply pending bus
     /// writes, then copy the root bus into `out`, clamped to `[-1, 1]`.
     pub fn render(&mut self, out: &mut [StereoFrame], input: &[StereoFrame]) {
@@ -446,6 +469,22 @@ impl<
                     };
                     self.bus_l[b][i] += v * gl;
                     self.bus_r[b][i] += v * gr;
+                }
+            }
+        }
+        // Bus→bus sends (stereo-preserving, pre-fader): fold source buses into
+        // targets in descending `from` id (rule: from > to, master=0 = sink) so a
+        // source is fully filled before it feeds a lower bus. No-op when none.
+        for from in (0..BUSES).rev() {
+            for s in 0..self.bus_sends_len {
+                if let Some((f, t, g)) = self.bus_sends[s] {
+                    let (fi, ti) = (f.0 as usize, t.0 as usize);
+                    if fi == from && fi < BUSES && ti < BUSES && fi != ti {
+                        for i in 0..BLOCK {
+                            self.bus_l[ti][i] += self.bus_l[fi][i] * g;
+                            self.bus_r[ti][i] += self.bus_r[fi][i] * g;
+                        }
+                    }
                 }
             }
         }
@@ -1583,5 +1622,70 @@ mod tests {
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
         assert!((out[0].l - 0.6).abs() < 1e-6); // unaffected
+    }
+
+    #[test]
+    fn bus_send_folds_stereo_into_target() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        // node0 → busA(1) with L=0.8, R=0.2 (asymmetric, proves L→L/R→R).
+        e.bus_write_gains(Input::Node { node: NodeId(0), port: 0 }, BusId(1), 1.0, 0.25);
+        e.apply(Cmd::BusSend { from: BusId(1), to: BusId(0), gain: 0.5 });
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        // busA L=0.8, R=0.2 → sent ×0.5 into master → L=0.4, R=0.1.
+        assert!((out[0].l - 0.4).abs() < 1e-6, "L: {}", out[0].l);
+        assert!((out[0].r - 0.1).abs() < 1e-6, "R: {}", out[0].r);
+    }
+
+    #[test]
+    fn bus_send_chain_routes_same_block() {
+        // bus2 → bus1 → bus0 (master), each from > to, descending-from ordering.
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.4);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(2)); // node → bus2
+        e.apply(Cmd::BusSend { from: BusId(2), to: BusId(1), gain: 1.0 });
+        e.apply(Cmd::BusSend { from: BusId(1), to: BusId(0), gain: 1.0 });
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.4).abs() < 1e-6, "chain to master: {}", out[0].l);
+    }
+
+    #[test]
+    fn bus_send_none_is_byte_identical() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.7);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.7).abs() < 1e-6); // no sends → unchanged
+    }
+
+    #[test]
+    fn bus_send_self_and_oob_are_noop() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.6);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::BusSend { from: BusId(0), to: BusId(0), gain: 2.0 }); // self → no-op
+        e.apply(Cmd::BusSend { from: BusId(9), to: BusId(0), gain: 2.0 }); // oob → no-op
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil); // must not panic
+        assert!((out[0].l - 0.6).abs() < 1e-6, "self/oob send no-op: {}", out[0].l);
     }
 }
