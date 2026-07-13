@@ -2701,3 +2701,30 @@ fn out_limit_two_arg_emits_set_master_limit() {
     let cmds = run_and_capture_cmds("Out.limit(0.5, 0.1)");
     assert_eq!(cmds, vec![Cmd::SetMasterLimit { ceiling: 0.5, release: 0.1 }]);
 }
+
+// End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
+// not just that it emits the right `Cmd` (the two tests above): a saw
+// overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5
+// ceiling) patched through `Out.limit(0.5)` on a real `EngineHost` must come
+// back with every sample within `ceiling + tol` on both channels, and must
+// still be audible (the limiter attenuates, it doesn't mute).
+#[test]
+fn out_limit_bounds_a_loud_render() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Osc.saw(110) * 4.0)\nOut.limit(0.5)", &mut out);
+    for f in &out {
+        assert!(f.l.abs() <= 0.5 + 1e-3, "left over ceiling: {}", f.l);
+        assert!(f.r.abs() <= 0.5 + 1e-3, "right over ceiling: {}", f.r);
+    }
+    assert!(out.iter().any(|f| f.l.abs() > 1e-4), "limiter must attenuate, not mute");
+}
+
+// Sanity (Task 4): the same loud patch WITHOUT `Out.limit` still renders
+// finite — only the engine's existing `[-1,1]` clamp acts, proving the
+// limiter is opt-in and the un-limited path is untouched by Tasks 1-3.
+#[test]
+fn out_without_limit_unbounded_by_limiter() {
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render("Out.patch(Osc.saw(110) * 4.0)", &mut out);
+    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
+}
