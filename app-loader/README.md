@@ -20,7 +20,8 @@ data-transfer mode.
 2. Mount the SD card's first FAT volume.
 3. Enumerate ELF application images from `/APPS/` on the card.
 4. Present a GRUB-style boot menu on the OLED with encoder-wheel selection and a
-   `BOOT_COUNTDOWN_SECS` (5 s) auto-boot of the default entry. A valid on-flash
+   configurable auto-boot of the default entry (`AUTO-BOOT`, 5 s out of the box;
+   see `SETTINGS` below). A valid on-flash
    image is listed first (`BOOT FLASH`) and is the auto-boot default.
 5. **Short-press** SELECT to launch the highlighted entry: stream the selected
    ELF, load its `PT_LOAD` segments to their physical addresses, flush all
@@ -29,9 +30,11 @@ data-transfer mode.
 The menu also exposes two synthetic entries:
 
 - **`DATA TRANSFER`** — expose the raw SD card over USB Mass Storage.
-- **`DEV MODE: ON` / `DEV MODE: OFF`** — toggle the persistent dev-mode flag
-  (see below). Selecting it flips the flag, saves it to flash, and rebuilds the
-  menu; nothing is launched.
+- **`SETTINGS`** — opens the settings screen: the `AUTO-BOOT` delay
+  (`INSTANT` / `1S`–`20S` / `NEVER`) and the persistent dev-mode flag. Written to
+  flash on exit.
+- **Recovery** — hold **SELECT** while powering on to force the boot menu with no
+  countdown, whatever `AUTO-BOOT` is set to.
 
 ### Dev mode (USB upload-and-run)
 

@@ -45,7 +45,8 @@ checklist you need here:
   app ELFs. Flashing it is the one-time [Device setup](device-setup.md) step
   (see [`app-loader/README.md`](../app-loader/README.md) for its internals).
 - **DEV MODE: ON** — required for `cargo deluge run`'s USB upload. On the boot
-  menu, select **`DEV MODE: OFF`** to flip it to **`DEV MODE: ON`** (persistent,
+  menu, select **`SETTINGS`**, then press SELECT on **`DEV MODE: OFF`** to flip it
+  to **`DEV MODE: ON`**, and choose **`BACK`** to save (persistent,
   default-off, survives reboots). Without it, deploy to the SD card's `/APPS/`
   instead — see [Device setup → Build and install an app](device-setup.md#7-build-and-install-an-app).
 

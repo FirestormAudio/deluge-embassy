@@ -85,8 +85,9 @@ On power-up the loader:
    the SD card, so a unit with flashed firmware boots with no card inserted.
 3. **Mounts the SD card** and lists ELF images from the `/APPS/` folder. A
    missing or unreadable card is not fatal — the menu just omits SD entries.
-4. **Builds the boot menu** and shows it on the OLED with a 5-second auto-boot
-   countdown of the default entry.
+4. **Builds the boot menu** and shows it on the OLED, auto-booting the default
+   entry after the configured delay (5 seconds out of the box — see
+   [`SETTINGS`](#settings--auto-boot-and-dev-mode)).
 5. **Launches your selection** — streams the chosen ELF, loads its `PT_LOAD`
    segments, flushes the caches, blanks the OLED, quiesces all DMA/timers/IRQs,
    and branches to the entry point. This never returns; the app owns the machine
@@ -104,6 +105,7 @@ On power-up the loader:
 │   MYSYNTH.ELF               ░ │   ← SD /APPS images
 │   SEQUENCER.ELF             ░ │
 │   DATA TRANSFER             ░ │   ← synthetic entries (always present)
+│   SETTINGS                  ░ │
 └───────────────────────────────┘
      scrollbar on the right edge ┘
 ```
@@ -114,8 +116,8 @@ The menu lists, in order:
    present. This is the auto-boot default.
 2. **Your SD `/APPS/` images** — every loadable ELF on the card, by filename.
 3. **`DATA TRANSFER`** — a synthetic entry; see below.
-4. **`DEV MODE: ON` / `DEV MODE: OFF`** — a synthetic entry reflecting and
-   toggling the dev-mode flag.
+4. **`SETTINGS`** — a synthetic entry opening the settings screen (auto-boot
+   delay and dev mode).
 
 Up to four entries are visible at once; a proportional scrollbar appears on the
 right when the list is longer. A solid triangle (`▶`) marks the highlighted
@@ -130,10 +132,25 @@ entry.
 | Store an SD app to flash | **Long-press** SELECT (hold ≥ 0.7 s) on an SD entry |
 | Cancel the auto-boot countdown | Turn the encoder (any movement) |
 | Exit a USB mode back to the menu | Press **BACK** |
+| **Force the boot menu (recovery)** | **Hold SELECT while powering on** |
 
-The countdown auto-boots the default entry after **5 seconds**. Turning the
-encoder cancels it and hands control to you indefinitely. The countdown does not
-run when there is no real boot target, or when dev mode is on.
+The countdown auto-boots the default entry after the delay set in
+[`SETTINGS`](#settings--auto-boot-and-dev-mode) — **5 seconds** out of the box.
+Turning the encoder cancels it and hands control to you indefinitely. It does not
+run when there is no real boot target, when dev mode is on, or once you have
+already been round the menu once this session (returning from `DATA TRANSFER`
+will not boot out from under you).
+
+### Recovery — always reach the menu
+
+**Hold the SELECT encoder button down while powering the unit on.** The loader
+shows `RECOVERY`, then the boot menu with no countdown, waiting indefinitely —
+whatever the auto-boot setting says.
+
+This is the way back from an `AUTO-BOOT: INSTANT` unit whose flashed firmware is
+broken: the loader runs before that firmware ever does, so the menu (and with it
+`DATA TRANSFER`, re-flashing from SD, and `SETTINGS`) is always reachable.
+Nothing is persisted — your auto-boot setting is left exactly as you set it.
 
 ---
 
@@ -151,11 +168,33 @@ card-detect pin is unreliable, and the backend retries the card on demand when
 the host probes it. With no card the host simply sees an empty drive; this also
 guarantees the menu always has at least one entry.
 
-### `DEV MODE` — toggle USB upload
+### `SETTINGS` — auto-boot and dev mode
 
-Selecting the **`DEV MODE`** entry flips the persistent dev-mode flag, saves it
-to the flash settings sector, briefly confirms `DEV MODE ON`/`OFF`, and rebuilds
-the menu. **Nothing is launched.** See [Dev mode](#dev-mode) below.
+Selecting **`SETTINGS`** opens a screen with three rows:
+
+```text
+SETTINGS
+▶ AUTO-BOOT: 5S
+  DEV MODE: OFF
+  BACK
+```
+
+- **`AUTO-BOOT`** — how long the menu waits before launching the default entry.
+  Press SELECT to edit (the value is bracketed, `<5S>`, while live), turn the
+  encoder to walk the dial, press SELECT to confirm, or BACK to cancel the edit.
+
+  | Value | Behaviour |
+  |-------|-----------|
+  | `INSTANT` | The menu is **never drawn** — the default entry launches at once. Hold SELECT at power-on to get the menu back. |
+  | `1S` … `20S` | The menu is shown and counts down, then boots the default entry. |
+  | `NEVER` | The menu is shown and waits indefinitely. Dev mode's menu behaviour, without dev mode's USB listener. |
+
+- **`DEV MODE`** — press SELECT to flip the persistent dev-mode flag. See
+  [Dev mode](#dev-mode) below.
+
+- **`BACK`** — leave the screen. Settings are written to the flash settings
+  sector **on exit**, and only if you changed something; `SETTINGS SAVED`
+  confirms, and the menu rebuilds with the new values. **Nothing is launched.**
 
 If the flash write does not stick, the loader stays responsive and shows a
 diagnostic line with the chip's JEDEC ID and status register (e.g.
@@ -175,7 +214,9 @@ While dev mode is **on**, the loader:
 - runs a USB **CDC-ACM upload listener** in the background, alongside the boot
   menu — there is no separate "upload mode" to enter; and
 - **disables the auto-boot countdown**, so the unit waits indefinitely on the
-  menu for either a menu selection or a USB upload.
+  menu for either a menu selection or a USB upload. (This overrides `AUTO-BOOT`
+  entirely, including `INSTANT`. If you want a menu that waits but no USB
+  listener, set `AUTO-BOOT: NEVER` instead.)
 
 This is the foundation of the push-to-run dev loop. With dev mode on, run:
 
