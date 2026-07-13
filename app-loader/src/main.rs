@@ -481,6 +481,7 @@ async fn boot_task(spawner: Spawner) {
         if selected == dev_idx {
             let new_cfg = settings::Settings {
                 dev_mode: !cfg.dev_mode,
+                ..cfg
             };
             info!("Dev mode: {} -> {}", cfg.dev_mode, new_cfg.dev_mode);
             // Close FAT handles before touching the flash bus (the settings write
