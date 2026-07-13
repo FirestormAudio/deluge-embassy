@@ -476,7 +476,20 @@ impl<
                 }
             }
         }
-        // Bus→bus sends (stereo-preserving, pre-fader): fold source buses into
+        // Per-bus gain (channel fader), applied BEFORE bus→bus sends so a send
+        // carries the POST-fader signal (a channel's `gain` scales its master
+        // contribution and its aux sends — console semantics). Default 1.0 =
+        // no-op, byte-identical.
+        for b in 0..BUSES {
+            let g = self.bus_gain[b];
+            if g != 1.0 {
+                for i in 0..BLOCK {
+                    self.bus_l[b][i] *= g;
+                    self.bus_r[b][i] *= g;
+                }
+            }
+        }
+        // Bus→bus sends (stereo-preserving, POST-fader): fold source buses into
         // targets in descending `from` id (rule: from > to, master=0 = sink) so a
         // source is fully filled before it feeds a lower bus. No-op when none.
         for from in (0..BUSES).rev() {
@@ -489,16 +502,6 @@ impl<
                             self.bus_r[ti][i] += self.bus_r[fi][i] * g;
                         }
                     }
-                }
-            }
-        }
-        // Per-bus gain (default 1.0 = no-op, byte-identical): fader before the master chain.
-        for b in 0..BUSES {
-            let g = self.bus_gain[b];
-            if g != 1.0 {
-                for i in 0..BLOCK {
-                    self.bus_l[b][i] *= g;
-                    self.bus_r[b][i] *= g;
                 }
             }
         }
@@ -1691,6 +1694,25 @@ mod tests {
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil); // must not panic
         assert!((out[0].l - 0.6).abs() < 1e-6, "self/oob send no-op: {}", out[0].l);
+    }
+
+    #[test]
+    fn bus_send_is_post_fader() {
+        // A gained bus that sends to master carries the POST-fader signal:
+        // node0=0.8 → busA(1); busA.gain=0.5 → busA=0.4; busA.send(master,1.0)
+        // → master=0.4 (NOT 0.8 — which is what a pre-fader send would give).
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        e.apply(Cmd::BusGain { bus: BusId(1), gain: 0.5 });
+        e.apply(Cmd::BusSend { from: BusId(1), to: BusId(0), gain: 1.0 });
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.4).abs() < 1e-6, "post-fader send should be 0.4, got {}", out[0].l);
     }
 
     #[test]
