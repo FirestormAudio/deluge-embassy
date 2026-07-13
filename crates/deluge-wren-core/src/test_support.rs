@@ -436,17 +436,30 @@ type TestEng = Engine<32, 64, 128, 8, 90112, 2048>;
 /// so a script's rendered audio (not just its emitted `Cmd`s) can be asserted on.
 pub struct EngineHost {
     pub eng: TestEng,
+    /// Fed line-in block for [`run_and_render_with_input`] to hand `Engine::render`
+    /// as its `input` arg, chunk by chunk. Empty by default, so hosts that never
+    /// call [`EngineHost::set_input`] (i.e. every pre-Task-3 `EngineHost` user)
+    /// keep rendering against silence, byte-unchanged.
+    input_block: Vec<StereoFrame>,
 }
 impl EngineHost {
     /// Construct a fresh host with its own engine, sampling at `sample_rate`.
     pub fn new(sample_rate: f32) -> Self {
-        EngineHost { eng: TestEng::new(sample_rate) }
+        EngineHost { eng: TestEng::new(sample_rate), input_block: Vec::new() }
     }
 
     /// Borrow the underlying engine (e.g. to read back pooled memory a test
     /// asserts on — see `engine_host_upload_table_builds_band_limited`).
     pub fn engine(&self) -> &TestEng {
         &self.eng
+    }
+
+    /// Supply the stereo block [`run_and_render_with_input`] renders through
+    /// (e.g. a `Kind::Input`/`In.line()` line-in round-trip). Stored as a copy;
+    /// callers slice it per 32-frame render chunk. Not consumed by
+    /// [`run_and_render`], which always renders against silence.
+    pub fn set_input(&mut self, frames: &[StereoFrame]) {
+        self.input_block = frames.to_vec();
     }
 }
 impl Host for EngineHost {
@@ -511,7 +524,29 @@ static mut ENGINE_HOST: Option<EngineHost> = None;
 /// Serialized by [`CAP_LOCK`] (shared with [`run_and_capture_cmds`]): both
 /// touch the same `crate::set_host`/VM-boot/`reset` process-globals, plus
 /// this fn's own [`ENGINE_HOST`] static.
+///
+/// Always renders against silence — no line-in block is fed. See
+/// [`run_and_render_with_input`] to feed a real stereo input block (e.g. for
+/// an `In.line()` round-trip).
 pub fn run_and_render<const N: usize>(src: &str, out: &mut [StereoFrame; N]) {
+    run_and_render_with_input(src, out, &[]);
+}
+
+/// Like [`run_and_render`], but feeds `input` to the engine as the `Engine::render`
+/// `input` arg, chunk by chunk (matching `input`'s prefix to each 32-frame render
+/// chunk). When `input` is empty or shorter than a given chunk, that chunk (and
+/// every chunk after it) falls back to silence — same as [`run_and_render`].
+///
+/// This is the harness [`crate::test_support::EngineHost::set_input`] feeds: it's
+/// applied here (not via a second `set_input` call by the caller) because
+/// [`run_and_render`]/`_with_input` own the `EngineHost` for the duration of the
+/// call (see the `ENGINE_HOST` static below) — there's no host handle a caller
+/// could call `set_input` on before render.
+pub fn run_and_render_with_input<const N: usize>(
+    src: &str,
+    out: &mut [StereoFrame; N],
+    input: &[StereoFrame],
+) {
     let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: single-threaded test helper, serialized by `_guard` above; VM
     // freed before return.
@@ -521,7 +556,8 @@ pub fn run_and_render<const N: usize>(src: &str, out: &mut [StereoFrame; N]) {
         // whole function) so the borrow checker can infer the `'static`
         // lifetime `crate::set_host` requires without the borrows
         // overlapping — same shape as `run_and_capture_cmds` above.
-        *core::ptr::addr_of_mut!(ENGINE_HOST) = Some(EngineHost { eng: TestEng::new(44_100.0) });
+        *core::ptr::addr_of_mut!(ENGINE_HOST) = Some(EngineHost { eng: TestEng::new(44_100.0), input_block: Vec::new() });
+        (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap().set_input(input);
         crate::set_host((*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap());
         let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
         assert!(!vm.is_null(), "VM boot failed");
@@ -543,12 +579,17 @@ pub fn run_and_render<const N: usize>(src: &str, out: &mut [StereoFrame; N]) {
         // TestEng's BLOCK is 32; render() fills one BLOCK per call and advances
         // node state, so render successive 32-frame chunks to fill all N frames
         // with continuity (a real N-sample window for time-based effects).
-        let eng = &mut (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap().eng;
-        // Task 1: no real input source wired yet (Task 3 feeds captured
-        // codec input); pass silence sized to each chunk.
+        let host = (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap();
         let sil = [StereoFrame::default(); 32];
+        let mut off = 0usize;
         for chunk in out.chunks_mut(32) {
-            eng.render(chunk, &sil[..chunk.len()]);
+            let in_slice: &[StereoFrame] = if host.input_block.len() >= off + chunk.len() {
+                &host.input_block[off..off + chunk.len()]
+            } else {
+                &sil[..chunk.len()]
+            };
+            host.eng.render(chunk, in_slice);
+            off += chunk.len();
         }
         wren_sys::wrenFreeVM(vm);
         crate::reset();

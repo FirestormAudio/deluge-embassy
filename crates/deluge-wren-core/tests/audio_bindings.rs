@@ -3,7 +3,8 @@ use deluge_audio_graph::StereoFrame;
 use deluge_audio_graph::node::TableSrc;
 use deluge_wren_core::Host as _;
 use deluge_wren_core::test_support::{
-    EngineHost, run_and_capture_cmds, run_and_render, run_midi_capture_cmds, run_script_ok,
+    EngineHost, run_and_capture_cmds, run_and_render, run_and_render_with_input,
+    run_midi_capture_cmds, run_script_ok,
 };
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
@@ -175,6 +176,40 @@ fn line_in_composes_with_mul() {
     // Just needs to build & emit a NewNode{Input} + the Mul node; no panic.
     let cmds = run_and_capture_cmds("Out.patch(In.line() * 0.5)");
     assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Input, .. })));
+}
+
+#[test]
+fn line_in_round_trips_through_graph() {
+    // End-to-end proof (Task 3) that a real `EngineHost`'s fed input block
+    // actually reaches the rendered audio: `Out.patch(In.line())` routes
+    // port0 (L) and port1 (R) straight into the master bus (Task 2's
+    // `patch_line_in_emits_input_node_two_side_writes_and_root`), so a fed
+    // stereo block with L != R must come back out unchanged on BOTH
+    // channels — proving per-channel routing, not just "some signal passed
+    // through". This is the test that fails before `run_and_render_with_input`
+    // (Part A of Task 3) feeds the block and passes after.
+    let input: Vec<StereoFrame> = (0..32).map(|_| StereoFrame { l: 0.3, r: -0.2 }).collect();
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render_with_input("Out.patch(In.line())", &mut out, &input);
+    for (i, f) in out.iter().enumerate() {
+        assert!((f.l - 0.3).abs() < 1e-6, "frame {i}: l={} expected 0.3", f.l);
+        assert!((f.r - (-0.2)).abs() < 1e-6, "frame {i}: r={} expected -0.2", f.r);
+    }
+}
+
+#[test]
+fn line_in_through_effect_renders() {
+    // Proves the fed input flows through a downstream node (a `Room` reverb,
+    // not just a bare `Out.patch(In.line())`): the input feeds `Kind::Input`
+    // port 0 into `Room`, whose stereo (wet+dry) output must stay finite and
+    // bounded for a nontrivial fed block.
+    let input: Vec<StereoFrame> = (0..32).map(|_| StereoFrame { l: 0.4, r: -0.4 }).collect();
+    let mut out = [StereoFrame::default(); 32];
+    run_and_render_with_input("Out.patch(Room.new(In.line(), 0.7, 0.4, 0.6))", &mut out, &input);
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0),
+        "line-in through Room must render finite, bounded audio: {out:?}"
+    );
 }
 
 #[test]

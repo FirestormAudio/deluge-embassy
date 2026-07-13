@@ -254,12 +254,20 @@ pub async fn audio_task(audio: Audio) {
             // Chunk size must equal the engine's BLOCK (32) so `render` fills
             // each chunk fully.
             let mut scratch = [deluge_audio_graph::StereoFrame::default(); 32];
-            // Task 1: no captured codec input wired yet (Task 3 copies the
-            // real pre-loaded input here); pass silence sized to the chunk.
-            let in_sil = [deluge_audio_graph::StereoFrame::default(); 32];
+            // Task 3: `block` arrives pre-loaded with captured codec input.
+            // Copy each chunk's current (input) contents into an engine-typed
+            // scratch buffer BEFORE rendering — `chunk` is about to be
+            // overwritten with output, and input/output must not alias.
+            let mut in_scratch = [deluge_audio_graph::StereoFrame::default(); 32];
             for chunk in block.chunks_mut(32) {
-                let out = &mut scratch[..chunk.len()];
-                eng.render(out, &in_sil[..out.len()]);
+                let n = chunk.len();
+                // Capture the pre-loaded codec input for this chunk.
+                for (dst, src) in in_scratch[..n].iter_mut().zip(chunk.iter()) {
+                    dst.l = src.l;
+                    dst.r = src.r;
+                }
+                let out = &mut scratch[..n];
+                eng.render(out, &in_scratch[..n]);
                 // `Engine::render` already clamps its output to [-1, 1]; plain copy.
                 for (dst, src) in chunk.iter_mut().zip(out.iter()) {
                     dst.l = src.l;
