@@ -15,6 +15,7 @@ pub mod eq;
 pub mod filter;
 pub mod granular;
 pub mod lfo;
+pub mod limiter;
 pub mod lofi;
 pub mod math;
 pub mod modutil;
