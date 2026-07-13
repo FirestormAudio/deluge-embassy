@@ -2740,3 +2740,26 @@ fn out_without_limit_unbounded_by_limiter() {
     run_and_render("Out.patch(Osc.saw(110) * 4.0)", &mut out);
     assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
 }
+
+// e2e (Task 4): a constant-DC input (via In.line()) through Out.dcBlock() — the
+// settled output has the DC removed. Rendering a long buffer gives the one-pole HP
+// time to settle (many 32-frame chunks). The companion test shows the same DC
+// input WITHOUT dcBlock passes through, proving the DC-block did the work.
+#[test]
+fn out_dcblock_removes_dc_from_a_render() {
+    let dc_in = [StereoFrame { l: 0.5, r: 0.5 }; 4096];
+    let mut out = [StereoFrame::default(); 4096];
+    run_and_render_with_input("Out.patch(In.line())\nOut.dcBlock()", &mut out, &dc_in);
+    assert!(out[4095].l.abs() < 1e-2, "DC not removed (L): {}", out[4095].l);
+    assert!(out[4095].r.abs() < 1e-2, "DC not removed (R): {}", out[4095].r);
+    // Early samples are non-silent (the DC is present before the HP settles).
+    assert!(out[0].l.abs() > 1e-2, "should not be silent at onset");
+}
+
+#[test]
+fn out_without_dcblock_passes_dc() {
+    let dc_in = [StereoFrame { l: 0.5, r: 0.5 }; 64];
+    let mut out = [StereoFrame::default(); 64];
+    run_and_render_with_input("Out.patch(In.line())", &mut out, &dc_in);
+    assert!((out[63].l - 0.5).abs() < 1e-6, "DC should pass unblocked: {}", out[63].l);
+}
