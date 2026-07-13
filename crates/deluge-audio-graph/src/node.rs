@@ -2636,11 +2636,19 @@ mod tests {
         let mut region = pcm;
         // mtof(60) with A4=440 (middle C), hardcoded — no libm dep in this crate.
         let hz = 261.625_58_f32;
-        // one sample block: VOICES-interleaved pitch tile, lane 0 = hz, others 0.
-        let mut pitch = [0.0f32; VOICES]; pitch[0] = hz;
+        // A freshly-spawned grain starts at phase 0.0, where hann(0.0) == 0.0
+        // exactly — a single-sample render is silent for correct wiring AND
+        // for a broken no-op alike. Render a block so at least one grain's
+        // Hann window climbs off zero: a VOICES-interleaved pitch tile of n
+        // frames, lane 0 = hz, others 0.
+        let n_frames = 64usize;
+        let mut pitch = std::vec![0.0f32; VOICES * n_frames];
+        for i in 0..n_frames { pitch[i * VOICES] = hz; }
         let ins: [In; MAX_INPUTS] = core::array::from_fn(|_| In::K(0.0));
-        let mut out = [0.0f32; VOICES]; // out_width VOICES, 1 sample
+        let mut out = std::vec![0.0f32; VOICES * n_frames]; // out_width VOICES, n_frames samples
         n.poly_process(&ins, [Some(&pitch[..]), None, None], 1.0 / 48_000.0, &mut out, Some(&mut region), None);
-        assert!(out[0].is_finite(), "lane 0 renders a finite grain-cloud sample, got {}", out[0]);
+        let lane0: std::vec::Vec<f32> = (0..n_frames).map(|i| out[i * VOICES]).collect();
+        assert!(lane0.iter().all(|&s| s.is_finite()), "lane 0 renders finite grain-cloud samples: {lane0:?}");
+        assert!(lane0.iter().any(|&s| s != 0.0), "granular cloud must render non-silence through poly_process");
     }
 }
