@@ -66,12 +66,15 @@ fn countdown_title(buf: &mut [u8; 12], secs: u8) -> &[u8] {
 
 /// Render a frame showing the selector list.
 ///
+/// * `title`    — title-bar text, shown when no countdown is running
 /// * `entries`  — full sorted list of entry names (full `BASE.EXT` filenames)
 /// * `scroll`   — index of the first visible entry
 /// * `cursor`   — index of the highlighted entry (absolute, not relative)
-/// * `countdown`— `Some(secs_remaining)` shows a boot countdown in the title bar.
+/// * `countdown`— `Some(secs_remaining)` shows a boot countdown in the title bar,
+///                replacing `title`.
 fn render(
     fb: &mut FrameBuffer,
+    title: &[u8],
     entries: &[&[u8]],
     scroll: usize,
     cursor: usize,
@@ -83,7 +86,7 @@ fn render(
     let mut cd_buf = [0u8; 12];
     let title: &[u8] = match countdown {
         Some(secs) => countdown_title(&mut cd_buf, secs),
-        None => b"SELECT APP",
+        None => title,
     };
     draw_str(fb, 4, TITLE_ROW, title);
 
@@ -241,7 +244,7 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
 
         // Build and send frame.
         let mut fb = FrameBuffer::new();
-        render(&mut fb, entries, scroll, cursor, remaining);
+        render(&mut fb, b"SELECT APP", entries, scroll, cursor, remaining);
         oled::send_frame(&fb).await;
 
         // Poll for encoder input at ~60 Hz.
@@ -440,4 +443,147 @@ pub async fn show_progress(label: &[u8], percent: u8) {
     }
 
     oled::send_frame(&fb).await;
+}
+
+// ── Settings screen ───────────────────────────────────────────────────────────
+
+/// Entry rows on the settings screen.
+const SET_AUTO_BOOT: usize = 0;
+const SET_DEV_MODE: usize = 1;
+const SET_BACK: usize = 2;
+const SET_ROWS: usize = 3;
+
+/// Longest settings row: `AUTO-BOOT: <INSTANT>` — 20 chars, which at the font's
+/// 6 px advance is exactly the 120 px available from `x = 8` to the right edge.
+const SET_LINE_MAX: usize = 20;
+
+/// Format the auto-boot row: `AUTO-BOOT: 5S`, or `AUTO-BOOT: <5S>` while the
+/// value is being edited (the brackets are the only cue that the encoder now
+/// changes the value instead of moving the cursor).
+fn auto_boot_line<'a>(
+    buf: &'a mut [u8; SET_LINE_MAX],
+    auto_boot: crate::settings::AutoBoot,
+    editing: bool,
+) -> &'a [u8] {
+    const PREFIX: &[u8] = b"AUTO-BOOT: ";
+    let mut n = 0;
+    for &b in PREFIX {
+        buf[n] = b;
+        n += 1;
+    }
+    if editing {
+        buf[n] = b'<';
+        n += 1;
+    }
+    let mut val = [0u8; crate::settings::AUTO_BOOT_LABEL_MAX];
+    for &b in auto_boot.label(&mut val) {
+        buf[n] = b;
+        n += 1;
+    }
+    if editing {
+        buf[n] = b'>';
+        n += 1;
+    }
+    &buf[..n]
+}
+
+/// The `SETTINGS` screen: edit `cfg` in place and return when the user leaves.
+///
+/// Does **no** flash I/O — the caller compares the result against what it read
+/// and writes once, so a session of encoder turns costs one erase/program rather
+/// than one per keypress.
+///
+/// * SELECT on `AUTO-BOOT` enters an in-place edit: the encoder walks
+///   `INSTANT → 1S … 20S → NEVER`, SELECT confirms, BACK restores the value the
+///   edit started from.
+/// * SELECT on `DEV MODE` flips the flag.
+/// * SELECT on `BACK`, or the BACK button, leaves.
+pub async fn run_settings(cfg: &mut crate::settings::Settings) {
+    use embassy_time::{Duration, Timer};
+
+    const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
+    let mut edge_acc: i8 = 0;
+    let mut cursor = SET_AUTO_BOOT;
+    let mut editing = false;
+    // The value the current edit began at, restored if the user backs out.
+    let mut pre_edit = cfg.auto_boot;
+
+    // The SELECT press that opened this screen is still held; don't read it as a
+    // press *on* this screen (same reason as `run_selector`'s `armed`).
+    let mut armed = !SELECT_DOWN.load(Ordering::Acquire);
+    let mut select_prev = false;
+
+    // A BACK latched by a previous mode (e.g. leaving DATA TRANSFER) must not
+    // immediately dismiss this screen.
+    crate::BACK_PRESSED.store(false, Ordering::Release);
+
+    loop {
+        // ---- draw ----
+        let mut line = [0u8; SET_LINE_MAX];
+        let rows: [&[u8]; SET_ROWS] = [
+            auto_boot_line(&mut line, cfg.auto_boot, editing),
+            if cfg.dev_mode {
+                b"DEV MODE: ON"
+            } else {
+                b"DEV MODE: OFF"
+            },
+            b"BACK",
+        ];
+
+        let mut fb = FrameBuffer::new();
+        render(&mut fb, b"SETTINGS", &rows, 0, cursor, None);
+        oled::send_frame(&fb).await;
+
+        // Poll at ~60 Hz, like the selector.
+        Timer::after(Duration::from_millis(16)).await;
+
+        // ---- encoder: adjust the value while editing, else move the cursor ----
+        let detents = deluge_bsp::encoder::take_detents(ENC, &mut edge_acc);
+        if detents != 0 {
+            if editing {
+                cfg.auto_boot = cfg.auto_boot.step(detents);
+            } else if detents > 0 {
+                cursor = (cursor + 1).min(SET_BACK);
+            } else {
+                cursor = cursor.saturating_sub(1);
+            }
+        }
+
+        // ---- BACK button: cancel an edit, or leave the screen ----
+        if crate::BACK_PRESSED.swap(false, Ordering::AcqRel) {
+            if editing {
+                cfg.auto_boot = pre_edit;
+                editing = false;
+            } else {
+                return;
+            }
+        }
+
+        // ---- SELECT: rising edge only ----
+        let down = SELECT_DOWN.load(Ordering::Acquire);
+        if !armed {
+            armed = !down;
+            select_prev = down;
+            continue;
+        }
+        let pressed = down && !select_prev;
+        select_prev = down;
+        if !pressed {
+            continue;
+        }
+
+        if editing {
+            // Confirm — the value is already live in `cfg`.
+            editing = false;
+        } else {
+            match cursor {
+                SET_AUTO_BOOT => {
+                    pre_edit = cfg.auto_boot;
+                    editing = true;
+                }
+                SET_DEV_MODE => cfg.dev_mode = !cfg.dev_mode,
+                _ => return, // SET_BACK
+            }
+        }
+    }
 }

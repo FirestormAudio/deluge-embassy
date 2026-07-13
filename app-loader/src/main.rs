@@ -28,9 +28,8 @@ mod usbmsc;
 /// Label for the synthetic menu entry that enters SD-card USB mass-storage mode.
 const DATA_MENU_LABEL: &[u8] = b"DATA TRANSFER";
 
-/// Labels for the synthetic dev-mode toggle entry (reflects the current state).
-const DEV_MODE_ON_LABEL: &[u8] = b"DEV MODE: ON";
-const DEV_MODE_OFF_LABEL: &[u8] = b"DEV MODE: OFF";
+/// Label for the synthetic entry that opens the settings screen.
+const SETTINGS_MENU_LABEL: &[u8] = b"SETTINGS";
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::AtomicBool;
@@ -401,7 +400,7 @@ async fn boot_task(spawner: Spawner) {
         // sees an empty drive.  This also guarantees the menu always has ≥1
         // entry.
         let data_idx = boot_total; // DATA TRANSFER follows the boot targets
-        let dev_idx = boot_total + 1; // DEV MODE toggle follows DATA TRANSFER
+        let settings_idx = boot_total + 1; // SETTINGS follows DATA TRANSFER
         let menu_total = boot_total + 2;
 
         let mut name_refs = [b"".as_slice(); file_browser::MAX_APPS + 3];
@@ -414,11 +413,7 @@ async fn boot_task(spawner: Spawner) {
             }
         }
         name_refs[data_idx] = DATA_MENU_LABEL;
-        name_refs[dev_idx] = if cfg.dev_mode {
-            DEV_MODE_ON_LABEL
-        } else {
-            DEV_MODE_OFF_LABEL
-        };
+        name_refs[settings_idx] = SETTINGS_MENU_LABEL;
 
         info!(
             "Boot menu: {} boot entry(ies) (flash={}, dev_mode={})",
@@ -516,16 +511,12 @@ async fn boot_task(spawner: Spawner) {
             continue;
         }
 
-        // ---- DEV MODE toggle (persists to flash, rebuilds the menu) ----
-        // The only user-facing control for dev mode: flip the flag, persist it,
-        // and `continue` so the next pass re-reads it (updating the label, the
-        // countdown, and whether the USB listener runs).  Nothing is launched.
-        if selected == dev_idx {
-            let new_cfg = settings::Settings {
-                dev_mode: !cfg.dev_mode,
-                ..cfg
-            };
-            info!("Dev mode: {} -> {}", cfg.dev_mode, new_cfg.dev_mode);
+        // ---- SETTINGS screen (persists on exit, rebuilds the menu) ----
+        // The screen edits a copy; we write flash once, only if something
+        // actually changed, then `continue` so the next pass re-reads it (updating
+        // the auto-boot mode and whether the USB listener runs).  Nothing is
+        // launched.
+        if selected == settings_idx {
             // Close FAT handles before touching the flash bus (the settings write
             // leaves memory-mapped read mode, like the app-slot store).
             if let Some((volume, _, entries)) = sd_listing {
@@ -533,9 +524,17 @@ async fn boot_task(spawner: Spawner) {
                 drop(entries);
             }
             drop(vm);
+
+            let mut new_cfg = cfg;
+            ui::run_settings(&mut new_cfg).await;
+            if new_cfg == cfg {
+                continue;
+            }
+            info!("Settings: {:?} -> {:?}", cfg, new_cfg);
+
             let ok = unsafe { settings::write(&new_cfg).await };
             if ok {
-                ui::show_message(b"DEV MODE", if new_cfg.dev_mode { b"ON" } else { b"OFF" }).await;
+                ui::show_message(b"SETTINGS", b"SAVED").await;
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
             } else {
                 // The flash write didn't stick (the device stays responsive
@@ -546,7 +545,7 @@ async fn boot_task(spawner: Spawner) {
                 let id = rza1l_hal::spibsc::read_id();
                 let sr = rza1l_hal::spibsc::read_status_reg();
                 error!(
-                    "Dev-mode flash write failed: JEDEC={:02x} {:02x} {:02x}, SR={:#04x}",
+                    "Settings flash write failed: JEDEC={:02x} {:02x} {:02x}, SR={:#04x}",
                     id[0], id[1], id[2], sr
                 );
                 let mut line = *b"ID...... SR..";
