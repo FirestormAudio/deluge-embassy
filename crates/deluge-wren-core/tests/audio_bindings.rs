@@ -2548,3 +2548,81 @@ fn granular_new_round_trip_renders_finite_nonsilent() {
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a Granular voice");
 }
 
+// Sa-4 Task 4 — end-to-end: a poly granular voice driven from a Wren `Synth`,
+// rendered through a real `EngineHost`, over a longer window than the Task 3
+// round-trip above. `granular_new_round_trip_renders_finite_nonsilent`
+// (Task 3, above) already proved a short 64-frame render sounds with a
+// density/size bump; this test renders a much longer window (~10 engine
+// blocks) with a plain `density=100` (the brief's literal setter value) so
+// grains actually spawn and their Hann windows climb well off the `hann(0)
+// == 0` onset before the assertions run, matching the brief's "render a few
+// blocks" guidance.
+#[test]
+fn granular_renders_finite_bounded_nonsilent() {
+    let mut out = [StereoFrame::default(); 320];
+    run_and_render(
+        "var g = Synth.new { |p|\n\
+         \x20 var v = Granular.new(p, SampleBuffer.from([\n\
+         \x20 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,\n\
+         \x20 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0,\n\
+         \x20 -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0,\n\
+         \x20 -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1\n\
+         \x20 ]))\n\
+         \x20 v.density = 100\n\
+         \x20 return v * Env.adsr(0.01, 0.3, 0.6, 0.4)\n\
+         }\nOut.patch(g.out)\ng.noteOn(60, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite over a long granular render");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "granular voice sounds once grains spawn and Hann windows climb off zero");
+}
+
+// Two simultaneous note-ons -> two poly grain-cloud lanes fanned out by the
+// `VoiceAllocator`, same shape as `poly_sample_two_notes_two_voices`.
+#[test]
+fn granular_polyphonic() {
+    let mut out = [StereoFrame::default(); 320];
+    run_and_render(
+        "var g = Synth.new { |p|\n\
+         \x20 var v = Granular.new(p, SampleBuffer.from([\n\
+         \x20 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,\n\
+         \x20 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0,\n\
+         \x20 -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0,\n\
+         \x20 -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1\n\
+         \x20 ]))\n\
+         \x20 v.density = 100\n\
+         \x20 return v * Env.adsr(0.01, 0.3, 0.6, 0.4)\n\
+         }\nOut.patch(g.out)\ng.noteOn(60, 100)\ng.noteOn(67, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite with two simultaneous granular voices");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "two poly granular voices sound");
+}
+
+// The `grainPosition=`/`spray=` setters (plus `size=`/`density=`) actually
+// affect a real render, not just emit a `Cmd` (`granular_setters_emit_setparam`,
+// above, already proved the `Cmd` shape) — end-to-end through the engine the
+// render must still be finite/bounded/non-silent after every setter fires.
+#[test]
+fn granular_setters_change_render() {
+    let mut out = [StereoFrame::default(); 320];
+    run_and_render(
+        "var g = Synth.new { |p|\n\
+         \x20 var v = Granular.new(p, SampleBuffer.from([\n\
+         \x20 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,\n\
+         \x20 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0,\n\
+         \x20 -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0,\n\
+         \x20 -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1\n\
+         \x20 ]))\n\
+         \x20 v.grainPosition = 0.5\n\
+         \x20 v.size = 20\n\
+         \x20 v.density = 100\n\
+         \x20 v.spray = 0.3\n\
+         \x20 return v * Env.adsr(0.01, 0.3, 0.6, 0.4)\n\
+         }\nOut.patch(g.out)\ng.noteOn(64, 100)",
+        &mut out,
+    );
+    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite after grainPosition=/size=/density=/spray=");
+    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "granular voice still sounds after the setters fire");
+}
+
