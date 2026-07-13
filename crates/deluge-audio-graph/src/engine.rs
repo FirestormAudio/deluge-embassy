@@ -18,6 +18,7 @@ use deluge_dsp_kernels::poly::VOICES;
 use deluge_dsp_kernels::In;
 use deluge_dsp_kernels::limiter::MasterLimiter;
 use deluge_dsp_kernels::filter::MasterDcBlock;
+use deluge_dsp_kernels::eq::MasterEq;
 
 use crate::arena::Arena;
 use crate::node::{Kind, OutView, MAX_BLOCK, MAX_INPUTS};
@@ -56,6 +57,9 @@ pub struct Engine<
     // Opt-in master DC-blocker on the root bus, applied at the render seam BEFORE
     // the limiter. `None` = disabled (render path byte-unchanged).
     master_dcblock: Option<MasterDcBlock>,
+    // Opt-in master EQ on the root bus, applied at the render seam between the
+    // DC-block and the limiter. `None` = disabled (render path byte-unchanged).
+    master_eq: Option<MasterEq>,
 }
 
 impl<
@@ -84,6 +88,7 @@ impl<
             stream_state: [None; NODES],
             master_limiter: None,
             master_dcblock: None,
+            master_eq: None,
         }
     }
 
@@ -177,6 +182,10 @@ impl<
                 Some(dc) => dc.set_cutoff(cutoff_hz, self.dt),
                 None => self.master_dcblock = Some(MasterDcBlock::new(cutoff_hz, self.dt)),
             },
+            Cmd::SetMasterEq { freq, gain_db, q, eq_type } => match &mut self.master_eq {
+                Some(eq) => eq.set_params(freq, gain_db, q, eq_type),
+                None => self.master_eq = Some(MasterEq::new(freq, gain_db, q, eq_type)),
+            },
             Cmd::Free { node } => {
                 // Free a pooled table region (if bound) BEFORE reclaiming the
                 // node's arena slot: `table_src()` reads through the node,
@@ -197,6 +206,7 @@ impl<
                 self.stream_state = [None; NODES];
                 self.master_limiter = None;
                 self.master_dcblock = None;
+                self.master_eq = None;
             }
         }
     }
@@ -411,6 +421,9 @@ impl<
             let b = root.0 as usize;
             if let Some(dc) = &mut self.master_dcblock {
                 dc.process(&mut self.bus_l[b], &mut self.bus_r[b]);
+            }
+            if let Some(eq) = &mut self.master_eq {
+                eq.process(&mut self.bus_l[b], &mut self.bus_r[b], self.dt);
             }
             if let Some(lim) = &mut self.master_limiter {
                 lim.process(&mut self.bus_l[b], &mut self.bus_r[b], self.dt);
@@ -1380,5 +1393,67 @@ mod tests {
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
         assert!((out[0].l - 0.5).abs() < 1e-6); // DC-block cleared → 0.5 passes
+    }
+
+    #[test]
+    fn master_eq_changes_render_when_enabled() {
+        let build = |eq: bool| -> f32 {
+            let mut e = E::new(48_000.0);
+            e.create(NodeId(0), Kind::Add);
+            *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.2);
+            *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+            e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+            e.set_root(BusId(0));
+            if eq {
+                // Low-shelf (type 1) boost: a shelf below `freq` raises DC content,
+                // so a constant source measurably changes (a peak EQ would not
+                // touch DC). +12 dB → the 0.2 DC level climbs toward ~0.8.
+                e.apply(Cmd::SetMasterEq { freq: 1000.0, gain_db: 12.0, q: 0.707, eq_type: 1 });
+            }
+            let mut out = [StereoFrame::default(); 16];
+            let sil = [StereoFrame::default(); 16];
+            for _ in 0..64 {
+                e.render(&mut out, &sil);
+            }
+            out[15].l
+        };
+        let off = build(false);
+        let on = build(true);
+        assert!(on > off + 0.1, "low-shelf boost should raise the DC level (off={}, on={})", off, on);
+    }
+
+    #[test]
+    fn master_eq_disabled_is_byte_identical() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.5).abs() < 1e-6); // no EQ → 0.5 passes
+    }
+
+    #[test]
+    fn master_eq_reset_clears() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::SetMasterEq { freq: 2000.0, gain_db: 12.0, q: 2.0, eq_type: 0 });
+        e.apply(Cmd::Reset);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.5).abs() < 1e-6); // EQ cleared → 0.5 passes
     }
 }

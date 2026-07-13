@@ -30,6 +30,9 @@ pub enum Cmd {
     /// Enable/configure the master DC-blocker on the root bus (before the limiter).
     /// Creates it if absent, else updates the corner in place.
     SetMasterDcBlock { cutoff_hz: f32 },
+    /// Enable/configure the master EQ on the root bus (between DC-block and limiter).
+    /// Creates it if absent, else updates the band params in place.
+    SetMasterEq { freq: f32, gain_db: f32, q: f32, eq_type: u8 },
     Free { node: NodeId },
     Reset,
 }
