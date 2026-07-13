@@ -27,6 +27,9 @@ pub enum Cmd {
     /// Enable/configure the master limiter on the root bus. Creates it if absent,
     /// else updates params in place (preserving the running gain envelope).
     SetMasterLimit { ceiling: f32, release: f32 },
+    /// Enable/configure the master DC-blocker on the root bus (before the limiter).
+    /// Creates it if absent, else updates the corner in place.
+    SetMasterDcBlock { cutoff_hz: f32 },
     Free { node: NodeId },
     Reset,
 }

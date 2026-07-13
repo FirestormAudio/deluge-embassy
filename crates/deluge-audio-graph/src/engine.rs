@@ -17,6 +17,7 @@ use core::cell::UnsafeCell;
 use deluge_dsp_kernels::poly::VOICES;
 use deluge_dsp_kernels::In;
 use deluge_dsp_kernels::limiter::MasterLimiter;
+use deluge_dsp_kernels::filter::MasterDcBlock;
 
 use crate::arena::Arena;
 use crate::node::{Kind, OutView, MAX_BLOCK, MAX_INPUTS};
@@ -52,6 +53,9 @@ pub struct Engine<
     // Opt-in master limiter on the root bus, applied at the render seam before
     // the output clamp. `None` = disabled (render path byte-unchanged).
     master_limiter: Option<MasterLimiter>,
+    // Opt-in master DC-blocker on the root bus, applied at the render seam BEFORE
+    // the limiter. `None` = disabled (render path byte-unchanged).
+    master_dcblock: Option<MasterDcBlock>,
 }
 
 impl<
@@ -79,6 +83,7 @@ impl<
             pool: crate::pool::Pool::new(),
             stream_state: [None; NODES],
             master_limiter: None,
+            master_dcblock: None,
         }
     }
 
@@ -168,6 +173,10 @@ impl<
                 Some(lim) => { lim.set_ceiling(ceiling); lim.set_release(release); }
                 None => self.master_limiter = Some(MasterLimiter::new(ceiling, release)),
             },
+            Cmd::SetMasterDcBlock { cutoff_hz } => match &mut self.master_dcblock {
+                Some(dc) => dc.set_cutoff(cutoff_hz, self.dt),
+                None => self.master_dcblock = Some(MasterDcBlock::new(cutoff_hz, self.dt)),
+            },
             Cmd::Free { node } => {
                 // Free a pooled table region (if bound) BEFORE reclaiming the
                 // node's arena slot: `table_src()` reads through the node,
@@ -187,6 +196,7 @@ impl<
                 self.root = None;
                 self.stream_state = [None; NODES];
                 self.master_limiter = None;
+                self.master_dcblock = None;
             }
         }
     }
@@ -396,10 +406,13 @@ impl<
                 }
             }
         }
-        // Master limiter (opt-in): process the root bus in place before the clamp.
+        // Master chain (opt-in): DC-block → limiter, on the root bus before the clamp.
         if let Some(root) = self.root {
+            let b = root.0 as usize;
+            if let Some(dc) = &mut self.master_dcblock {
+                dc.process(&mut self.bus_l[b], &mut self.bus_r[b]);
+            }
             if let Some(lim) = &mut self.master_limiter {
-                let b = root.0 as usize;
                 lim.process(&mut self.bus_l[b], &mut self.bus_r[b], self.dt);
             }
         }
@@ -1314,5 +1327,58 @@ mod tests {
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
         assert!((out[0].l - 0.8).abs() < 1e-6); // limiter cleared → unlimited
+    }
+
+    #[test]
+    fn master_dcblock_removes_dc_when_enabled() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5); // DC
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::SetMasterDcBlock { cutoff_hz: 20.0 });
+        // Render several blocks so the HP settles.
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        for _ in 0..512 {
+            e.render(&mut out, &sil);
+        }
+        assert!(out[15].l.abs() < 1e-2, "DC not removed: {}", out[15].l);
+    }
+
+    #[test]
+    fn master_dcblock_disabled_is_byte_identical() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.5).abs() < 1e-6); // no DC-block → 0.5 passes
+    }
+
+    #[test]
+    fn master_dcblock_reset_clears() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::SetMasterDcBlock { cutoff_hz: 20.0 });
+        e.apply(Cmd::Reset);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.5).abs() < 1e-6); // DC-block cleared → 0.5 passes
     }
 }
