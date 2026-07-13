@@ -33,6 +33,12 @@ impl MasterLimiter {
 
     /// Limit `l`/`r` in place with a single linked gain. `dt` = 1/sample_rate.
     pub fn process(&mut self, l: &mut [f32], r: &mut [f32], dt: f32) {
+        // Sanitize dt: a non-finite/≤0 dt would make `rel_c` NaN and PERMANENTLY
+        // latch `self.gain` to NaN (once NaN, `target < gain` is always false so
+        // the instant-attack branch can never recover it) — fatal on the master
+        // output. `dt` is normally 1/sample_rate (a sane constant), but this
+        // kernel is the last safety net before the clamp, so guard it.
+        let dt = if dt.is_finite() && dt > 0.0 { dt } else { FLOOR };
         // One-pole release coefficient: 1 - e^(-dt/tau), tau floored at dt.
         let rel_c = 1.0 - libm::expf(-dt / self.release_s.max(dt));
         let n = l.len().min(r.len());
@@ -133,5 +139,20 @@ mod tests {
         let mut r2 = [2.0f32; 8];
         lim.process(&mut l2, &mut r2, DT); // must not panic
         assert!(l2[7].is_finite());
+    }
+
+    #[test]
+    fn nonfinite_dt_does_not_latch_gain_to_nan() {
+        // A NaN/inf dt must not permanently poison the gain envelope: a bad-dt
+        // call is sanitized, and a subsequent valid-dt call still limits cleanly.
+        let mut lim = MasterLimiter::new(0.5, 0.05);
+        let mut l = [0.8f32; 64];
+        let mut r = [0.8f32; 64];
+        lim.process(&mut l, &mut r, f32::NAN);      // must not poison gain
+        lim.process(&mut l, &mut r, f32::INFINITY); // nor this
+        let mut l2 = [0.8f32; 64];
+        let mut r2 = [0.8f32; 64];
+        lim.process(&mut l2, &mut r2, DT);          // valid dt → clean limiting
+        assert!(l2[63].is_finite() && l2[63].abs() <= 0.5 + 1e-6, "l2[63]={}", l2[63]);
     }
 }
