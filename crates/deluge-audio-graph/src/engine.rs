@@ -16,6 +16,7 @@ use core::cell::UnsafeCell;
 
 use deluge_dsp_kernels::poly::VOICES;
 use deluge_dsp_kernels::In;
+use deluge_dsp_kernels::limiter::MasterLimiter;
 
 use crate::arena::Arena;
 use crate::node::{Kind, OutView, MAX_BLOCK, MAX_INPUTS};
@@ -48,6 +49,9 @@ pub struct Engine<
     // Per-`StreamPlayer`-node fill cursors (produced by the prefetch task via
     // `Cmd::StreamFill`, consumed at render). Keyed by node index.
     stream_state: [Option<crate::stream::StreamCursors>; NODES],
+    // Opt-in master limiter on the root bus, applied at the render seam before
+    // the output clamp. `None` = disabled (render path byte-unchanged).
+    master_limiter: Option<MasterLimiter>,
 }
 
 impl<
@@ -74,6 +78,7 @@ impl<
             writes_len: 0,
             pool: crate::pool::Pool::new(),
             stream_state: [None; NODES],
+            master_limiter: None,
         }
     }
 
@@ -159,6 +164,10 @@ impl<
             Cmd::BusWrite { src, bus } => self.bus_write(src, bus),
             Cmd::BusWriteGains { src, bus, gl, gr } => self.bus_write_gains(src, bus, gl, gr),
             Cmd::SetRoot { bus } => self.set_root(bus),
+            Cmd::SetMasterLimit { ceiling, release } => match &mut self.master_limiter {
+                Some(lim) => { lim.set_ceiling(ceiling); lim.set_release(release); }
+                None => self.master_limiter = Some(MasterLimiter::new(ceiling, release)),
+            },
             Cmd::Free { node } => {
                 // Free a pooled table region (if bound) BEFORE reclaiming the
                 // node's arena slot: `table_src()` reads through the node,
@@ -177,6 +186,7 @@ impl<
                 self.writes_len = 0;
                 self.root = None;
                 self.stream_state = [None; NODES];
+                self.master_limiter = None;
             }
         }
     }
@@ -384,6 +394,13 @@ impl<
                     self.bus_l[b][i] += v * gl;
                     self.bus_r[b][i] += v * gr;
                 }
+            }
+        }
+        // Master limiter (opt-in): process the root bus in place before the clamp.
+        if let Some(root) = self.root {
+            if let Some(lim) = &mut self.master_limiter {
+                let b = root.0 as usize;
+                lim.process(&mut self.bus_l[b], &mut self.bus_r[b], self.dt);
             }
         }
         // Copy root bus to output, clamped.
@@ -1240,5 +1257,59 @@ mod tests {
         let out = e.node_output(NodeId(6), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 8.5), "bounded after steal");
         assert!(out.iter().any(|&s| s.abs() > 1e-3), "still sounds after steal");
+    }
+
+    #[test]
+    fn master_limiter_bounds_root_bus_when_enabled() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::SetMasterLimit { ceiling: 0.5, release: 0.05 });
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        for i in 0..16 {
+            assert!(out[i].l.abs() <= 0.5 + 1e-6, "out[{}].l={}", i, out[i].l);
+        }
+    }
+
+    #[test]
+    fn master_limiter_disabled_is_raw_then_clamp() {
+        // Without SetMasterLimit, a 0.8 root bus passes at 0.8 (below the clamp).
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.8).abs() < 1e-6); // unlimited, only the [-1,1] clamp would act
+    }
+
+    #[test]
+    fn master_limiter_reset_clears() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.apply(Cmd::SetMasterLimit { ceiling: 0.5, release: 0.05 });
+        e.apply(Cmd::Reset);
+        // After Reset the graph is torn down; rebuild the same patch, no limiter.
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.8).abs() < 1e-6); // limiter cleared → unlimited
     }
 }
