@@ -280,6 +280,48 @@ impl OnePoleHp {
     }
 }
 
+/// Default master DC-block corner (Hz). Low enough to leave audible bass intact.
+pub const DEFAULT_DC_HZ: f32 = 20.0;
+
+/// Clamp a requested DC-block corner to a sane, finite, positive range so the
+/// bilinear `tan(wc/2)` stays finite (NaN/inf/0/neg → default; else clamped).
+fn sanitize_dc_hz(hz: f32) -> f32 {
+    if hz.is_finite() {
+        hz.clamp(0.1, 20_000.0)
+    } else {
+        DEFAULT_DC_HZ
+    }
+}
+
+/// Stereo master DC-blocker: two independent one-pole high-passes (L/R). Applied
+/// to the render root bus before the master limiter — DC eats headroom and biases
+/// the limiter's peak detector, so it is removed first. Per-channel (no linking).
+pub struct MasterDcBlock {
+    ch: [OnePoleHp; 2], // [L, R]
+}
+
+impl MasterDcBlock {
+    pub fn new(cutoff_hz: f32, dt: f32) -> MasterDcBlock {
+        let mut m = MasterDcBlock { ch: [OnePoleHp::default(); 2] };
+        m.set_cutoff(cutoff_hz, dt);
+        m
+    }
+    /// Set both channels' corner. `wc = 2π·f_corner·dt` (radians/sample).
+    pub fn set_cutoff(&mut self, cutoff_hz: f32, dt: f32) {
+        let wc = sanitize_dc_hz(cutoff_hz) as f64 * core::f64::consts::TAU * dt.max(1e-6) as f64;
+        self.ch[0].set_coeff(wc);
+        self.ch[1].set_coeff(wc);
+    }
+    /// High-pass `l`/`r` in place, per channel.
+    pub fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len().min(r.len());
+        for i in 0..n {
+            l[i] = self.ch[0].process(l[i]);
+            r[i] = self.ch[1].process(r[i]);
+        }
+    }
+}
+
 /// Single static config point for the diode-ladder integration
 /// sub-stepping (RK2/Heun sub-steps per output sample, applied to both
 /// ladder stages). Fixed at compile time rather than a runtime knob: a
@@ -930,6 +972,66 @@ mod tests {
     use super::*;
     use crate::In;
     use proptest::prelude::*;
+
+    #[test]
+    fn dcblock_removes_dc_offset() {
+        const DT: f32 = 1.0 / 48_000.0;
+        let mut dc = MasterDcBlock::new(20.0, DT);
+        // Constant DC input → HP output decays toward 0 over a short settle.
+        let mut l = [0.5f32; 4096];
+        let mut r = [0.5f32; 4096];
+        dc.process(&mut l, &mut r);
+        assert!(l[4095].abs() < 1e-3, "L DC not removed: {}", l[4095]);
+        assert!(r[4095].abs() < 1e-3, "R DC not removed: {}", r[4095]);
+    }
+
+    #[test]
+    fn dcblock_preserves_ac_removes_dc() {
+        const DT: f32 = 1.0 / 48_000.0;
+        let mut dc = MasterDcBlock::new(20.0, DT);
+        // 0.4 DC + a 1 kHz sine (amp 0.3). After settle: block mean ~0, AC intact.
+        let f = 1000.0f32;
+        let mut l = [0.0f32; 8192];
+        let mut r = [0.0f32; 8192];
+        for i in 0..8192 {
+            let s = 0.4 + 0.3 * libm::sinf(core::f32::consts::TAU * f * (i as f32) * DT);
+            l[i] = s;
+            r[i] = s;
+        }
+        dc.process(&mut l, &mut r);
+        // Mean of the settled tail ~0 (DC removed).
+        let tail = &l[4096..];
+        let mean: f32 = tail.iter().sum::<f32>() / tail.len() as f32;
+        assert!(mean.abs() < 1e-2, "DC not removed, mean={}", mean);
+        // AC amplitude preserved: settled peak still near 0.3.
+        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!((peak - 0.3).abs() < 0.05, "AC amplitude lost, peak={}", peak);
+    }
+
+    #[test]
+    fn dcblock_channels_independent() {
+        const DT: f32 = 1.0 / 48_000.0;
+        let mut dc = MasterDcBlock::new(20.0, DT);
+        // Different per-channel DC offsets both removed independently.
+        let mut l = [0.7f32; 4096];
+        let mut r = [-0.3f32; 4096];
+        dc.process(&mut l, &mut r);
+        assert!(l[4095].abs() < 1e-3);
+        assert!(r[4095].abs() < 1e-3);
+    }
+
+    #[test]
+    fn dcblock_no_panic_on_adversarial_params() {
+        let mut dc = MasterDcBlock::new(f32::NAN, 0.0); // sanitized cutoff + floored dt
+        let mut l = [0.5f32; 16];
+        let mut r = [0.5f32; 16];
+        dc.process(&mut l, &mut r);
+        dc.set_cutoff(f32::INFINITY, f32::NAN); // both sanitized
+        dc.set_cutoff(-5.0, 1.0 / 48_000.0); // negative cutoff clamped
+        dc.set_cutoff(1e30, 1.0 / 48_000.0); // huge cutoff clamped
+        dc.process(&mut l, &mut r); // must not panic
+        assert!(l[15].is_finite());
+    }
 
     proptest! {
         /// P0 gate (spec §8): a stable one-pole never overshoots a bounded,
