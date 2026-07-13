@@ -212,6 +212,12 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
     // long-press threshold we fire immediately.
     let mut press_at: Option<Instant> = None;
 
+    // A SELECT press held from before the selector opened — the recovery gesture,
+    // or the press that confirmed a previous screen — is not a new press.  Wait
+    // for the release before acting on the button at all; otherwise the hold
+    // crosses the long-press threshold below and fires a write-to-flash prompt.
+    let mut armed = !SELECT_DOWN.load(Ordering::Acquire);
+
     // Use the SELECT encoder for scrolling in the bootloader selector.
     const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
 
@@ -266,29 +272,34 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
 
         // SELECT button edge handling (state pumped by pic_rx_task in main.rs).
         let down = SELECT_DOWN.load(Ordering::Acquire);
-        match (press_at, down) {
-            (None, true) => {
-                // Rising edge: a press began. Any press cancels the countdown.
-                countdown_active = false;
-                press_at = Some(Instant::now());
-            }
-            (Some(at), true) => {
-                // Still held — fire as soon as it becomes a long-press.
-                if at.elapsed() >= Duration::from_millis(LONG_PRESS_MS) {
+        if !armed {
+            // Still letting go of a press that predates this screen.
+            armed = !down;
+        } else {
+            match (press_at, down) {
+                (None, true) => {
+                    // Rising edge: a press began. Any press cancels the countdown.
+                    countdown_active = false;
+                    press_at = Some(Instant::now());
+                }
+                (Some(at), true) => {
+                    // Still held — fire as soon as it becomes a long-press.
+                    if at.elapsed() >= Duration::from_millis(LONG_PRESS_MS) {
+                        return Selection {
+                            index: cursor,
+                            long_press: true,
+                        };
+                    }
+                }
+                (Some(_), false) => {
+                    // Falling edge before the threshold: a short tap = confirm.
                     return Selection {
                         index: cursor,
-                        long_press: true,
+                        long_press: false,
                     };
                 }
+                (None, false) => {}
             }
-            (Some(_), false) => {
-                // Falling edge before the threshold: a short tap = confirm.
-                return Selection {
-                    index: cursor,
-                    long_press: false,
-                };
-            }
-            (None, false) => {}
         }
 
         // Auto-boot the default entry when the countdown expires.

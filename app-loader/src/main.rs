@@ -25,10 +25,6 @@ mod settings;
 mod ui;
 mod usbmsc;
 
-/// Seconds the GRUB-style boot menu counts down before auto-booting the default
-/// entry (the on-flash firmware when present).
-const BOOT_COUNTDOWN_SECS: u8 = 5;
-
 /// Label for the synthetic menu entry that enters SD-card USB mass-storage mode.
 const DATA_MENU_LABEL: &[u8] = b"DATA TRANSFER";
 
@@ -42,6 +38,19 @@ use core::sync::atomic::AtomicBool;
 /// Set by `pic_rx_task` when the BACK button is pressed.  USB modes poll this to
 /// exit back to the boot menu (see [`usbmsc`]).
 pub(crate) static BACK_PRESSED: AtomicBool = AtomicBool::new(false);
+
+/// Latched by `pic_rx_task` on the first SELECT press — including a SELECT held
+/// down at power-on, which the PIC reports in response to the
+/// `CMD_RESEND_BUTTON_STATES` that `pic::init` sends.
+///
+/// `boot_task` samples this once, at the boot decision, as the **recovery
+/// gesture**: it forces the boot menu no matter what the persisted auto-boot
+/// setting says.  A latch rather than a level check, so the gesture is forgiving
+/// — any SELECT press between reset and the decision counts, and the user does
+/// not have to guess when the loader looks.  Without it, a unit set to
+/// `AUTO-BOOT: INSTANT` with broken firmware in its flash slot would be
+/// unrecoverable.
+pub(crate) static SELECT_SEEN: AtomicBool = AtomicBool::new(false);
 use core::panic::PanicInfo;
 
 use embassy_executor::{Executor, Spawner};
@@ -145,9 +154,11 @@ async fn pic_rx_task() {
             Some(Event::OledSelected) => pic::notify_oled_selected(),
             Some(Event::OledDeselected) => pic::notify_oled_deselected(),
             // Track the SELECT button held-state so the selector can tell a
-            // short tap (confirm) from a long-press (write-to-flash).
+            // short tap (confirm) from a long-press (write-to-flash), and latch
+            // the first press as the recovery gesture (see SELECT_SEEN).
             Some(Event::ButtonPress { id }) if id == controls::encoder_button::SELECT => {
-                ui::SELECT_DOWN.store(true, Ordering::Release)
+                ui::SELECT_DOWN.store(true, Ordering::Release);
+                crate::SELECT_SEEN.store(true, Ordering::Release);
             }
             Some(Event::ButtonRelease { id }) if id == controls::encoder_button::SELECT => {
                 ui::SELECT_DOWN.store(false, Ordering::Release)
@@ -305,6 +316,22 @@ async fn boot_task(spawner: Spawner) {
     oled::init().await;
     info!("OLED: ready");
 
+    // Recovery gesture: SELECT pressed or held at any point between reset and
+    // here (see SELECT_SEEN).  Sampled once — later menu passes are user-driven
+    // and must not re-trigger it.  The splash matters most on an INSTANT unit,
+    // which otherwise gives no sign that the *hold* — rather than a failed boot —
+    // is why the menu appeared.  Nothing is persisted: the user's setting stands.
+    let recovery = SELECT_SEEN.load(core::sync::atomic::Ordering::Acquire);
+    if recovery {
+        info!("Recovery: SELECT held at boot — forcing the boot menu");
+        ui::show_message(b"RECOVERY", b"BOOT MENU").await;
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
+    }
+
+    // Auto-boot (countdown *or* instant) only ever fires on the first pass of the
+    // loop below.  See `settings::boot_mode`.
+    let mut auto_boot_allowed = true;
+
     // Boot menu loop.  A bootable selection launches and never returns; the
     // DATA TRANSFER USB mode returns here when BACK is pressed, and a
     // write-to-flash also returns here, so the menu is rebuilt from fresh state
@@ -398,40 +425,55 @@ async fn boot_task(spawner: Spawner) {
             boot_total, has_flash, cfg.dev_mode
         );
 
-        // Countdown auto-boots the default only when there is a real boot target
-        // — and never in dev mode, where the unit waits indefinitely for either a
-        // menu selection or a USB upload.
-        let countdown = if cfg.dev_mode || boot_total == 0 {
-            0
-        } else {
-            BOOT_COUNTDOWN_SECS
-        };
+        // How to boot: skip the menu entirely (INSTANT), run it with a countdown,
+        // or sit on it.  All the precedence lives in the host-tested decision fn.
+        let mode = settings::boot_mode(&cfg, boot_total, recovery, auto_boot_allowed);
+        // Every pass after this one is user-driven — never auto-boot again.
+        auto_boot_allowed = false;
+        info!("Boot mode: {:?}", mode);
 
-        // In dev mode, race the menu selector against the background USB upload
-        // listener: whichever resolves first wins.  The listener only ever
-        // "returns" by loading and launching a received image (it never hands a
-        // value back), so the menu branch is the only one that yields a selection
-        // here.  Outside dev mode, just run the selector.
-        //
-        // Crucially, bring the USB device up *before* `run_selector` starts
-        // drawing: USB bring-up reconfigures interrupts/clocks, and doing that
-        // while an OLED frame DMA + PIC handshake is in flight can wedge the
-        // display so the menu never redraws (the proven `usbmsc` path builds USB
-        // before starting its OLED loop for the same reason).
-        let selection = if cfg.dev_mode {
-            use embassy_futures::select::{Either, select};
-            let listener = devupload::prepare();
-            match select(
-                ui::run_selector(&name_refs[..menu_total], 0, countdown),
-                listener.run(),
-            )
-            .await
-            {
-                Either::First(sel) => sel,
-                Either::Second(never) => never,
+        let selection = if mode == settings::BootMode::Instant {
+            // The menu is never drawn: launch the default entry (index 0 — the
+            // flash image when present, else the first SD app).  `boot_mode`
+            // guarantees `boot_total > 0` here, so index 0 is a real boot target.
+            info!("Auto-boot: INSTANT — launching the default entry");
+            ui::Selection {
+                index: 0,
+                long_press: false,
             }
         } else {
-            ui::run_selector(&name_refs[..menu_total], 0, countdown).await
+            let countdown = match mode {
+                settings::BootMode::Countdown(secs) => secs,
+                // Wait: `run_selector` treats 0 as "no countdown, wait for a pick".
+                _ => 0,
+            };
+
+            // In dev mode, race the menu selector against the background USB upload
+            // listener: whichever resolves first wins.  The listener only ever
+            // "returns" by loading and launching a received image (it never hands a
+            // value back), so the menu branch is the only one that yields a selection
+            // here.  Outside dev mode, just run the selector.
+            //
+            // Crucially, bring the USB device up *before* `run_selector` starts
+            // drawing: USB bring-up reconfigures interrupts/clocks, and doing that
+            // while an OLED frame DMA + PIC handshake is in flight can wedge the
+            // display so the menu never redraws (the proven `usbmsc` path builds USB
+            // before starting its OLED loop for the same reason).
+            if cfg.dev_mode {
+                use embassy_futures::select::{Either, select};
+                let listener = devupload::prepare();
+                match select(
+                    ui::run_selector(&name_refs[..menu_total], 0, countdown),
+                    listener.run(),
+                )
+                .await
+                {
+                    Either::First(sel) => sel,
+                    Either::Second(never) => never,
+                }
+            } else {
+                ui::run_selector(&name_refs[..menu_total], 0, countdown).await
+            }
         };
         let ui::Selection {
             index: selected,

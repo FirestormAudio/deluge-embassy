@@ -15,7 +15,9 @@
 
 use deluge_bsp::flash;
 
-pub use deluge_image::settings::{RECORD_LEN, Settings, decode, encode};
+pub use deluge_image::settings::{
+    AUTO_BOOT_LABEL_MAX, AutoBoot, BootMode, RECORD_LEN, Settings, boot_mode, decode, encode,
+};
 
 /// Address of the settings sector in the **uncached** memory-mapped flash mirror
 /// (`0x5840_0000`).  We read settings through this mirror, not the cached
