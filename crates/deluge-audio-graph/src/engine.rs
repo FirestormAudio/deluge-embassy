@@ -232,6 +232,8 @@ impl<
                 self.bus_gain = [1.0; BUSES];
                 self.bus_sends = [None; NODES];
                 self.bus_sends_len = 0;
+                self.bus_l = [[0.0; BLOCK]; BUSES];
+                self.bus_r = [[0.0; BLOCK]; BUSES];
             }
         }
     }
@@ -446,13 +448,15 @@ impl<
                 None => { self.in_l[i] = 0.0; self.in_r[i] = 0.0; }
             }
         }
-        // Zero buses.
+        // Evaluate nodes FIRST, so an `Input::Bus` node-read sees the PREVIOUS
+        // block's bus content (one-block-delayed) rather than a freshly-zeroed
+        // bus — this is what lets a bus feed an effect node (aux returns).
+        self.render_block();
+        // NOW zero the buses and refill them from this block's node outputs.
         for b in 0..BUSES {
             self.bus_l[b] = [0.0; BLOCK];
             self.bus_r[b] = [0.0; BLOCK];
         }
-        // Evaluate nodes.
-        self.render_block();
         // Apply bus writes (per-side gains; mono center = (1,1)).
         let arr = unsafe { &*self.outs.get() };
         for w in 0..self.writes_len {
@@ -1687,5 +1691,74 @@ mod tests {
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil); // must not panic
         assert!((out[0].l - 0.6).abs() < 1e-6, "self/oob send no-op: {}", out[0].l);
+    }
+
+    #[test]
+    fn bus_fed_node_reads_previous_block() {
+        let mut e = E::new(16.0);
+        // node0 = const 0.25, written (center) into bus1 → bus_l[1]=bus_r[1]=0.25.
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.25);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        // node1 = reads bus1 (Add(bus1, 0)), routed to master bus0. Note
+        // `Input::Bus` sums L+R, so a 0.25 center write reads back as 0.5.
+        e.create(NodeId(1), Kind::Add);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Bus(BusId(1));
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        // Block 1: node1 reads bus1 = 0 (initial), so master ~0.
+        e.render(&mut out, &sil);
+        assert!(out[0].l.abs() < 1e-6, "block1 bus read should be 0: {}", out[0].l);
+        // Block 2: node1 reads bus1 = block1's write (0.25 center → L+R sum = 0.5)
+        // → node1 = 0.5 → master = 0.5. Proves the one-block-late bus→node read.
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.5).abs() < 1e-6, "block2 one-block-late read: {}", out[0].l);
+    }
+
+    #[test]
+    fn existing_routing_byte_identical_after_reorder() {
+        // Mirrors two_nodes_sum_into_master_bus: no Input::Bus reads → unchanged.
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.3);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.create(NodeId(1), Kind::Add);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Const(0.4);
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!((out[0].l - 0.7).abs() < 1e-6); // 0.3 + 0.4, same as before the reorder
+    }
+
+    #[test]
+    fn reset_zeros_buses() {
+        let mut e = E::new(16.0);
+        // Drive bus1 with content over a block.
+        e.create(NodeId(0), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.9);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        e.set_root(BusId(1));
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil); // bus1 now holds 0.9
+        e.apply(Cmd::Reset);
+        // Rebuild a bus1-reading graph; first render must read a zeroed bus1.
+        e.create(NodeId(1), Kind::Add);
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Bus(BusId(1));
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
+        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.set_root(BusId(0));
+        e.render(&mut out, &sil);
+        assert!(out[0].l.abs() < 1e-6, "Reset must zero buses; got stale {}", out[0].l);
     }
 }
