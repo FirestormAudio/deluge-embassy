@@ -544,8 +544,11 @@ pub fn run_and_render<const N: usize>(src: &str, out: &mut [StereoFrame; N]) {
         // node state, so render successive 32-frame chunks to fill all N frames
         // with continuity (a real N-sample window for time-based effects).
         let eng = &mut (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap().eng;
+        // Task 1: no real input source wired yet (Task 3 feeds captured
+        // codec input); pass silence sized to each chunk.
+        let sil = [StereoFrame::default(); 32];
         for chunk in out.chunks_mut(32) {
-            eng.render(chunk);
+            eng.render(chunk, &sil[..chunk.len()]);
         }
         wren_sys::wrenFreeVM(vm);
         crate::reset();

@@ -58,7 +58,8 @@ mod tests {
         let mut e = E::new(16.0);
         saw_patch(&mut e);
         let mut out = [StereoFrame::default(); 16];
-        e.render(&mut out);
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
         assert!((out[1].l - (-0.41666675)).abs() < 1e-6); // saw at phase .25 (band-limited)
     }
 
@@ -82,7 +83,8 @@ mod tests {
         // SAME node's output twice: 0.25 + 0.25 = 0.5 (not two distinct
         // sources).
         let mut out = [StereoFrame::default(); 16];
-        e.render(&mut out);
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
         assert!((out[0].l - 0.5).abs() < 1e-6);
         assert!(out[0].l.is_finite() && out[0].l.abs() <= 1.0);
     }
@@ -109,7 +111,8 @@ mod tests {
         e.apply(Cmd::SetRoot { bus: BusId(0) });
 
         let mut out = [StereoFrame::default(); 16];
-        e.render(&mut out);
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
         // Env level after one sample's attack increment (dt/atk) is small but not
         // exactly 0 (the kernel writes post-increment); still far quieter than a
         // fully-open envelope would produce.
@@ -141,7 +144,8 @@ mod tests {
         e.apply(Cmd::SetRoot { bus: BusId(0) });
 
         let mut out = [StereoFrame::default(); 8];
-        e.render(&mut out);
+        let sil = [StereoFrame::default(); 8];
+        e.render(&mut out, &sil);
 
         // CHARACTERIZATION golden re-pinned 2026-07-07 after Osc band-limiting (Tasks 1-3).
         // Regenerate only on an intended, reviewed output change.

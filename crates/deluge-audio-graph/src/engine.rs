@@ -18,7 +18,7 @@ use deluge_dsp_kernels::poly::VOICES;
 use deluge_dsp_kernels::In;
 
 use crate::arena::Arena;
-use crate::node::{OutView, MAX_BLOCK, MAX_INPUTS};
+use crate::node::{Kind, OutView, MAX_BLOCK, MAX_INPUTS};
 use crate::{BusId, Input, Node, NodeId, StereoFrame};
 
 pub struct Engine<
@@ -34,6 +34,10 @@ pub struct Engine<
     dt: f32,
     pub(crate) bus_l: [[f32; BLOCK]; BUSES],
     pub(crate) bus_r: [[f32; BLOCK]; BUSES],
+    // Stereo line-in for the current block, filled by `render` from its `input`
+    // arg and read by `render_block` for `Kind::Input` nodes.
+    pub(crate) in_l: [f32; BLOCK],
+    pub(crate) in_r: [f32; BLOCK],
     // Bus rendered to the audio output; set via `set_root`, read in `render`.
     pub(crate) root: Option<BusId>,
     // Pending bus writes, re-applied every `render` (P0: no persistent routing
@@ -63,6 +67,8 @@ impl<
             dt: 1.0 / sample_rate,
             bus_l: [[0.0; BLOCK]; BUSES],
             bus_r: [[0.0; BLOCK]; BUSES],
+            in_l: [0.0; BLOCK],
+            in_r: [0.0; BLOCK],
             root: None,
             writes: [None; NODES],
             writes_len: 0,
@@ -282,6 +288,14 @@ impl<
                 if let Some(n) = self.arena.node_mut(id) {
                     n.poly_process(&ins, poly_in, self.dt, out, pool_region, stream);
                 }
+            } else if kind == Kind::Input {
+                // Stereo line-in: copy engine input rows into port0 (L) / port1 (R).
+                // `self.in_l`/`in_r` are disjoint fields from `self.outs` (raw-ptr
+                // borrow), same disjoint-field discipline as bus access.
+                for i in 0..BLOCK {
+                    arr[base][i] = self.in_l[i];
+                    arr[base + 1][i] = self.in_r[i];
+                }
             } else {
                 let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
                 // Resolve a pooled node's region MUTABLY (delay lines write it;
@@ -337,7 +351,15 @@ impl<
 
     /// Render one block: clear buses, evaluate nodes, apply pending bus
     /// writes, then copy the root bus into `out`, clamped to `[-1, 1]`.
-    pub fn render(&mut self, out: &mut [StereoFrame]) {
+    pub fn render(&mut self, out: &mut [StereoFrame], input: &[StereoFrame]) {
+        // Fill the stereo line-in rows from `input`; frames beyond `input.len()`
+        // (including an empty slice) read as silence — no panic on any length.
+        for i in 0..BLOCK {
+            match input.get(i) {
+                Some(f) => { self.in_l[i] = f.l; self.in_r[i] = f.r; }
+                None => { self.in_l[i] = 0.0; self.in_r[i] = 0.0; }
+            }
+        }
         // Zero buses.
         for b in 0..BUSES {
             self.bus_l[b] = [0.0; BLOCK];
@@ -504,7 +526,8 @@ mod tests {
         e.set_root(BusId(0));
 
         let mut out = [StereoFrame::default(); 16];
-        e.render(&mut out);
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
         assert!((out[0].l - 0.7).abs() < 1e-6);
         assert!((out[0].r - 0.7).abs() < 1e-6);
     }
@@ -518,7 +541,8 @@ mod tests {
         e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
-        e.render(&mut out);
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
         assert!((out[0].l - 1.0).abs() < 1e-6); // clamped
     }
 
@@ -562,7 +586,8 @@ mod tests {
         e.set_root(BusId(0));
 
         let mut out = [StereoFrame::default(); 16];
-        e.render(&mut out); // must not panic
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil); // must not panic
 
         for f in out.iter() {
             assert!(f.l.is_finite() && f.l.abs() <= 1.0);
@@ -753,7 +778,8 @@ mod tests {
         e.apply(Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 1.0, gr: 0.0 });
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
-        e.render(&mut out);
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
         assert!((out[0].l - 0.5).abs() < 1e-6, "L got the (1,0) write");
         assert!(out[0].r.abs() < 1e-6, "R silent for a (1,0) write");
 
@@ -765,8 +791,43 @@ mod tests {
         e2.apply(Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 0.0, gr: 1.0 });
         e2.set_root(BusId(0));
         let mut out2 = [StereoFrame::default(); 16];
-        e2.render(&mut out2);
+        let sil2 = [StereoFrame::default(); 16];
+        e2.render(&mut out2, &sil2);
         assert!(out2[0].l.abs() < 1e-6 && (out2[0].r - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn input_node_routes_line_in_to_output() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Input);
+        // route port0→L and port1→R of the input node into master, like Out.patch.
+        e.bus_write_gains(Input::Node { node: NodeId(0), port: 0 }, BusId(0), 1.0, 0.0);
+        e.bus_write_gains(Input::Node { node: NodeId(0), port: 1 }, BusId(0), 0.0, 1.0);
+        e.set_root(BusId(0));
+
+        let mut input = [StereoFrame::default(); 16];
+        for i in 0..16 { input[i] = StereoFrame { l: 0.25, r: -0.5 }; }
+        let mut out = [StereoFrame::default(); 16];
+        e.render(&mut out, &input);
+        assert!((out[0].l - 0.25).abs() < 1e-6);
+        assert!((out[0].r - (-0.5)).abs() < 1e-6);
+        assert!((out[15].l - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn input_shorter_than_block_is_silent_tail_no_panic() {
+        let mut e = E::new(16.0);
+        e.create(NodeId(0), Kind::Input);
+        e.bus_write_gains(Input::Node { node: NodeId(0), port: 0 }, BusId(0), 1.0, 0.0);
+        e.set_root(BusId(0));
+        let input = [StereoFrame { l: 1.0, r: 1.0 }; 4]; // shorter than BLOCK=16
+        let mut out = [StereoFrame::default(); 16];
+        e.render(&mut out, &input); // must not panic
+        assert!((out[0].l - 1.0).abs() < 1e-6);
+        assert_eq!(out[15].l, 0.0); // beyond input → silence
+        // empty input also fine
+        e.render(&mut out, &[]);
+        assert_eq!(out[0].l, 0.0);
     }
 
     #[test]

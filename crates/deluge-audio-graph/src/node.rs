@@ -66,6 +66,7 @@ pub enum Kind {
     Sub,
     Split2, // width-2 test node: input → both ports
     Pan,    // mono→stereo: port0 = L, port1 = R (constant-power)
+    Input,  // stereo line-in source: port0 = L, port1 = R (engine-filled)
     Wavetable,
     Delay,
     Chorus,
@@ -219,7 +220,7 @@ impl Node {
             Kind::MoogLp2 => State::Moog2(Moog::<2>::new()),
             Kind::Ms20Lp | Kind::Ms20Hp => State::Ms20(Ms20::new()),
             Kind::Modal => State::Modal(Modal::<MODAL_MODES>::new()),
-            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Curve | Kind::PolyMul | Kind::PolyAdd => State::Stateless,
+            Kind::Mul | Kind::Add | Kind::Sub | Kind::Split2 | Kind::Pan | Kind::Input | Kind::Curve | Kind::PolyMul | Kind::PolyAdd => State::Stateless,
             Kind::VoiceSum => State::VoiceSum(1.0),
             Kind::StereoVoiceSum => State::StereoVoiceSum { gain: 1.0, pan: [0.0; VOICES] },
             Kind::Wavetable => State::Wt(WtOsc::new()),
@@ -276,7 +277,7 @@ impl Node {
 
     pub fn out_width(kind: Kind) -> usize {
         match kind {
-            Kind::Split2 | Kind::Pan | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate | Kind::StereoVoiceSum => 2,
+            Kind::Split2 | Kind::Pan | Kind::Input | Kind::Chorus | Kind::Flanger | Kind::Room | Kind::Hall | Kind::Plate | Kind::StereoVoiceSum => 2,
             Kind::PolyCtrl | Kind::PolyOsc | Kind::PolyAr | Kind::PolyAdsr | Kind::PolySvf | Kind::PolySlew | Kind::PolyMul
                 | Kind::PolyMtof | Kind::PolyAdd | Kind::PolyNoise | Kind::PolyPink | Kind::PolyBrown
                 | Kind::PolyMoogLp4 | Kind::PolyMoogLp2 | Kind::PolyMs20Lp | Kind::PolyMs20Hp
@@ -673,6 +674,11 @@ impl Node {
                     outs.port(1)[i] = x * gr;
                 }
             }
+            // Stereo line-in: dispatched entirely by `Engine::render_block`
+            // (copies `in_l`/`in_r` straight into this node's output ports),
+            // never reaches `process_resolved`. Kept as an explicit no-op arm
+            // since this match has no wildcard.
+            Kind::Input => {}
             Kind::Wavetable => {
                 // Unbound table, an invalid static id, a missing pool region,
                 // or a too-short pool region leaves the output untouched
@@ -1242,6 +1248,15 @@ mod tests {
         // is covered by deluge-dsp-kernels).
         assert!(buf.iter().all(|s| s.is_finite() && *s >= -1.1 && *s <= 1.1));
         assert!(buf.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn input_node_is_stereo_source() {
+        assert_eq!(Node::out_width(Kind::Input), 2);
+        assert!(!Node::is_poly(Kind::Input));
+        assert_eq!(Node::poly_in_count(Kind::Input), 0);
+        // constructs without panic
+        let _ = Node::new(Kind::Input, 0);
     }
 
     #[test]
