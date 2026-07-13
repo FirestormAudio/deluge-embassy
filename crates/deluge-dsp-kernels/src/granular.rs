@@ -8,6 +8,11 @@ use crate::In;
 
 const MAX_GRAINS: usize = 8;
 
+/// `trigger_voice` seeds `spawn_accum` just under 1.0 so the cloud's first
+/// grain fires within a few samples of the trigger rather than waiting a
+/// full `1/density` seconds of silence.
+const TRIGGER_HEADSTART: f32 = 1.0 - 1e-4;
+
 /// Hann window over the grain's normalized phase `[0,1]`.
 #[inline]
 pub(crate) fn hann(phase: f32) -> f32 {
@@ -75,7 +80,7 @@ impl PolyGranular {
         if v < VOICES {
             let c = &mut self.voices[v];
             c.grains = [Grain::new(); MAX_GRAINS];
-            c.spawn_accum = 1.0 - 1e-4;
+            c.spawn_accum = TRIGGER_HEADSTART;
             c.rng = 0x2545_F491 ^ (v as u32 + 1).wrapping_mul(0x9E37_79B9);
             c.playing = true;
         }
@@ -93,10 +98,17 @@ impl PolyGranular {
             return;
         }
         let flen = len as f32;
+        // Guard against NaN/Inf params (e.g. from unclamped automation/MIDI):
+        // `.max(0.0)` already turns NaN density into 0.0 (f32::max returns the
+        // non-NaN operand), but `.clamp()` alone lets a NaN operand pass through
+        // unchanged, so spray/position/size/root need an explicit finite check.
         let density = c.density.max(0.0);
-        let spray = c.spray.clamp(0.0, 1.0);
-        let size_s = (c.size_ms.max(0.1)) / 1000.0;
-        let root_hz = 440.0 * libm::exp2f((c.root - 69.0) / 12.0);
+        let spray = if c.spray.is_finite() { c.spray.clamp(0.0, 1.0) } else { 0.0 };
+        let position = if c.position.is_finite() { c.position } else { 0.0 };
+        let size_ms = if c.size_ms.is_finite() { c.size_ms } else { 0.1 };
+        let root = if c.root.is_finite() { c.root } else { 60.0 };
+        let size_s = (size_ms.max(0.1)) / 1000.0;
+        let root_hz = 440.0 * libm::exp2f((root - 69.0) / 12.0);
         for (i, o) in out.iter_mut().enumerate() {
             let rate = hz.at(i).max(1e-6) / root_hz;
             // schedule new grains
@@ -104,11 +116,17 @@ impl PolyGranular {
             while c.spawn_accum >= 1.0 {
                 c.spawn_accum -= 1.0;
                 let jit = (xorshift32(&mut c.rng) as f32 / u32::MAX as f32) * 2.0 - 1.0; // [-1,1)
-                let start = (c.position.clamp(0.0, 1.0) * flen + jit * spray * flen)
+                let start = (position.clamp(0.0, 1.0) * flen + jit * spray * flen)
                     .clamp(0.0, (flen - 1.0).max(0.0));
                 let size_samples = (size_s / dt).max(2.0);
-                if let Some(g) = c.grains.iter_mut().find(|g| !g.active) {
-                    *g = Grain { active: true, pos: start, rate, phase: 0.0, phase_inc: 1.0 / size_samples };
+                match c.grains.iter_mut().find(|g| !g.active) {
+                    Some(g) => *g = Grain { active: true, pos: start, rate, phase: 0.0, phase_inc: 1.0 / size_samples },
+                    // All MAX_GRAINS busy — no free slot can appear later in this
+                    // pass (grains only free up in the mix loop below, which runs
+                    // after scheduling), so further iterations are guaranteed
+                    // no-ops. Bail out rather than spinning up to `density * dt`
+                    // times (unbounded on a bad/unclamped density value).
+                    None => break,
                 }
             }
             // mix + advance active grains
@@ -212,5 +230,47 @@ mod tests {
         g.process_voice(0, &ramp(10), In::K(440.0), 1.0/48000.0, &mut out); // absurd params, tiny buffer
         g.process_voice(99, &ramp(10), In::K(440.0), 1.0/48000.0, &mut out); // out-of-range voice
         assert!(out.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn nan_params_produce_finite_output() {
+        // A tainted (NaN/Inf) automation/MIDI value must not propagate into the
+        // render: spray/position/size/root are finite-guarded before use.
+        let pcm = ramp(1000);
+        let mut g = PolyGranular::new();
+        g.set_spray(f32::NAN);
+        g.set_position(f32::NAN);
+        g.set_size(f32::NAN);
+        g.set_root(f32::INFINITY);
+        g.trigger_voice(0);
+        let mut out = [0.0f32; 64];
+        g.process_voice(0, &pcm, In::K(261.6256), 1.0 / 48000.0, &mut out);
+        assert!(out.iter().all(|s| s.is_finite()), "NaN/Inf params must not taint output");
+    }
+
+    #[test]
+    fn extreme_density_bounds_spawn_loop_over_many_blocks() {
+        // Finding 1 regression guard: an unclamped density (e.g. runaway
+        // automation) must not blow up per-sample scheduling work, and
+        // spawn_accum must not become non-finite even after sustained extreme
+        // density across many blocks (the loop now bails as soon as all
+        // MAX_GRAINS slots are busy instead of spinning ~density*dt times).
+        let pcm = ramp(4000);
+        let mut g = PolyGranular::new();
+        g.set_density(1e9);
+        g.set_position(0.25);
+        g.set_size(20.0);
+        g.trigger_voice(0);
+        let mut out = [0.0f32; 128];
+        // Bound is generous (MAX_GRAINS fully-overlapping grains at the loudest
+        // sample in the buffer, Hann-windowed to <=1.0 each) — this test is
+        // about finiteness/boundedness under sustained extreme density, not a
+        // tight amplitude check (see `triggered_cloud_renders_bounded_nonsilent`
+        // for that at a sane density).
+        let bound = MAX_GRAINS as f32 * 4001.0;
+        for _ in 0..200 {
+            g.process_voice(0, &pcm, In::K(261.6256), 1.0 / 48000.0, &mut out);
+            assert!(out.iter().all(|s| s.is_finite() && s.abs() <= bound));
+        }
     }
 }
