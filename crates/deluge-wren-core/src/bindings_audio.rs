@@ -390,6 +390,20 @@ pub(crate) unsafe extern "C" fn node_src(raw: *mut WrenVM) {
     node_src_impl(&vm);
 }
 
+/// `In.line()` — a stereo line-in source. No args to read (`In.line()` is
+/// nullary). Width-2 so `write_source_to_bus` emits the two per-side writes
+/// (L→(1,0), R→(0,1)) when patched, instead of routing input as mono-center.
+pub(crate) fn node_line_impl<S: SlotApi>(vm: &S) {
+    let id = audio::alloc_node_id();
+    audio::new_node(id, Kind::Input, [Input::Const(0.0), Input::Const(0.0), Input::Const(0.0)]);
+    unsafe { return_node_w(vm, id, 2) };
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_line(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_line_impl(&vm);
+}
+
 /// `Node.sync_(wave, master, slave)` — a hard-sync oscillator: port 0 is the
 /// master frequency (resets the slave phase each cycle), port 1 the slave
 /// frequency. Mirrors `node_src_impl` but takes two frequency args instead
@@ -2689,6 +2703,7 @@ pub(crate) fn register_audio<S: SlotApi>(
     method: &mut impl FnMut(&'static str, &'static str, bool, &'static str, fn(&S)),
 ) {
     method("main", "Node", true, "src_(_,_)", node_src_impl::<S>);
+    method("main", "Node", true, "line_()", node_line_impl::<S>);
     method("main", "Node", true, "sync_(_,_,_)", node_sync_impl::<S>);
     method("main", "Node", true, "env_(_,_)", node_env_impl::<S>);
     method("main", "Node", true, "adsr_(_,_,_,_)", node_adsr_impl::<S>);

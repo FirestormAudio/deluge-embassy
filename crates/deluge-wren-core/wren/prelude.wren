@@ -108,6 +108,7 @@ foreign class Oled {
 //   Out.reset()                          // clear the graph
 foreign class Node {
   foreign static src_(kind, freq)
+  foreign static line_()
   foreign static sync_(wave, master, slave)
   foreign static env_(attack, release)
   foreign static adsr_(a, d, s, r)
@@ -504,6 +505,15 @@ class Granular {
   static new(pitch, buffer) {
     if (Node.polyMode_ != 1) Fiber.abort("Granular.new is a poly voice source — use it inside Synth.new/Synth.mono")
     return Node.granular_(pitch, buffer)
+  }
+}
+
+// In.line() — a stereo line-in source (Task 1's width-2 Kind::Input node).
+// Global/top-level source, not a poly voice, so no `polyMode_` guard.
+//   Out.patch(In.line())
+class In {
+  static line() {
+    return Node.line_()
   }
 }
 

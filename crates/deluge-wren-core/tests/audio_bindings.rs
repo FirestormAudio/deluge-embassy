@@ -15,6 +15,14 @@ fn saw(freq: f32) -> Cmd {
     }
 }
 
+fn new_input() -> Cmd {
+    Cmd::NewNode {
+        node: NodeId(0),
+        kind: Kind::Input,
+        args: [Input::Const(0.0), Input::Const(0.0), Input::Const(0.0)],
+    }
+}
+
 #[test]
 fn osc_saw_emits_newnode() {
     let cmds = run_and_capture_cmds("Osc.saw(110)");
@@ -146,6 +154,27 @@ fn patch_writes_master_bus_and_sets_root() {
             Cmd::SetRoot { bus: BusId(0) },
         ]
     );
+}
+
+#[test]
+fn patch_line_in_emits_input_node_two_side_writes_and_root() {
+    let cmds = run_and_capture_cmds("Out.patch(In.line())");
+    assert_eq!(
+        cmds,
+        vec![
+            new_input(),
+            Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 1.0, gr: 0.0 },
+            Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 1 }, bus: BusId(0), gl: 0.0, gr: 1.0 },
+            Cmd::SetRoot { bus: BusId(0) },
+        ]
+    );
+}
+
+#[test]
+fn line_in_composes_with_mul() {
+    // Just needs to build & emit a NewNode{Input} + the Mul node; no panic.
+    let cmds = run_and_capture_cmds("Out.patch(In.line() * 0.5)");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Input, .. })));
 }
 
 #[test]
