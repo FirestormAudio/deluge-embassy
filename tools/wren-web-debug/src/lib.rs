@@ -35,7 +35,10 @@ pub mod drive;
 /// [`Host`] installed instead of [`NoopHost`], so it can expose CV/gate state
 /// after the run.
 pub mod harness;
-mod register;
+/// Foreign-method registration onto wren-core registries. Public so an
+/// out-of-process host (e.g. the Linux `wren-host`) can build a VM with the
+/// deluge bindings, exactly as [`build_vm`]/[`harness`] do internally.
+pub mod register;
 /// Exposed (not just crate-private) so tests can fire deluge's generic event
 /// entries (e.g. `deluge_wren_core::midi_rx_impl`) from host context, wrapping
 /// a live [`wren_core::vm::CWrenVm`] in a [`slotapi_wrencore::CoreSlots`] —
