@@ -58,6 +58,10 @@ cortex-ar = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-usb = { workspace = true }
+# For `#[embassy_executor::task]` + `Spawner` in `usb::host`'s supervisor and
+# per-device tasks. No executor features needed here — the firmware selects the
+# platform/executor backend.
+embassy-executor = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }

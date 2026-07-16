@@ -1,4 +1,8 @@
 #![cfg_attr(target_os = "none", no_std)]
+// `#[embassy_executor::task]` (used by `usb::host`'s supervisor and per-device
+// tasks) expands to an associated type with `impl Trait`. Only needed on the
+// bare-metal target, where those tasks are compiled.
+#![cfg_attr(target_os = "none", feature(impl_trait_in_assoc_type))]
 #![allow(dead_code)]
 
 // Startup lives in rza1l_hal::startup. When rza1 is linked into any binary,
