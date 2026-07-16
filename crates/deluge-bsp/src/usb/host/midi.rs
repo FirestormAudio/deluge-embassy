@@ -67,6 +67,21 @@ pub fn find_midi_interface(cfg: &ConfigurationDescriptor<'_>) -> Option<MidiInte
     None
 }
 
+/// Split a bulk IN buffer into 4-byte USB-MIDI event packets.
+///
+/// USB-MIDI 1.0 (§4) frames every event as 4 bytes: byte 0 is
+/// `(cable_number << 4) | code_index_number`, bytes 1-3 are the MIDI data.
+/// Devices zero-pad the remainder of the buffer; CIN 0 is reserved, so a zero
+/// header byte marks padding rather than an event.
+///
+/// Packets are yielded verbatim — cable number, CIN, and SysEx framing
+/// (CIN 0x4-0x7) are all preserved for the caller to interpret.
+pub fn decode_packets(buf: &[u8]) -> impl Iterator<Item = [u8; 4]> + '_ {
+    buf.chunks_exact(4)
+        .filter(|c| c[0] != 0)
+        .map(|c| [c[0], c[1], c[2], c[3]])
+}
+
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
@@ -173,5 +188,65 @@ mod tests {
             find_midi_interface(&cfg).is_none(),
             "no endpoints = unusable"
         );
+    }
+
+    // --- decode_packets ---
+
+    #[test]
+    fn decodes_a_single_note_on() {
+        // Cable 0, CIN 0x9 (Note On), channel 0, note 60, velocity 100.
+        let buf = [0x09, 0x90, 60, 100];
+        let out: heapless::Vec<[u8; 4], 16> = decode_packets(&buf).collect();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], [0x09, 0x90, 60, 100]);
+    }
+
+    #[test]
+    fn decodes_multiple_packets() {
+        let buf = [0x09, 0x90, 60, 100, 0x08, 0x80, 60, 0];
+        let out: heapless::Vec<[u8; 4], 16> = decode_packets(&buf).collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1], [0x08, 0x80, 60, 0]);
+    }
+
+    #[test]
+    fn skips_zero_padding() {
+        // Devices zero-pad the rest of the 64-byte buffer. CIN 0 is reserved,
+        // so a zero header byte is never a real packet.
+        let mut buf = [0u8; 64];
+        buf[..4].copy_from_slice(&[0x09, 0x90, 60, 100]);
+        let out: heapless::Vec<[u8; 4], 16> = decode_packets(&buf).collect();
+        assert_eq!(out.len(), 1, "padding must not become packets");
+    }
+
+    #[test]
+    fn preserves_cable_number() {
+        // Cable 2, CIN 0xB (Control Change).
+        let buf = [0x2B, 0xB0, 7, 127];
+        let out: heapless::Vec<[u8; 4], 16> = decode_packets(&buf).collect();
+        assert_eq!(out[0][0] >> 4, 2, "cable number must survive");
+    }
+
+    #[test]
+    fn passes_sysex_packets_through_untouched() {
+        // CIN 0x4 = SysEx start/continue, CIN 0x5 = SysEx end with 1 byte.
+        let buf = [0x04, 0xF0, 0x7E, 0x00, 0x05, 0xF7, 0, 0];
+        let out: heapless::Vec<[u8; 4], 16> = decode_packets(&buf).collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], [0x04, 0xF0, 0x7E, 0x00]);
+        assert_eq!(out[1], [0x05, 0xF7, 0, 0]);
+    }
+
+    #[test]
+    fn ignores_a_trailing_partial_packet() {
+        let buf = [0x09, 0x90, 60, 100, 0x08, 0x80];
+        let out: heapless::Vec<[u8; 4], 16> = decode_packets(&buf).collect();
+        assert_eq!(out.len(), 1, "a 2-byte tail is not a packet");
+    }
+
+    #[test]
+    fn empty_buffer_yields_nothing() {
+        let out: heapless::Vec<[u8; 4], 16> = decode_packets(&[]).collect();
+        assert!(out.is_empty());
     }
 }
