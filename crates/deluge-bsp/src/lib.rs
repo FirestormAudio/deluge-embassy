@@ -48,7 +48,10 @@ pub mod system;
 #[cfg(target_os = "none")]
 pub mod trigger_clock;
 pub mod uart;
-#[cfg(target_os = "none")]
+// Not gated to `target_os = "none"` as a whole: `usb::host`'s class drivers are
+// generic over `UsbHostAllocator` and are unit-tested under QEMU on
+// armv7-unknown-linux-gnueabihf. The device-side children that need
+// `embassy-usb` are gated individually inside the module.
 pub mod usb;
 
 // RSPI0 arbitration between the OLED DMA path and the CV DAC now lives in

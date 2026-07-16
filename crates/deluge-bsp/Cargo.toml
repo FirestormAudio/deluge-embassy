@@ -43,17 +43,27 @@ embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"]
 critical-section = { workspace = true }
 log = { workspace = true }
 embedded-graphics-core = { version = "0.4", optional = true }
+heapless = "0.9"
+# USB **host** stack — unconditional, unlike the device-side `embassy-usb`
+# below. The host class drivers in `usb::host` are generic over
+# `UsbHostAllocator` and are unit-tested against a mock on
+# armv7-unknown-linux-gnueabihf under QEMU (see tools/test.sh), which is
+# `target_os = "linux"` — so these cannot be gated to `target_os = "none"`.
+embassy-sync = { workspace = true }
+embassy-usb-driver = { workspace = true }
+embassy-usb-host = { workspace = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
 cortex-ar = { workspace = true }
-embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
-embassy-usb-driver = { workspace = true }
 embassy-usb = { workspace = true }
-embassy-usb-host = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }
+# `embassy-usb-host` pulls in `embassy-time`, which needs a registered time
+# driver to *link* the test binary. `mock-driver` supplies one.
+embassy-time = { workspace = true, features = ["mock-driver"] }
+embassy-futures = { workspace = true }
 
 
