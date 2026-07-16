@@ -135,11 +135,14 @@ pub const fn midi_handle(id: DeviceId) -> MidiHandle {
 
 #[cfg(target_os = "none")]
 mod runtime {
+    use core::sync::atomic::{AtomicU16, Ordering};
+
     use embassy_executor::Spawner;
     use embassy_futures::select::{select, Either};
     use embassy_usb_driver::host::DeviceEvent;
+    use embassy_usb_host::class::hub::{HubEvent, HubHandler};
     use embassy_usb_host::descriptor::ConfigurationDescriptor;
-    use embassy_usb_host::handler::BusRoute;
+    use embassy_usb_host::handler::{BusRoute, HandlerEvent, RegisterError};
     use embassy_usb_host::{bus, BusHandle, BusState};
     use log::{error, info, warn};
     use rza1l_hal::usb::{Rusb1Allocator, Rusb1HostDriver};
@@ -153,6 +156,131 @@ mod runtime {
     /// `Rusb1Allocator`, and it is what `bus()` hands back — so this, not
     /// `Rusb1Allocator`, is the type that flows into the class drivers.
     type HostAlloc = BusHandle<'static, Rusb1Allocator>;
+
+    /// Maximum hub ports serviced.
+    ///
+    /// The RUSB1 `DEVADDn.HUBPORT` field is 3 bits (TRM §28.3), so a device can
+    /// only be addressed on hub ports 1-7.
+    const MAX_HUB_PORTS: usize = 7;
+
+    /// Monotonic [`DeviceId`] generation counter.
+    ///
+    /// Shared between the supervisor and every hub task: both key ids by USB
+    /// address, and an address freed by one can be reissued to the other, so a
+    /// per-task counter could mint colliding ids for different devices.
+    static GENERATION: AtomicU16 = AtomicU16::new(0);
+
+    /// Next generation for a freshly bound device.
+    fn next_generation() -> u16 {
+        GENERATION.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+    }
+
+    /// Bind an enumerated device's MIDI interface and spawn its task.
+    ///
+    /// Returns `true` if the device was claimed. On `false` the caller owns
+    /// freeing the address.
+    fn bind_midi(
+        handle: &HostAlloc,
+        spawner: Spawner,
+        dev_info: &embassy_usb_host::handler::EnumerationInfo,
+        cfg: &ConfigurationDescriptor<'_>,
+    ) -> bool {
+        let addr = dev_info.device_address;
+        let id = DeviceId::new(addr, next_generation());
+
+        match MidiHost::try_register(handle, addr, dev_info.split(), cfg) {
+            Ok(host) => {
+                info!(
+                    "usb_host: MIDI device VID={:04x} PID={:04x} addr={}",
+                    dev_info.device_desc.vendor_id, dev_info.device_desc.product_id, addr
+                );
+                // In embassy-executor 0.10 the task fn returns the token as a
+                // Result (pool exhaustion), while `Spawner::spawn` returns ().
+                // Reaching the Err arm means more devices than MAX_MIDI_DEVICES.
+                match midi_device_task(host, id) {
+                    Ok(token) => {
+                        spawner.spawn(token);
+                        true
+                    }
+                    Err(_) => {
+                        error!("usb_host: no free device task slot");
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                // The caller frees the address, so an unsupported device does
+                // not consume one of the scarce device slots.
+                warn!("usb_host: unsupported device: {:?}", e);
+                false
+            }
+        }
+    }
+
+    /// Owns a hub: services port changes and enumerates devices behind it.
+    ///
+    /// Enumeration lives here rather than in the supervisor because
+    /// [`HubHandler::enumerate_port`] needs `&mut HubHandler`. It also performs
+    /// the port reset, the USB 2.0 §7.1.7.5 delay, and computes the correct
+    /// `BusRoute`/`SplitInfo` (including parent-hub TT handling) — none of that
+    /// is hand-rolled here.
+    #[embassy_executor::task]
+    async fn hub_task(
+        mut hub: HubHandler<'static, Rusb1Allocator, MAX_HUB_PORTS>,
+        handle: HostAlloc,
+        spawner: Spawner,
+    ) {
+        let mut config_buf = [0u8; 512];
+
+        loop {
+            let event = match hub.wait_for_event().await {
+                Ok(HandlerEvent::HandlerEvent(e)) => e,
+                Ok(HandlerEvent::NoChange) => continue,
+                Ok(HandlerEvent::HandlerDisconnected) => {
+                    info!("usb_host: hub disconnected");
+                    return;
+                }
+                Err(e) => {
+                    error!("usb_host: hub error: {:?}", e);
+                    return;
+                }
+            };
+
+            match event {
+                HubEvent::DeviceDetected { port, speed } => {
+                    info!("usb_host: hub port {} attached ({:?})", port, speed);
+                    let (dev_info, _) = match hub.enumerate_port(&mut config_buf, port, speed).await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("usb_host: hub port {} enumeration failed: {:?}", port, e);
+                            continue;
+                        }
+                    };
+                    let addr = dev_info.device_address;
+
+                    let bound = match ConfigurationDescriptor::try_from_slice(&config_buf) {
+                        Ok(cfg) => bind_midi(&handle, spawner, &dev_info, &cfg),
+                        Err(e) => {
+                            error!("usb_host: hub port {} bad descriptor: {:?}", port, e);
+                            false
+                        }
+                    };
+                    if !bound {
+                        handle.free_address(addr);
+                    }
+                }
+                HubEvent::DeviceRemoved { address, port } => {
+                    info!("usb_host: hub port {} detached", port);
+                    // The device task exits on its next failed read, dropping
+                    // its pipes. Only the address needs reclaiming here.
+                    if let Some(a) = address {
+                        handle.free_address(a.get());
+                    }
+                }
+            }
+        }
+    }
 
     /// Services one hosted MIDI device until it errors or detaches.
     ///
@@ -213,7 +341,6 @@ mod runtime {
         static BUS_STATE: BusState = BusState::new();
         let (mut controller, handle) = bus(driver, &BUS_STATE);
         let mut config_buf = [0u8; 512];
-        let mut generation: u16 = 0;
 
         loop {
             let speed = controller.wait_for_connection().await;
@@ -231,49 +358,51 @@ mod runtime {
             };
             let addr = dev_info.device_address;
 
-            match ConfigurationDescriptor::try_from_slice(&config_buf) {
-                Ok(cfg) => {
-                    generation = generation.wrapping_add(1);
-                    let id = DeviceId::new(addr, generation);
-
-                    match MidiHost::try_register(&handle, addr, dev_info.split(), &cfg) {
-                        Ok(host) => {
-                            info!(
-                                "usb_host: MIDI device VID={:04x} PID={:04x} addr={}",
-                                dev_info.device_desc.vendor_id,
-                                dev_info.device_desc.product_id,
-                                addr
-                            );
-                            // In embassy-executor 0.10 the task fn returns the
-                            // token as a Result (pool exhaustion), while
-                            // `Spawner::spawn` itself returns (). Reaching the
-                            // Err arm means more devices than MAX_MIDI_DEVICES.
-                            match midi_device_task(host, id) {
-                                Ok(token) => spawner.spawn(token),
-                                Err(_) => {
-                                    error!("usb_host: no free device task slot");
-                                    handle.free_address(addr);
-                                    continue;
-                                }
-                            }
+            // Try the hub first: a hub is not a MIDI device, so the MIDI
+            // matcher would reject it and free its address.
+            let bound = match HubHandler::<Rusb1Allocator, MAX_HUB_PORTS>::try_register(
+                &handle, &dev_info,
+            )
+            .await
+            {
+                Ok(hub) => {
+                    info!("usb_host: hub at addr={}", addr);
+                    // `BusHandle` is Clone (allocator + &'static BusState), so
+                    // handing the hub task its own clone is cheap.
+                    match hub_task(hub, handle.clone(), spawner) {
+                        Ok(token) => {
+                            spawner.spawn(token);
+                            true
                         }
+                        Err(_) => {
+                            error!("usb_host: could not spawn hub task");
+                            false
+                        }
+                    }
+                }
+                Err(RegisterError::NoSupportedInterface) => {
+                    // Not a hub — fall through to the MIDI matcher.
+                    match ConfigurationDescriptor::try_from_slice(&config_buf) {
+                        Ok(cfg) => bind_midi(&handle, spawner, &dev_info, &cfg),
                         Err(e) => {
-                            // Free the address immediately so an unsupported
-                            // device does not consume one of the scarce slots.
-                            warn!("usb_host: unsupported device: {:?}", e);
-                            handle.free_address(addr);
-                            continue;
+                            error!("usb_host: bad config descriptor: {:?}", e);
+                            false
                         }
                     }
                 }
                 Err(e) => {
-                    error!("usb_host: bad config descriptor: {:?}", e);
-                    handle.free_address(addr);
-                    continue;
+                    error!("usb_host: hub register failed: {:?}", e);
+                    false
                 }
+            };
+
+            if !bound {
+                handle.free_address(addr);
+                continue;
             }
 
-            // Wait for detach before accepting another device.
+            // Wait for detach before accepting another root-port device. A hub
+            // reaches here too, so unplugging one is noticed.
             loop {
                 if controller.wait_for_device_event().await == DeviceEvent::Disconnected {
                     info!("usb_host: device disconnected");
