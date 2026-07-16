@@ -97,6 +97,15 @@ impl SlotApi for CoreSlots {
         unsafe { &*ptr }
     }
 
+    fn get_list_count(&self, slot: i32) -> i32 {
+        self.api.get_list_count(slot as usize) as i32
+    }
+
+    fn get_list_element(&self, list_slot: i32, index: i32, elem_slot: i32) {
+        self.api
+            .get_list_element(list_slot as usize, index as usize, elem_slot as usize);
+    }
+
     unsafe fn foreign_mut<T>(&self, slot: i32) -> &mut T {
         let ptr = unsafe { self.api.get_slot_foreign(slot as usize) } as *mut T;
         unsafe { &mut *ptr }
