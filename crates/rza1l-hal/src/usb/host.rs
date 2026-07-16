@@ -83,6 +83,15 @@ const HCD_PIPE_COUNT: usize = 10;
 /// Maximum device addresses supported (DEVADD0-5 → indices 0-5).
 const HCD_MAX_DEV: usize = 6;
 
+/// True iff `dev_addr` is a device address this driver can target.
+///
+/// Address 0 is the enumeration default address. The upper bound is
+/// [`HCD_MAX_DEV`], which sizes `HcdAlloc::ctl_mps` and `HcdAlloc::ep_to_pipe` —
+/// exceeding it would index out of bounds.
+pub(crate) const fn dev_addr_supported(dev_addr: u8) -> bool {
+    dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV
+}
+
 // HCD_EVENTS bit layout (matches C: process_attach / process_detach).
 const EVT_ATTACH: u8 = 1 << 0;
 const EVT_DETACH: u8 = 1 << 1;
@@ -490,8 +499,21 @@ impl Rusb1HostDriver {
     ///
     /// Must be called (and DEVADDn fully configured) **before** starting
     /// any pipe that targets this device (TRM Note 1 for DEVADDn).
-    pub fn device_open(&self, dev_addr: u8, mps: u16, speed: Speed, hub_addr: u8, hub_port: u8) {
-        debug_assert!((dev_addr as usize) < HCD_MAX_DEV);
+    ///
+    /// Returns [`HostError::OutOfSlots`] if `dev_addr` exceeds what
+    /// [`HCD_MAX_DEV`] allows. Address 0 is permitted: enumeration programmes
+    /// the DCP at the default address before `SET_ADDRESS`.
+    pub fn device_open(
+        &self,
+        dev_addr: u8,
+        mps: u16,
+        speed: Speed,
+        hub_addr: u8,
+        hub_port: u8,
+    ) -> Result<(), HostError> {
+        if dev_addr != 0 && !dev_addr_supported(dev_addr) {
+            return Err(HostError::OutOfSlots);
+        }
         // hub_addr 0 means direct; 1-10 are valid hub USB addresses.
         debug_assert!(hub_addr <= 10);
         // hub_port 0 means direct; 1-7 are valid hub port numbers.
@@ -526,6 +548,7 @@ impl Rusb1HostDriver {
                 (&mut *HCD_ALLOC[p].borrow(cs).get()).ctl_mps[dev_addr as usize] = mps;
             });
         }
+        Ok(())
     }
 
     /// Free all pipes that were allocated for `dev_addr`.
@@ -1533,7 +1556,7 @@ impl<'d> UsbHostAllocator<'d> for Rusb1Allocator {
         match T::ep_type() {
             EndpointType::Control => {
                 // Pipe 0 (DCP).  Programme DCPMAXP + DEVADD for this device.
-                drv.device_open(addr, endpoint.max_packet_size, speed, hub_addr, hub_port);
+                drv.device_open(addr, endpoint.max_packet_size, speed, hub_addr, hub_port)?;
                 Ok(Rusb1Pipe {
                     port: self.port,
                     pipe: 0,
@@ -1660,5 +1683,30 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
                 wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
             }
         }
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dev_addr_zero_is_not_supported() {
+        // Address 0 is the enumeration default address, never a target.
+        assert!(!dev_addr_supported(0));
+    }
+
+    #[test]
+    fn dev_addr_in_range_is_supported() {
+        for addr in 1..HCD_MAX_DEV as u8 {
+            assert!(dev_addr_supported(addr), "addr {addr} should be supported");
+        }
+    }
+
+    #[test]
+    fn dev_addr_at_or_above_max_is_not_supported() {
+        // HCD_MAX_DEV is exclusive: ctl_mps and ep_to_pipe are sized from it.
+        assert!(!dev_addr_supported(HCD_MAX_DEV as u8));
+        assert!(!dev_addr_supported(127));
     }
 }

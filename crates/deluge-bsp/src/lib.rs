@@ -1,4 +1,8 @@
 #![cfg_attr(target_os = "none", no_std)]
+// `#[embassy_executor::task]` (used by `usb::host`'s supervisor and per-device
+// tasks) expands to an associated type with `impl Trait`. Only needed on the
+// bare-metal target, where those tasks are compiled.
+#![cfg_attr(target_os = "none", feature(impl_trait_in_assoc_type))]
 #![allow(dead_code)]
 
 // Startup lives in rza1l_hal::startup. When rza1 is linked into any binary,
@@ -48,7 +52,10 @@ pub mod system;
 #[cfg(target_os = "none")]
 pub mod trigger_clock;
 pub mod uart;
-#[cfg(target_os = "none")]
+// Not gated to `target_os = "none"` as a whole: `usb::host`'s class drivers are
+// generic over `UsbHostAllocator` and are unit-tested under QEMU on
+// armv7-unknown-linux-gnueabihf. The device-side children that need
+// `embassy-usb` are gated individually inside the module.
 pub mod usb;
 
 // RSPI0 arbitration between the OLED DMA path and the CV DAC now lives in
