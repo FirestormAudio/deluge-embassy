@@ -51,7 +51,11 @@ pub fn analyze_buf(sample_rate: f32, signal: &[f32; FFT_N]) -> Spectrum {
     // One-sided complex bins → linear magnitude of each (`num_complex::norm`).
     let bins: Vec<f32> = out.iter().map(|c| c.norm()).collect();
 
-    Spectrum { bins, bin_hz: sample_rate / FFT_N as f32, sample_rate }
+    Spectrum {
+        bins,
+        bin_hz: sample_rate / FFT_N as f32,
+        sample_rate,
+    }
 }
 
 impl Spectrum {
@@ -269,7 +273,10 @@ mod tests {
         // fundamental 1.0, 2nd harmonic at 0.1 (also off-bin, at 2*f0).
         let spec = render_sines(sr, &[(f0, 1.0), (2.0 * f0, 0.1)]);
         let thd = spec.thd(f0, 5);
-        assert!((thd - 0.1).abs() < 0.02, "off-bin THD should stay ~0.1, got {thd}");
+        assert!(
+            (thd - 0.1).abs() < 0.02,
+            "off-bin THD should stay ~0.1, got {thd}"
+        );
     }
 
     #[test]
@@ -291,14 +298,21 @@ mod tests {
                 mag_fn(f)
             })
             .collect();
-        Spectrum { bins, bin_hz, sample_rate: sr }
+        Spectrum {
+            bins,
+            bin_hz,
+            sample_rate: sr,
+        }
     }
 
     #[test]
     fn slope_metric_reads_flat_spectrum_as_zero() {
         let spec = synthetic_spectrum(48_000.0, |_f| 1.0);
         let slope = slope_db_per_octave(&spec, 200.0, 12_000.0);
-        assert!(slope.abs() < 0.01, "flat magnitude should give ~0 dB/oct, got {slope}");
+        assert!(
+            slope.abs() < 0.01,
+            "flat magnitude should give ~0 dB/oct, got {slope}"
+        );
     }
 
     #[test]
@@ -306,7 +320,10 @@ mod tests {
         // magnitude ∝ 1/f (brown-noise-like) → 20*log10(1/(2f)) - 20*log10(1/f) = -6.02 dB/oct
         let spec = synthetic_spectrum(48_000.0, |f| 1.0 / f);
         let slope = slope_db_per_octave(&spec, 200.0, 12_000.0);
-        assert!((slope - (-6.0)).abs() < 0.1, "1/f magnitude should give ~-6 dB/oct, got {slope}");
+        assert!(
+            (slope - (-6.0)).abs() < 0.1,
+            "1/f magnitude should give ~-6 dB/oct, got {slope}"
+        );
     }
 
     #[test]
@@ -314,6 +331,9 @@ mod tests {
         // magnitude ∝ 1/√f (pink-noise-like) → -3.01 dB/oct
         let spec = synthetic_spectrum(48_000.0, |f| 1.0 / f.sqrt());
         let slope = slope_db_per_octave(&spec, 200.0, 12_000.0);
-        assert!((slope - (-3.0)).abs() < 0.1, "1/sqrt(f) magnitude should give ~-3 dB/oct, got {slope}");
+        assert!(
+            (slope - (-3.0)).abs() < 0.1,
+            "1/sqrt(f) magnitude should give ~-3 dB/oct, got {slope}"
+        );
     }
 }

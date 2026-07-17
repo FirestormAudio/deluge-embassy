@@ -9,9 +9,9 @@
 //! - Row 5: bottom letter row (QWERTY: Z–M) and Shift
 //! - Row 6: space bar (6 pads wide)
 
+use crate::Pad;
 use crate::color::ColorExt as _;
 use crate::imode::Frame;
-use crate::Pad;
 use deluge_bsp::rgb::Color as RGB;
 
 const QWERTY_HOME_ROW: usize = 4;
@@ -159,7 +159,10 @@ impl TextKeyboardComponent {
         f.paint(Pad::new(QWERTY_HOME_ROW, 11), RGB::new(64, 64, 64));
         f.paint(Pad::new(QWERTY_HOME_ROW, 12), RGB::new(64, 64, 64));
         for i in 0..6 {
-            f.paint(Pad::new(QWERTY_HOME_ROW + 2, 5 + i), RGB::new(160, 160, 160));
+            f.paint(
+                Pad::new(QWERTY_HOME_ROW + 2, 5 + i),
+                RGB::new(160, 160, 160),
+            );
         }
 
         for x in 14..16 {

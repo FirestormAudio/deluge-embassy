@@ -13,10 +13,10 @@
 mod app;
 mod audio;
 mod display;
-mod headless;
 mod hardware;
 mod hardware_link;
 mod hardware_state;
+mod headless;
 mod link;
 mod midi;
 mod pad_grid;
@@ -46,8 +46,16 @@ fn render_svg() -> Option<iced::widget::image::Handle> {
     const SCALE: f32 = 0.5;
     let tree = usvg::Tree::from_data(DELUGE_SVG, &usvg::Options::default()).ok()?;
     let mut pixmap = tiny_skia::Pixmap::new(WIDTH, HEIGHT)?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(SCALE, SCALE), &mut pixmap.as_mut());
-    Some(iced::widget::image::Handle::from_rgba(WIDTH, HEIGHT, pixmap.data().to_vec()))
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(SCALE, SCALE),
+        &mut pixmap.as_mut(),
+    );
+    Some(iced::widget::image::Handle::from_rgba(
+        WIDTH,
+        HEIGHT,
+        pixmap.data().to_vec(),
+    ))
 }
 
 /// Launch the iced window with the given link and optional audio-scope monitor.
@@ -66,7 +74,10 @@ fn run_app(
     iced::application(
         move || {
             let (link, svg, mon, vol, hw) = init.lock().unwrap().take().expect("init called once");
-            (DelugeSimulator::new(link, svg, mon, vol, hw), iced::Task::none())
+            (
+                DelugeSimulator::new(link, svg, mon, vol, hw),
+                iced::Task::none(),
+            )
         },
         DelugeSimulator::update,
         DelugeSimulator::view,
@@ -117,8 +128,7 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
     // Kept alive until the window closes (dropping the streams stops audio and
     // finalises any --audio-out recording). `monitor` is a stereo tap of the
     // output for the rack's audio oscilloscopes.
-    let (_audio, monitor) =
-        audio::start(gui_audio, volume.clone(), audio::AudioConfig::from_env());
+    let (_audio, monitor) = audio::start(gui_audio, volume.clone(), audio::AudioConfig::from_env());
     // Host MIDI bridge: virtual ports ⇄ the panel (kept alive for the session).
     let _midi = midi::start(panel.clone());
     // Optional physical Deluge control surface (`cargo deluge sim --hardware`,

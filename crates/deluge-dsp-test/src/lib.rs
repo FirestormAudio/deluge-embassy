@@ -8,7 +8,7 @@
 /// `realfft` plans any size at runtime, so this isn't a hard constraint.
 pub const FFT_N: usize = 8192;
 
-pub mod guards;
-pub mod spectrum;
 pub mod cpu;
 pub mod filter_meas;
+pub mod guards;
+pub mod spectrum;

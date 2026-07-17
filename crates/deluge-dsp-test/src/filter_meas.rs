@@ -2,8 +2,8 @@
 //! through a caller `render` closure and measure the steady-state response.
 //! Shared by the whole Fi (filter) suite.
 
-use crate::spectrum::analyze_buf;
 use crate::FFT_N;
+use crate::spectrum::analyze_buf;
 
 fn sine_buf(fs: f32, freq: f32) -> [f32; FFT_N] {
     let mut b = [0.0f32; FFT_N];

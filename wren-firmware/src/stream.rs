@@ -164,7 +164,10 @@ mod tests {
         // Mid-stream: window is ≤ CAP wide and contains the cursor.
         let (lo, hi) = plan_window(5000, CAP, 1_000_000);
         assert!(hi - lo <= CAP);
-        assert!(lo <= 5000 && 5000 < hi, "cursor is inside the resident window");
+        assert!(
+            lo <= 5000 && 5000 < hi,
+            "cursor is inside the resident window"
+        );
     }
     #[test]
     fn window_clamps_to_total_at_end() {

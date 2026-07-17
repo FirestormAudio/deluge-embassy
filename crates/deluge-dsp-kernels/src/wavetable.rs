@@ -3,7 +3,7 @@
 //! interpolates within it, and linearly crossfades to the adjacent level across
 //! octave boundaries. `no_std`, no alloc, no FFT (tables are built offline).
 
-use crate::{floorf, In};
+use crate::{In, floorf};
 
 const N: usize = 2048; // must equal mipgen::N
 /// Number of mip levels in a pyramid; must equal `mipgen::LEVELS`. Defined
@@ -92,14 +92,19 @@ pub struct MipSet<'a> {
 #[derive(Clone, Copy)]
 pub struct WtOsc {
     phase: f32,
-    last: f32,   // previous output sample (feedback)
-    last2: f32,  // output two samples ago (feedback)
+    last: f32,     // previous output sample (feedback)
+    last2: f32,    // output two samples ago (feedback)
     feedback: f32, // self-FM depth, [-1,1]
 }
 
 impl WtOsc {
     pub fn new() -> WtOsc {
-        WtOsc { phase: 0.0, last: 0.0, last2: 0.0, feedback: 0.0 }
+        WtOsc {
+            phase: 0.0,
+            last: 0.0,
+            last2: 0.0,
+            feedback: 0.0,
+        }
     }
 
     /// Self-FM depth, clamped to [-1, 1] (mirrors mono `Osc::set_feedback` /
@@ -126,75 +131,75 @@ impl WtOsc {
         // feedback=0 render still takes this exact, unmodified path
         // (bit-identical to before feedback existed).
         if self.feedback == 0.0 {
-        if let (Some(f), Some(pm)) = (freq.as_const(), pmod.as_const()) {
-            let dtp = f * dt;
-            let (lo, hi, frac) = mip_select(dtp, mips.levels.len());
-            let (lo_s, hi_s) = (mips.levels[lo], mips.levels[hi]);
+            if let (Some(f), Some(pm)) = (freq.as_const(), pmod.as_const()) {
+                let dtp = f * dt;
+                let (lo, hi, frac) = mip_select(dtp, mips.levels.len());
+                let (lo_s, hi_s) = (mips.levels[lo], mips.levels[hi]);
 
-            // SIMD (f32x8) sub-branch: 8 output samples per chunk via a
-            // closed-form phase (phase0 + pm + k*dtp for k in 0..8) and a
-            // vectorized gather+Catmull-Rom read; scalar-tail the remainder.
-            // This is tolerance-equivalent to the scalar path below (float
-            // reassociation + closed-form phase), NOT bit-exact — see
-            // `simd_matches_scalar_within_tol`.
-            //
-            // Each chunk's phase is derived from a single call-start anchor
-            // (`phase0`) via one multiply-add (`phase0 + c*chunk_span`),
-            // *not* by repeatedly `+=`-ing onto a running accumulator once
-            // per chunk: with many chunks in one call (and `self.phase`
-            // persisting across many calls over a note's lifetime),
-            // compounding rounding error once per chunk measurably drifts
-            // from the scalar path's once-per-*sample* accumulation, which
-            // — right at a mip table's per-cycle wrap boundary (steepest
-            // local slope in a band-limited edge) — can flip which table
-            // cell the tail end of a boundary-adjacent chunk reads. Deriving
-            // every chunk fresh from `phase0` bounds that error to a single
-            // multiply-add's rounding regardless of block length. `self.phase`
-            // is set once at the end (also a single multiply-add), then the
-            // scalar tail continues from it exactly like the scalar path
-            // would. The `#[cfg(not(feature = "simd"))]` twin below is the
-            // unmodified, bit-exact Task-1 scalar path (default build).
-            #[cfg(feature = "simd")]
-            {
-                use core::simd::{f32x8, Simd};
-                let lane: f32x8 = Simd::from_array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-                let step = lane * f32x8::splat(dtp);
-                let pm_v = f32x8::splat(pm);
-                let frac_v = f32x8::splat(frac.clamp(0.0, 1.0));
-                let phase0 = self.phase;
-                let chunk_span = 8.0 * dtp;
-                let n_chunks = out.len() / 8;
-                for c in 0..n_chunks {
-                    let chunk_phase = phase0 + (c as f32) * chunk_span;
-                    let raw = f32x8::splat(chunk_phase) + step + pm_v;
-                    let ph = raw - simd8::floor(raw);
-                    let out_v = simd8::sample_at_level(lo_s, hi_s, frac_v, ph);
-                    out_v.copy_to_slice(&mut out[c * 8..c * 8 + 8]);
-                }
-                self.phase = phase0 + (n_chunks as f32) * chunk_span;
-                self.phase -= floorf(self.phase);
-                for s in out[(n_chunks * 8)..].iter_mut() {
-                    let mut ph = self.phase + pm;
-                    ph -= floorf(ph);
-                    *s = sample_at_level(lo_s, hi_s, frac, ph);
-                    self.phase += dtp;
+                // SIMD (f32x8) sub-branch: 8 output samples per chunk via a
+                // closed-form phase (phase0 + pm + k*dtp for k in 0..8) and a
+                // vectorized gather+Catmull-Rom read; scalar-tail the remainder.
+                // This is tolerance-equivalent to the scalar path below (float
+                // reassociation + closed-form phase), NOT bit-exact — see
+                // `simd_matches_scalar_within_tol`.
+                //
+                // Each chunk's phase is derived from a single call-start anchor
+                // (`phase0`) via one multiply-add (`phase0 + c*chunk_span`),
+                // *not* by repeatedly `+=`-ing onto a running accumulator once
+                // per chunk: with many chunks in one call (and `self.phase`
+                // persisting across many calls over a note's lifetime),
+                // compounding rounding error once per chunk measurably drifts
+                // from the scalar path's once-per-*sample* accumulation, which
+                // — right at a mip table's per-cycle wrap boundary (steepest
+                // local slope in a band-limited edge) — can flip which table
+                // cell the tail end of a boundary-adjacent chunk reads. Deriving
+                // every chunk fresh from `phase0` bounds that error to a single
+                // multiply-add's rounding regardless of block length. `self.phase`
+                // is set once at the end (also a single multiply-add), then the
+                // scalar tail continues from it exactly like the scalar path
+                // would. The `#[cfg(not(feature = "simd"))]` twin below is the
+                // unmodified, bit-exact Task-1 scalar path (default build).
+                #[cfg(feature = "simd")]
+                {
+                    use core::simd::{Simd, f32x8};
+                    let lane: f32x8 = Simd::from_array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+                    let step = lane * f32x8::splat(dtp);
+                    let pm_v = f32x8::splat(pm);
+                    let frac_v = f32x8::splat(frac.clamp(0.0, 1.0));
+                    let phase0 = self.phase;
+                    let chunk_span = 8.0 * dtp;
+                    let n_chunks = out.len() / 8;
+                    for c in 0..n_chunks {
+                        let chunk_phase = phase0 + (c as f32) * chunk_span;
+                        let raw = f32x8::splat(chunk_phase) + step + pm_v;
+                        let ph = raw - simd8::floor(raw);
+                        let out_v = simd8::sample_at_level(lo_s, hi_s, frac_v, ph);
+                        out_v.copy_to_slice(&mut out[c * 8..c * 8 + 8]);
+                    }
+                    self.phase = phase0 + (n_chunks as f32) * chunk_span;
                     self.phase -= floorf(self.phase);
+                    for s in out[(n_chunks * 8)..].iter_mut() {
+                        let mut ph = self.phase + pm;
+                        ph -= floorf(ph);
+                        *s = sample_at_level(lo_s, hi_s, frac, ph);
+                        self.phase += dtp;
+                        self.phase -= floorf(self.phase);
+                    }
+                    return;
                 }
-                return;
-            }
 
-            #[cfg(not(feature = "simd"))]
-            {
-                for s in out.iter_mut() {
-                    let mut ph = self.phase + pm;
-                    ph -= floorf(ph);
-                    *s = sample_at_level(lo_s, hi_s, frac, ph);
-                    self.phase += dtp;
-                    self.phase -= floorf(self.phase);
+                #[cfg(not(feature = "simd"))]
+                {
+                    for s in out.iter_mut() {
+                        let mut ph = self.phase + pm;
+                        ph -= floorf(ph);
+                        *s = sample_at_level(lo_s, hi_s, frac, ph);
+                        self.phase += dtp;
+                        self.phase -= floorf(self.phase);
+                    }
+                    return;
                 }
-                return;
             }
-        }
         }
         for (i, s) in out.iter_mut().enumerate() {
             let dtp = freq.at(i) * dt; // cycles/sample
@@ -226,11 +231,19 @@ impl WtOsc {
     /// caller/zeroed) rather than panicking, since callers may pass a
     /// not-yet-fully-uploaded region.
     pub fn process_morph(
-        &mut self, region: &[f32], frames: usize,
-        freq: In, pmod: In, position: In, dt: f32, out: &mut [f32],
+        &mut self,
+        region: &[f32],
+        frames: usize,
+        freq: In,
+        pmod: In,
+        position: In,
+        dt: f32,
+        out: &mut [f32],
     ) {
         // Region must be `frames * COMPACT_LEN`; each frame is a compact pyramid.
-        if frames == 0 || region.len() < frames * COMPACT_LEN { return; }
+        if frames == 0 || region.len() < frames * COMPACT_LEN {
+            return;
+        }
         let last = frames - 1;
         // Const-freq/pmod/position fast path: when all three are
         // block-constant, the frame bracket (fm1/f0c/f1/f2/ffrac) and the
@@ -245,87 +258,89 @@ impl WtOsc {
         // reasoning as `process`'s fast path — only take it when
         // `feedback == 0.0`.
         if self.feedback == 0.0 {
-        if let (Some(f), Some(pm), Some(pos)) = (freq.as_const(), pmod.as_const(), position.as_const()) {
-            let dtp = f * dt;
-            let fpos = pos.clamp(0.0, 1.0) * last as f32;
-            let f0 = fpos as usize;
-            let f0 = if f0 > last { last } else { f0 };
-            let ffrac = (fpos - f0 as f32).clamp(0.0, 1.0);
-            let fm1 = if f0 == 0 { 0 } else { f0 - 1 };
-            let f0c = if f0 > last { last } else { f0 };
-            let f1 = if f0c + 1 > last { last } else { f0c + 1 };
-            let f2 = if f0c + 2 > last { last } else { f0c + 2 };
-            let mm1 = compact_levels(&region[fm1 * COMPACT_LEN..(fm1 + 1) * COMPACT_LEN]);
-            let m0 = compact_levels(&region[f0c * COMPACT_LEN..(f0c + 1) * COMPACT_LEN]);
-            let m1 = compact_levels(&region[f1 * COMPACT_LEN..(f1 + 1) * COMPACT_LEN]);
-            let m2 = compact_levels(&region[f2 * COMPACT_LEN..(f2 + 1) * COMPACT_LEN]);
-            let (lo, hi, frac) = mip_select(dtp, LEVELS);
-            let (mm1_lo, mm1_hi) = (mm1[lo], mm1[hi]);
-            let (m0_lo, m0_hi) = (m0[lo], m0[hi]);
-            let (m1_lo, m1_hi) = (m1[lo], m1[hi]);
-            let (m2_lo, m2_hi) = (m2[lo], m2[hi]);
-
-            // SIMD (f32x8) sub-branch: same structure as `process`'s
-            // (including the call-start-anchored, non-compounding chunk
-            // phase — see that branch's comment), but 4 frames' worth of
-            // gather+Catmull-Rom per lane, then the frame-axis Catmull-Rom
-            // blend by the (already-clamped) constant `ffrac`.
-            // Tolerance-equivalent to the scalar path below, not bit-exact —
-            // see `simd_matches_scalar_within_tol_morph`.
-            #[cfg(feature = "simd")]
+            if let (Some(f), Some(pm), Some(pos)) =
+                (freq.as_const(), pmod.as_const(), position.as_const())
             {
-                use core::simd::{f32x8, Simd};
-                let lane: f32x8 = Simd::from_array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-                let step = lane * f32x8::splat(dtp);
-                let pm_v = f32x8::splat(pm);
-                let frac_v = f32x8::splat(frac.clamp(0.0, 1.0));
-                let ffrac_v = f32x8::splat(ffrac);
-                let phase0 = self.phase;
-                let chunk_span = 8.0 * dtp;
-                let n_chunks = out.len() / 8;
-                for c in 0..n_chunks {
-                    let chunk_phase = phase0 + (c as f32) * chunk_span;
-                    let raw = f32x8::splat(chunk_phase) + step + pm_v;
-                    let ph = raw - simd8::floor(raw);
-                    let ym1 = simd8::sample_at_level(mm1_lo, mm1_hi, frac_v, ph);
-                    let y0 = simd8::sample_at_level(m0_lo, m0_hi, frac_v, ph);
-                    let y1 = simd8::sample_at_level(m1_lo, m1_hi, frac_v, ph);
-                    let y2 = simd8::sample_at_level(m2_lo, m2_hi, frac_v, ph);
-                    let out_v = simd8::catmull_rom(ym1, y0, y1, y2, ffrac_v);
-                    out_v.copy_to_slice(&mut out[c * 8..c * 8 + 8]);
-                }
-                self.phase = phase0 + (n_chunks as f32) * chunk_span;
-                self.phase -= floorf(self.phase);
-                for s in out[(n_chunks * 8)..].iter_mut() {
-                    let mut ph = self.phase + pm;
-                    ph -= floorf(ph);
-                    let ym1 = sample_at_level(mm1_lo, mm1_hi, frac, ph);
-                    let y0 = sample_at_level(m0_lo, m0_hi, frac, ph);
-                    let y1 = sample_at_level(m1_lo, m1_hi, frac, ph);
-                    let y2 = sample_at_level(m2_lo, m2_hi, frac, ph);
-                    *s = catmull_rom(ym1, y0, y1, y2, ffrac);
-                    self.phase += dtp;
-                    self.phase -= floorf(self.phase);
-                }
-                return;
-            }
+                let dtp = f * dt;
+                let fpos = pos.clamp(0.0, 1.0) * last as f32;
+                let f0 = fpos as usize;
+                let f0 = if f0 > last { last } else { f0 };
+                let ffrac = (fpos - f0 as f32).clamp(0.0, 1.0);
+                let fm1 = if f0 == 0 { 0 } else { f0 - 1 };
+                let f0c = if f0 > last { last } else { f0 };
+                let f1 = if f0c + 1 > last { last } else { f0c + 1 };
+                let f2 = if f0c + 2 > last { last } else { f0c + 2 };
+                let mm1 = compact_levels(&region[fm1 * COMPACT_LEN..(fm1 + 1) * COMPACT_LEN]);
+                let m0 = compact_levels(&region[f0c * COMPACT_LEN..(f0c + 1) * COMPACT_LEN]);
+                let m1 = compact_levels(&region[f1 * COMPACT_LEN..(f1 + 1) * COMPACT_LEN]);
+                let m2 = compact_levels(&region[f2 * COMPACT_LEN..(f2 + 1) * COMPACT_LEN]);
+                let (lo, hi, frac) = mip_select(dtp, LEVELS);
+                let (mm1_lo, mm1_hi) = (mm1[lo], mm1[hi]);
+                let (m0_lo, m0_hi) = (m0[lo], m0[hi]);
+                let (m1_lo, m1_hi) = (m1[lo], m1[hi]);
+                let (m2_lo, m2_hi) = (m2[lo], m2[hi]);
 
-            #[cfg(not(feature = "simd"))]
-            {
-                for s in out.iter_mut() {
-                    let mut ph = self.phase + pm;
-                    ph -= floorf(ph);
-                    let ym1 = sample_at_level(mm1_lo, mm1_hi, frac, ph);
-                    let y0 = sample_at_level(m0_lo, m0_hi, frac, ph);
-                    let y1 = sample_at_level(m1_lo, m1_hi, frac, ph);
-                    let y2 = sample_at_level(m2_lo, m2_hi, frac, ph);
-                    *s = catmull_rom(ym1, y0, y1, y2, ffrac);
-                    self.phase += dtp;
+                // SIMD (f32x8) sub-branch: same structure as `process`'s
+                // (including the call-start-anchored, non-compounding chunk
+                // phase — see that branch's comment), but 4 frames' worth of
+                // gather+Catmull-Rom per lane, then the frame-axis Catmull-Rom
+                // blend by the (already-clamped) constant `ffrac`.
+                // Tolerance-equivalent to the scalar path below, not bit-exact —
+                // see `simd_matches_scalar_within_tol_morph`.
+                #[cfg(feature = "simd")]
+                {
+                    use core::simd::{Simd, f32x8};
+                    let lane: f32x8 = Simd::from_array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+                    let step = lane * f32x8::splat(dtp);
+                    let pm_v = f32x8::splat(pm);
+                    let frac_v = f32x8::splat(frac.clamp(0.0, 1.0));
+                    let ffrac_v = f32x8::splat(ffrac);
+                    let phase0 = self.phase;
+                    let chunk_span = 8.0 * dtp;
+                    let n_chunks = out.len() / 8;
+                    for c in 0..n_chunks {
+                        let chunk_phase = phase0 + (c as f32) * chunk_span;
+                        let raw = f32x8::splat(chunk_phase) + step + pm_v;
+                        let ph = raw - simd8::floor(raw);
+                        let ym1 = simd8::sample_at_level(mm1_lo, mm1_hi, frac_v, ph);
+                        let y0 = simd8::sample_at_level(m0_lo, m0_hi, frac_v, ph);
+                        let y1 = simd8::sample_at_level(m1_lo, m1_hi, frac_v, ph);
+                        let y2 = simd8::sample_at_level(m2_lo, m2_hi, frac_v, ph);
+                        let out_v = simd8::catmull_rom(ym1, y0, y1, y2, ffrac_v);
+                        out_v.copy_to_slice(&mut out[c * 8..c * 8 + 8]);
+                    }
+                    self.phase = phase0 + (n_chunks as f32) * chunk_span;
                     self.phase -= floorf(self.phase);
+                    for s in out[(n_chunks * 8)..].iter_mut() {
+                        let mut ph = self.phase + pm;
+                        ph -= floorf(ph);
+                        let ym1 = sample_at_level(mm1_lo, mm1_hi, frac, ph);
+                        let y0 = sample_at_level(m0_lo, m0_hi, frac, ph);
+                        let y1 = sample_at_level(m1_lo, m1_hi, frac, ph);
+                        let y2 = sample_at_level(m2_lo, m2_hi, frac, ph);
+                        *s = catmull_rom(ym1, y0, y1, y2, ffrac);
+                        self.phase += dtp;
+                        self.phase -= floorf(self.phase);
+                    }
+                    return;
                 }
-                return;
+
+                #[cfg(not(feature = "simd"))]
+                {
+                    for s in out.iter_mut() {
+                        let mut ph = self.phase + pm;
+                        ph -= floorf(ph);
+                        let ym1 = sample_at_level(mm1_lo, mm1_hi, frac, ph);
+                        let y0 = sample_at_level(m0_lo, m0_hi, frac, ph);
+                        let y1 = sample_at_level(m1_lo, m1_hi, frac, ph);
+                        let y2 = sample_at_level(m2_lo, m2_hi, frac, ph);
+                        *s = catmull_rom(ym1, y0, y1, y2, ffrac);
+                        self.phase += dtp;
+                        self.phase -= floorf(self.phase);
+                    }
+                    return;
+                }
             }
-        }
         }
         for (i, s) in out.iter_mut().enumerate() {
             let dtp = freq.at(i) * dt;
@@ -353,7 +368,8 @@ impl WtOsc {
             self.last2 = self.last;
             self.last = y;
             *s = y;
-            self.phase += dtp; self.phase -= floorf(self.phase);
+            self.phase += dtp;
+            self.phase -= floorf(self.phase);
         }
     }
 }
@@ -481,10 +497,10 @@ fn interp_cubic(table: &[f32], ph: f32) -> f32 {
 #[cfg(feature = "simd")]
 mod simd8 {
     use core::simd::{
+        Select, Simd,
         cmp::SimdPartialOrd,
         f32x8,
         num::{SimdFloat, SimdInt},
-        Select, Simd,
     };
 
     /// `floorf`, vectorized: truncate toward zero (`as i32`), then subtract 1
@@ -566,7 +582,13 @@ mod tests {
         let levels = compact_levels(region);
         let mut osc = WtOsc::new();
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(MipSet { levels: &levels }, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+        osc.process(
+            MipSet { levels: &levels },
+            In::K(5_000.0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf,
+        );
         let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
             .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
         assert!(wa < -20.0, "static saw worst_alias {wa} dB");
@@ -580,7 +602,13 @@ mod tests {
         for &f0 in &[2_000.0f32, 5_000.0] {
             let mut osc = WtOsc::new();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            osc.process(MipSet { levels: &refs }, In::K(f0), In::K(0.0), 1.0 / sr, &mut buf);
+            osc.process(
+                MipSet { levels: &refs },
+                In::K(f0),
+                In::K(0.0),
+                1.0 / sr,
+                &mut buf,
+            );
             let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
             let wa = spec.worst_alias_db(f0, 3.0 * spec.bin_hz);
             // Measured: 2kHz -41.1 dB, 5kHz -25.6 dB (hardest case, near an
@@ -601,8 +629,15 @@ mod tests {
 
         let mut osc = WtOsc::new();
         let mut bl = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(MipSet { levels: &refs }, In::K(f0), In::K(0.0), 1.0 / sr, &mut bl);
-        let bl_wa = deluge_dsp_test::spectrum::analyze_buf(sr, &bl).worst_alias_db(f0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+        osc.process(
+            MipSet { levels: &refs },
+            In::K(f0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut bl,
+        );
+        let bl_wa = deluge_dsp_test::spectrum::analyze_buf(sr, &bl)
+            .worst_alias_db(f0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
 
         // Naive: always read level 0 (full band) with nearest-neighbor
         // (zero-order hold) sampling, no mip-select.
@@ -616,13 +651,17 @@ mod tests {
             ph += dtp;
             ph -= floorf(ph);
         }
-        let nv_wa = deluge_dsp_test::spectrum::analyze_buf(sr, &naive).worst_alias_db(f0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
+        let nv_wa = deluge_dsp_test::spectrum::analyze_buf(sr, &naive)
+            .worst_alias_db(f0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
 
         // Measured: mip'd -25.6 dB vs naive -13.8 dB at 5 kHz -> +11.75 dB
         // improvement. Gate at >9 dB, ~2.75 dB below the measured margin
         // (Osc-1's convention) rather than the originally-planned >10, which
         // left only ~1.75 dB of headroom above the measured value.
-        assert!(bl_wa < nv_wa - 9.0, "mip'd {bl_wa} should beat naive {nv_wa} by >9 dB");
+        assert!(
+            bl_wa < nv_wa - 9.0,
+            "mip'd {bl_wa} should beat naive {nv_wa} by >9 dB"
+        );
     }
 
     #[test]
@@ -633,7 +672,13 @@ mod tests {
         let refs = mipset(&m);
         let mut osc = WtOsc::new();
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(MipSet { levels: &refs }, In::K(f0), In::K(0.0), 1.0 / sr, &mut buf);
+        osc.process(
+            MipSet { levels: &refs },
+            In::K(f0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf,
+        );
         let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
         // Saw has 1st..Nth harmonics; check 2nd & 3rd are present.
         assert!(spec.level_at(2.0 * f0) > 0.05 * spec.level_at(f0));
@@ -658,7 +703,13 @@ mod tests {
         while f < 800.0 {
             let mut osc = WtOsc::new();
             let mut buf = [0.0f32; 512];
-            osc.process(MipSet { levels: &refs }, In::K(f), In::K(0.0), 1.0 / sr, &mut buf);
+            osc.process(
+                MipSet { levels: &refs },
+                In::K(f),
+                In::K(0.0),
+                1.0 / sr,
+                &mut buf,
+            );
             let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
             if let Some(p) = prev_rms {
                 // 0.05 abs-RMS-delta threshold, same as before: tight enough
@@ -689,7 +740,13 @@ mod tests {
             let levels = compact_levels(region);
             let mut osc = WtOsc::new();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            osc.process(MipSet { levels: &levels }, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+            osc.process(
+                MipSet { levels: &levels },
+                In::K(5_000.0),
+                In::K(0.0),
+                1.0 / sr,
+                &mut buf,
+            );
             let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
                 .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
             assert!(wa < -21.0, "table {id}: worst_alias {wa} dB");
@@ -699,10 +756,17 @@ mod tests {
     #[test]
     fn layout_invariants() {
         assert_eq!(level_len(0), N);
-        for l in 0..LEVELS { assert!(level_len(l).is_power_of_two() && level_len(l) >= N_MIN); }
-        for l in 1..LEVELS { assert!(level_len(l) <= level_len(l - 1)); }
+        for l in 0..LEVELS {
+            assert!(level_len(l).is_power_of_two() && level_len(l) >= N_MIN);
+        }
+        for l in 1..LEVELS {
+            assert!(level_len(l) <= level_len(l - 1));
+        }
         let mut sum = 0;
-        for l in 0..LEVELS { assert_eq!(level_offset(l), sum); sum += level_len(l); }
+        for l in 0..LEVELS {
+            assert_eq!(level_offset(l), sum);
+            sum += level_len(l);
+        }
         assert_eq!(COMPACT_LEN, sum);
         assert_eq!(COMPACT_LEN, level_offset(LEVELS));
     }
@@ -714,14 +778,22 @@ mod tests {
     #[test]
     fn compact_saw_is_band_limited() {
         let mut base = [0.0f32; N];
-        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / N as f32) - 1.0;
+        }
         let mut region = [0.0f32; COMPACT_LEN];
         mipgen::build_pyramid_flat_compact(&base, &mut region);
         let levels = compact_levels(&region);
         let sr = 48_000.0f32;
         let mut osc = WtOsc::new();
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(MipSet { levels: &levels }, In::K(5_000.0), In::K(0.0), 1.0 / sr, &mut buf);
+        osc.process(
+            MipSet { levels: &levels },
+            In::K(5_000.0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf,
+        );
         let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
             .worst_alias_db(5_000.0, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
         // Measured floor -23.73 dB (organ, see `compact_vs_full_n_harmonic_fidelity_mid_freqs`'s
@@ -742,7 +814,9 @@ mod tests {
 
     fn saw_base() -> [f32; N] {
         let mut b = [0.0f32; N];
-        for (i, s) in b.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        for (i, s) in b.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / N as f32) - 1.0;
+        }
         b
     }
 
@@ -755,7 +829,10 @@ mod tests {
         base: &[f32; N],
         f0: f32,
         sr: f32,
-    ) -> (deluge_dsp_test::spectrum::Spectrum, deluge_dsp_test::spectrum::Spectrum) {
+    ) -> (
+        deluge_dsp_test::spectrum::Spectrum,
+        deluge_dsp_test::spectrum::Spectrum,
+    ) {
         let mut region_full = [0.0f32; N * LEVELS];
         mipgen::build_pyramid_flat(base, &mut region_full);
         let full = full_levels(&region_full);
@@ -765,11 +842,23 @@ mod tests {
         let compact = compact_levels(&region_compact);
 
         let mut buf_full = [0.0f32; deluge_dsp_test::FFT_N];
-        WtOsc::new().process(MipSet { levels: &full }, In::K(f0), In::K(0.0), 1.0 / sr, &mut buf_full);
+        WtOsc::new().process(
+            MipSet { levels: &full },
+            In::K(f0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf_full,
+        );
         let spec_full = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_full);
 
         let mut buf_compact = [0.0f32; deluge_dsp_test::FFT_N];
-        WtOsc::new().process(MipSet { levels: &compact }, In::K(f0), In::K(0.0), 1.0 / sr, &mut buf_compact);
+        WtOsc::new().process(
+            MipSet { levels: &compact },
+            In::K(f0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf_compact,
+        );
         let spec_compact = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_compact);
 
         (spec_compact, spec_full)
@@ -871,11 +960,23 @@ mod tests {
         let n = 64;
         let mut a = WtOsc::new(); // feedback defaults 0
         let mut out_a = std::vec![0.0f32; n];
-        a.process(MipSet { levels: &refs }, In::K(440.0), In::K(0.0), dt, &mut out_a);
+        a.process(
+            MipSet { levels: &refs },
+            In::K(440.0),
+            In::K(0.0),
+            dt,
+            &mut out_a,
+        );
         let mut b = WtOsc::new();
         b.set_feedback(0.0); // explicit 0 — must not change anything
         let mut out_b = std::vec![0.0f32; n];
-        b.process(MipSet { levels: &refs }, In::K(440.0), In::K(0.0), dt, &mut out_b);
+        b.process(
+            MipSet { levels: &refs },
+            In::K(440.0),
+            In::K(0.0),
+            dt,
+            &mut out_b,
+        );
         assert_eq!(out_a, out_b, "feedback=0 is identity");
     }
 
@@ -888,14 +989,24 @@ mod tests {
         let mut a = WtOsc::new();
         a.set_feedback(1.0);
         let mut out = std::vec![0.0f32; n];
-        a.process(MipSet { levels: &refs }, In::K(440.0), In::K(0.0), dt, &mut out);
-        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 2.0), "feedback bounded");
+        a.process(
+            MipSet { levels: &refs },
+            In::K(440.0),
+            In::K(0.0),
+            dt,
+            &mut out,
+        );
+        assert!(
+            out.iter().all(|s| s.is_finite() && s.abs() <= 2.0),
+            "feedback bounded"
+        );
     }
 
-    use std::vec::Vec;
     use std::vec;
+    use std::vec::Vec;
 
-    fn frame_region(bases: &[[f32; N]]) -> Vec<f32> { // host test; std Vec ok in tests
+    fn frame_region(bases: &[[f32; N]]) -> Vec<f32> {
+        // host test; std Vec ok in tests
         let mut r = vec![0.0f32; bases.len() * COMPACT_LEN];
         for (f, b) in bases.iter().enumerate() {
             mipgen::build_pyramid_flat_compact(b, &mut r[f * COMPACT_LEN..(f + 1) * COMPACT_LEN]);
@@ -916,7 +1027,13 @@ mod tests {
         let levels = compact_levels(&region);
         let mut o = [0.0f32; 256];
         let mut w = WtOsc::new();
-        w.process(MipSet { levels: &levels }, In::K(f0), In::K(0.0), 1.0 / sr, &mut o);
+        w.process(
+            MipSet { levels: &levels },
+            In::K(f0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut o,
+        );
         o
     }
 
@@ -924,14 +1041,30 @@ mod tests {
     fn morph_frames1_matches_single_cycle() {
         // FRAMES==1 morph must equal the single-cycle process bit-for-bit.
         let mut saw = [0.0f32; N];
-        for (i, s) in saw.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        for (i, s) in saw.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / N as f32) - 1.0;
+        }
         let region = frame_region(&[saw]);
         let levels = compact_levels(&region);
         let (mut a, mut b) = (WtOsc::new(), WtOsc::new());
         let mut oa = [0.0f32; 256];
         let mut ob = [0.0f32; 256];
-        a.process(MipSet { levels: &levels }, In::K(220.0), In::K(0.0), 1.0 / 48_000.0, &mut oa);
-        b.process_morph(&region, 1, In::K(220.0), In::K(0.0), In::K(0.5), 1.0 / 48_000.0, &mut ob);
+        a.process(
+            MipSet { levels: &levels },
+            In::K(220.0),
+            In::K(0.0),
+            1.0 / 48_000.0,
+            &mut oa,
+        );
+        b.process_morph(
+            &region,
+            1,
+            In::K(220.0),
+            In::K(0.0),
+            In::K(0.5),
+            1.0 / 48_000.0,
+            &mut ob,
+        );
         assert_eq!(oa, ob); // bit-exact
     }
 
@@ -943,15 +1076,30 @@ mod tests {
         // frame→arg mapping puts f0 in the `y1` slot, f1 in the `y2` slot).
         let mut saw = [0.0f32; N];
         let mut sq = [0.0f32; N];
-        for i in 0..N { saw[i] = 2.0 * (i as f32 / N as f32) - 1.0; sq[i] = if i < N/2 {1.0} else {-1.0}; }
+        for i in 0..N {
+            saw[i] = 2.0 * (i as f32 / N as f32) - 1.0;
+            sq[i] = if i < N / 2 { 1.0 } else { -1.0 };
+        }
         let region = frame_region(&[saw, sq]);
         let sr = 48_000.0f32;
         let f0hz = 220.0f32;
-        let render = |pos: f32| { let mut o=[0.0f32;256]; let mut w=WtOsc::new();
-            w.process_morph(&region, 2, In::K(f0hz), In::K(0.0), In::K(pos), 1.0/sr, &mut o); o };
+        let render = |pos: f32| {
+            let mut o = [0.0f32; 256];
+            let mut w = WtOsc::new();
+            w.process_morph(
+                &region,
+                2,
+                In::K(f0hz),
+                In::K(0.0),
+                In::K(pos),
+                1.0 / sr,
+                &mut o,
+            );
+            o
+        };
 
         let ya = render_frame_alone(&saw, f0hz, sr); // frame 0 in isolation
-        let yb = render_frame_alone(&sq, f0hz, sr);  // frame 1 in isolation
+        let yb = render_frame_alone(&sq, f0hz, sr); // frame 1 in isolation
         let f0 = render(0.0);
         let f1 = render(1.0);
         assert_eq!(f0, ya, "position=0 must equal frame 0 exactly");
@@ -970,7 +1118,12 @@ mod tests {
         let mid = render(0.5);
         for i in 0..256 {
             let expected = catmull_rom(ya[i], ya[i], yb[i], yb[i], 0.5);
-            assert!((mid[i] - expected).abs() < 1e-4, "midpoint cubic @ {i}: {} vs {}", mid[i], expected);
+            assert!(
+                (mid[i] - expected).abs() < 1e-4,
+                "midpoint cubic @ {i}: {} vs {}",
+                mid[i],
+                expected
+            );
         }
     }
 
@@ -1003,19 +1156,32 @@ mod tests {
         // fm1=0(saw), f0c=1(sq), f1=2(tri), f2=3(sine) — all 4 distinct frames.
         let mut out = [0.0f32; 256];
         let mut w = WtOsc::new();
-        w.process_morph(&region, 4, In::K(f0hz), In::K(0.0), In::K(0.5), 1.0 / sr, &mut out);
+        w.process_morph(
+            &region,
+            4,
+            In::K(f0hz),
+            In::K(0.0),
+            In::K(0.5),
+            1.0 / sr,
+            &mut out,
+        );
 
         let mut max_abs_diff_from_linear = 0.0f32;
         for i in 0..256 {
             let expected_cubic = catmull_rom(ya[i], yb[i], yc[i], yd[i], 0.5);
-            assert!((out[i] - expected_cubic).abs() < 1e-4,
-                "sample {i}: {} vs expected cubic {expected_cubic} (reads all 4 frames)", out[i]);
+            assert!(
+                (out[i] - expected_cubic).abs() < 1e-4,
+                "sample {i}: {} vs expected cubic {expected_cubic} (reads all 4 frames)",
+                out[i]
+            );
             let linear_2tap = 0.5 * (yb[i] + yc[i]);
             max_abs_diff_from_linear = max_abs_diff_from_linear.max((out[i] - linear_2tap).abs());
         }
-        assert!(max_abs_diff_from_linear > 1e-3,
+        assert!(
+            max_abs_diff_from_linear > 1e-3,
             "cubic blend should differ measurably from the old 2-tap linear average \
-             (max abs diff = {max_abs_diff_from_linear}); outer taps may not be in use");
+             (max abs diff = {max_abs_diff_from_linear}); outer taps may not be in use"
+        );
     }
 
     #[test]
@@ -1033,14 +1199,29 @@ mod tests {
         let f0 = 220.0f32;
         for &(id, name) in &[(6u16, "HarmonicSweep"), (7u16, "FormantMorph")] {
             let region = static_table_flat(TableId(id)).expect("named 2d bank");
-            assert_eq!(region.len() % COMPACT_LEN, 0, "{name}: not a whole number of frames");
+            assert_eq!(
+                region.len() % COMPACT_LEN,
+                0,
+                "{name}: not a whole number of frames"
+            );
             let frames = region.len() / COMPACT_LEN;
-            assert!(frames > 1, "{name}: expected a multi-frame (2D) bank, got frames={frames}");
+            assert!(
+                frames > 1,
+                "{name}: expected a multi-frame (2D) bank, got frames={frames}"
+            );
 
             let render = |pos: f32| {
                 let mut o = [0.0f32; deluge_dsp_test::FFT_N];
                 let mut w = WtOsc::new();
-                w.process_morph(region, frames, In::K(f0), In::K(0.0), In::K(pos), 1.0 / sr, &mut o);
+                w.process_morph(
+                    region,
+                    frames,
+                    In::K(f0),
+                    In::K(0.0),
+                    In::K(pos),
+                    1.0 / sr,
+                    &mut o,
+                );
                 o
             };
 
@@ -1064,7 +1245,10 @@ mod tests {
             let h0 = spec0.harmonics_db(f0, 24);
             let h1 = spec1.harmonics_db(f0, 24);
             let dist: f32 = h0.iter().zip(h1.iter()).map(|(a, b)| (a - b).powi(2)).sum();
-            assert!(dist > 4.0, "{name}: pos=0 vs pos=1 harmonic spectra too similar (dist^2={dist})");
+            assert!(
+                dist > 4.0,
+                "{name}: pos=0 vs pos=1 harmonic spectra too similar (dist^2={dist})"
+            );
 
             // Continuity across a position sweep: no hard jump (a broken
             // frame-bracket/crossfade would show up as a large RMS step).
@@ -1074,7 +1258,10 @@ mod tests {
                 let buf = render(p);
                 let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
                 if let Some(pr) = prev_rms {
-                    assert!((rms - pr).abs() < 0.15, "{name}: rms jump at pos {p}: {pr}->{rms}");
+                    assert!(
+                        (rms - pr).abs() < 0.15,
+                        "{name}: rms jump at pos {p}: {pr}->{rms}"
+                    );
                 }
                 prev_rms = Some(rms);
                 p += 0.05;
@@ -1098,16 +1285,34 @@ mod tests {
         // catching a real jump (e.g. a hard frame swap without
         // interpolation), which would show up as a delta far larger than
         // this smooth trend's.
-        let mut saw = [0.0f32; N]; let mut sq = [0.0f32; N];
-        for i in 0..N { saw[i] = 2.0*(i as f32/N as f32)-1.0; sq[i] = if i<N/2 {1.0} else {-1.0}; }
+        let mut saw = [0.0f32; N];
+        let mut sq = [0.0f32; N];
+        for i in 0..N {
+            saw[i] = 2.0 * (i as f32 / N as f32) - 1.0;
+            sq[i] = if i < N / 2 { 1.0 } else { -1.0 };
+        }
         let region = frame_region(&[saw, sq]);
-        let sr = 48_000.0f32; let mut prev: Option<f32> = None; let mut p = 0.0f32;
+        let sr = 48_000.0f32;
+        let mut prev: Option<f32> = None;
+        let mut p = 0.0f32;
         while p <= 1.0 {
-            let mut o = [0.0f32; 256]; let mut w = WtOsc::new();
-            w.process_morph(&region, 2, In::K(220.0), In::K(0.0), In::K(p), 1.0/sr, &mut o);
-            let rms = (o.iter().map(|s| s*s).sum::<f32>()/o.len() as f32).sqrt();
-            if let Some(pr) = prev { assert!((rms-pr).abs() < 0.05, "morph rms jump @ pos {p}"); }
-            prev = Some(rms); p += 0.01;
+            let mut o = [0.0f32; 256];
+            let mut w = WtOsc::new();
+            w.process_morph(
+                &region,
+                2,
+                In::K(220.0),
+                In::K(0.0),
+                In::K(p),
+                1.0 / sr,
+                &mut o,
+            );
+            let rms = (o.iter().map(|s| s * s).sum::<f32>() / o.len() as f32).sqrt();
+            if let Some(pr) = prev {
+                assert!((rms - pr).abs() < 0.05, "morph rms jump @ pos {p}");
+            }
+            prev = Some(rms);
+            p += 0.01;
         }
     }
 
@@ -1132,13 +1337,25 @@ mod tests {
         let refs = mipset(&m);
         let mut a = WtOsc::new();
         let mut oa = [0.0f32; 512];
-        a.process(MipSet { levels: &refs }, In::K(220.0), In::K(0.0), 1.0 / 48_000.0, &mut oa);
+        a.process(
+            MipSet { levels: &refs },
+            In::K(220.0),
+            In::K(0.0),
+            1.0 / 48_000.0,
+            &mut oa,
+        );
 
         let fbuf = [220.0f32; 512];
         let pbuf = [0.0f32; 512];
         let mut b = WtOsc::new();
         let mut ob = [0.0f32; 512];
-        b.process(MipSet { levels: &refs }, In::A(&fbuf), In::A(&pbuf), 1.0 / 48_000.0, &mut ob);
+        b.process(
+            MipSet { levels: &refs },
+            In::A(&fbuf),
+            In::A(&pbuf),
+            1.0 / 48_000.0,
+            &mut ob,
+        );
 
         assert_eq!(oa, ob); // bit-for-bit
     }
@@ -1165,14 +1382,30 @@ mod tests {
 
         let mut a = WtOsc::new();
         let mut oa = [0.0f32; 512];
-        a.process_morph(&region, 4, In::K(220.0), In::K(0.0), In::K(0.5), 1.0 / sr, &mut oa);
+        a.process_morph(
+            &region,
+            4,
+            In::K(220.0),
+            In::K(0.0),
+            In::K(0.5),
+            1.0 / sr,
+            &mut oa,
+        );
 
         let fbuf = [220.0f32; 512];
         let pbuf = [0.0f32; 512];
         let posbuf = [0.5f32; 512];
         let mut b = WtOsc::new();
         let mut ob = [0.0f32; 512];
-        b.process_morph(&region, 4, In::A(&fbuf), In::A(&pbuf), In::A(&posbuf), 1.0 / sr, &mut ob);
+        b.process_morph(
+            &region,
+            4,
+            In::A(&fbuf),
+            In::A(&pbuf),
+            In::A(&posbuf),
+            1.0 / sr,
+            &mut ob,
+        );
 
         assert_eq!(oa, ob); // bit-for-bit
     }
@@ -1189,7 +1422,14 @@ mod tests {
     // build; it is exactly the code the non-simd build runs (see the
     // `#[cfg(not(feature = "simd"))]` branches in `process`/`process_morph`).
     #[cfg(feature = "simd")]
-    fn scalar_hoisted_process(mips: &MipSet, freq: f32, pm: f32, dt: f32, phase: &mut f32, out: &mut [f32]) {
+    fn scalar_hoisted_process(
+        mips: &MipSet,
+        freq: f32,
+        pm: f32,
+        dt: f32,
+        phase: &mut f32,
+        out: &mut [f32],
+    ) {
         let dtp = freq * dt;
         let (lo, hi, frac) = mip_select(dtp, mips.levels.len());
         let (lo_s, hi_s) = (mips.levels[lo], mips.levels[hi]);
@@ -1205,10 +1445,18 @@ mod tests {
     #[cfg(feature = "simd")]
     #[allow(clippy::too_many_arguments)]
     fn scalar_hoisted_process_morph(
-        region: &[f32], frames: usize, freq: f32, pm: f32, pos: f32, dt: f32,
-        phase: &mut f32, out: &mut [f32],
+        region: &[f32],
+        frames: usize,
+        freq: f32,
+        pm: f32,
+        pos: f32,
+        dt: f32,
+        phase: &mut f32,
+        out: &mut [f32],
     ) {
-        if frames == 0 || region.len() < frames * COMPACT_LEN { return; }
+        if frames == 0 || region.len() < frames * COMPACT_LEN {
+            return;
+        }
         let last = frames - 1;
         let dtp = freq * dt;
         let fpos = pos.clamp(0.0, 1.0) * last as f32;
@@ -1292,15 +1540,31 @@ mod tests {
         let dt = 1.0 / 48_000.0f32;
         let mut freqs = std::vec::Vec::new();
         let mut f = 20.0f32;
-        while f < 8_000.0 { freqs.push(f); f *= 1.13; }
+        while f < 8_000.0 {
+            freqs.push(f);
+            f *= 1.13;
+        }
         for &freq in freqs.iter() {
             for &pm in &[0.0f32, 0.05, -0.3, 1.7, -1.99, 0.999, 0.4321] {
                 let mut simd_osc = WtOsc::new();
                 let mut simd_out = [0.0f32; NS];
-                simd_osc.process(MipSet { levels: &refs }, In::K(freq), In::K(pm), dt, &mut simd_out);
+                simd_osc.process(
+                    MipSet { levels: &refs },
+                    In::K(freq),
+                    In::K(pm),
+                    dt,
+                    &mut simd_out,
+                );
                 let mut phase = 0.0f32;
                 let mut scalar_out = [0.0f32; NS];
-                scalar_hoisted_process(&MipSet { levels: &refs }, freq, pm, dt, &mut phase, &mut scalar_out);
+                scalar_hoisted_process(
+                    &MipSet { levels: &refs },
+                    freq,
+                    pm,
+                    dt,
+                    &mut phase,
+                    &mut scalar_out,
+                );
                 let mut max_diff = 0.0f32;
                 for i in 0..NS {
                     max_diff = max_diff.max((simd_out[i] - scalar_out[i]).abs());
@@ -1315,7 +1579,9 @@ mod tests {
                 // from an already-diverged phase.
                 assert!(
                     (simd_osc.phase - phase).abs() < SIMD_TOL,
-                    "process: freq={freq} pm={pm}: phase drift simd={} scalar={}", simd_osc.phase, phase
+                    "process: freq={freq} pm={pm}: phase drift simd={} scalar={}",
+                    simd_osc.phase,
+                    phase
                 );
             }
         }
@@ -1344,11 +1610,28 @@ mod tests {
                 for &pos in &[0.0f32, 0.37, 0.5, 0.82, 1.0] {
                     let mut simd_osc = WtOsc::new();
                     let mut simd_out = [0.0f32; NS];
-                    simd_osc.process_morph(&region, 4, In::K(freq), In::K(pm), In::K(pos), dt, &mut simd_out);
+                    simd_osc.process_morph(
+                        &region,
+                        4,
+                        In::K(freq),
+                        In::K(pm),
+                        In::K(pos),
+                        dt,
+                        &mut simd_out,
+                    );
 
                     let mut phase = 0.0f32;
                     let mut scalar_out = [0.0f32; NS];
-                    scalar_hoisted_process_morph(&region, 4, freq, pm, pos, dt, &mut phase, &mut scalar_out);
+                    scalar_hoisted_process_morph(
+                        &region,
+                        4,
+                        freq,
+                        pm,
+                        pos,
+                        dt,
+                        &mut phase,
+                        &mut scalar_out,
+                    );
 
                     let mut max_diff = 0.0f32;
                     for i in 0..NS {
@@ -1360,7 +1643,9 @@ mod tests {
                     );
                     assert!(
                         (simd_osc.phase - phase).abs() < SIMD_TOL,
-                        "process_morph: freq={freq} pm={pm} pos={pos}: phase drift simd={} scalar={}", simd_osc.phase, phase
+                        "process_morph: freq={freq} pm={pm} pos={pos}: phase drift simd={} scalar={}",
+                        simd_osc.phase,
+                        phase
                     );
                 }
             }
@@ -1387,15 +1672,31 @@ mod tests {
             let pm = 0.4321f32;
             let mut simd_osc = WtOsc::new();
             let mut simd_out = std::vec![0.0f32; ns];
-            simd_osc.process(MipSet { levels: &refs }, In::K(freq), In::K(pm), dt, &mut simd_out);
+            simd_osc.process(
+                MipSet { levels: &refs },
+                In::K(freq),
+                In::K(pm),
+                dt,
+                &mut simd_out,
+            );
             let mut phase = 0.0f32;
             let mut scalar_out = std::vec![0.0f32; ns];
-            scalar_hoisted_process(&MipSet { levels: &refs }, freq, pm, dt, &mut phase, &mut scalar_out);
+            scalar_hoisted_process(
+                &MipSet { levels: &refs },
+                freq,
+                pm,
+                dt,
+                &mut phase,
+                &mut scalar_out,
+            );
             let mut max_diff = 0.0f32;
             for i in 0..ns {
                 max_diff = max_diff.max((simd_out[i] - scalar_out[i]).abs());
             }
-            println!("[wavetable process, informational] {ns}-sample render: max |simd-scalar| = {max_diff}, final phase drift = {}", (simd_osc.phase - phase).abs());
+            println!(
+                "[wavetable process, informational] {ns}-sample render: max |simd-scalar| = {max_diff}, final phase drift = {}",
+                (simd_osc.phase - phase).abs()
+            );
             assert!(max_diff.is_finite(), "non-finite output at ns={ns}");
         }
     }
@@ -1427,13 +1728,26 @@ mod tests {
         let simd_report = deluge_dsp_test::cpu::measure(sr, BLOCK, 300, || {
             let mut osc = WtOsc::new();
             let mut out = [0.0f32; BLOCK];
-            osc.process(MipSet { levels: &refs }, In::K(220.0), In::K(0.0), dt, &mut out);
+            osc.process(
+                MipSet { levels: &refs },
+                In::K(220.0),
+                In::K(0.0),
+                dt,
+                &mut out,
+            );
             black_box(&out);
         });
         let scalar_report = deluge_dsp_test::cpu::measure(sr, BLOCK, 300, || {
             let mut phase = 0.0f32;
             let mut out = [0.0f32; BLOCK];
-            scalar_hoisted_process(&MipSet { levels: &refs }, 220.0, 0.0, dt, &mut phase, &mut out);
+            scalar_hoisted_process(
+                &MipSet { levels: &refs },
+                220.0,
+                0.0,
+                dt,
+                &mut phase,
+                &mut out,
+            );
             black_box(&out);
         });
         let speedup = deluge_dsp_test::cpu::compare(&scalar_report, &simd_report);
@@ -1468,7 +1782,15 @@ mod tests {
         let simd_report = deluge_dsp_test::cpu::measure(sr, BLOCK, 300, || {
             let mut osc = WtOsc::new();
             let mut out = [0.0f32; BLOCK];
-            osc.process_morph(&region, 4, In::K(220.0), In::K(0.0), In::K(0.5), dt, &mut out);
+            osc.process_morph(
+                &region,
+                4,
+                In::K(220.0),
+                In::K(0.0),
+                In::K(0.5),
+                dt,
+                &mut out,
+            );
             black_box(&out);
         });
         let scalar_report = deluge_dsp_test::cpu::measure(sr, BLOCK, 300, || {

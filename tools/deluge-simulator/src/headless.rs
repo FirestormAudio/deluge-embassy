@@ -25,9 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use deluge_sim_link::audio::{Consumer, GuiEnds, Producer};
-use deluge_sim_link::{
-    DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel,
-};
+use deluge_sim_link::{DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
 
 /// Run the app headlessly: replay the script, dump snapshots, then return (the
 /// SDK host runtime exits the process afterwards). The app is already running on
@@ -53,8 +51,14 @@ pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
         },
         // No script: let the app render, snapshot once, quit.
         None => vec![
-            Step { at_ms: 500, action: Action::Snapshot("frame".into()) },
-            Step { at_ms: 500, action: Action::Quit },
+            Step {
+                at_ms: 500,
+                action: Action::Snapshot("frame".into()),
+            },
+            Step {
+                at_ms: 500,
+                action: Action::Quit,
+            },
         ],
     };
 
@@ -114,7 +118,9 @@ fn parse_script(path: &Path) -> Result<Vec<Step>, String> {
             .unwrap()
             .parse()
             .map_err(|_| format!("line {n}: expected a millisecond timestamp"))?;
-        let cmd = t.next().ok_or_else(|| format!("line {n}: missing command"))?;
+        let cmd = t
+            .next()
+            .ok_or_else(|| format!("line {n}: missing command"))?;
         let action = match cmd {
             "button" => Action::Input(InputEvent::Button {
                 id: int(&mut t, n, "button id")? as u8,
@@ -139,7 +145,9 @@ fn parse_script(path: &Path) -> Result<Vec<Step>, String> {
 }
 
 fn int<'a>(t: &mut impl Iterator<Item = &'a str>, n: usize, what: &str) -> Result<i64, String> {
-    let s = t.next().ok_or_else(|| format!("line {n}: missing {what}"))?;
+    let s = t
+        .next()
+        .ok_or_else(|| format!("line {n}: missing {what}"))?;
     s.trim_start_matches('+')
         .parse()
         .map_err(|_| format!("line {n}: bad {what} {s:?}"))
@@ -206,7 +214,11 @@ fn state_text(panel: &SharedPanel) -> String {
     let cv = panel.cv_snapshot();
     let _ = writeln!(s, "cv {} {} {} {}", cv[0], cv[1], cv[2], cv[3]);
     let g = panel.gate_snapshot();
-    let _ = writeln!(s, "gate {} {} {} {}", g[0] as u8, g[1] as u8, g[2] as u8, g[3] as u8);
+    let _ = writeln!(
+        s,
+        "gate {} {} {} {}",
+        g[0] as u8, g[1] as u8, g[2] as u8, g[3] as u8
+    );
     let _ = writeln!(s, "synced {}", panel.synced_led() as u8);
     let leds = panel.leds_snapshot();
     for (i, on) in leds.iter().enumerate().take(LED_COUNT) {

@@ -19,10 +19,10 @@ pub mod voice;
 
 pub use arena::Arena;
 pub use cmd::{Cmd, Host};
+pub use deluge_dsp_kernels::poly::VOICES;
 pub use engine::Engine;
 pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId, OutputSrc, USB_CHANNELS};
 pub use node::{In, Kind, Node};
 pub use pool::{Pool, PoolHandle};
 pub use voice::{MAX_GATES, MAX_TRIGGERS, MonoAllocator, VoiceAllocator};
-pub use deluge_dsp_kernels::poly::VOICES;

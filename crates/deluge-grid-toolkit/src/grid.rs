@@ -67,14 +67,26 @@ impl Grid {
     }
 
     /// Draw a horizontal line.
-    pub fn draw_horizontal_line(&mut self, row: usize, start_col: usize, end_col: usize, color: Color) {
+    pub fn draw_horizontal_line(
+        &mut self,
+        row: usize,
+        start_col: usize,
+        end_col: usize,
+        color: Color,
+    ) {
         for col in start_col..=end_col {
             self.set_pad(row, col, color);
         }
     }
 
     /// Draw a vertical line.
-    pub fn draw_vertical_line(&mut self, col: usize, start_row: usize, end_row: usize, color: Color) {
+    pub fn draw_vertical_line(
+        &mut self,
+        col: usize,
+        start_row: usize,
+        end_row: usize,
+        color: Color,
+    ) {
         for row in start_row..=end_row {
             self.set_pad(row, col, color);
         }

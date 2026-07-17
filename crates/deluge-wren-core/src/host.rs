@@ -114,7 +114,12 @@ pub trait Host {
     /// with its ring at pool `handle`. Default no-op (hosts with no filesystem /
     /// prefetch, e.g. tests, ignore it). The firmware host wires it to a prefetch
     /// task; see the Sa-3b slice-4 design.
-    fn stream_register(&mut self, node: deluge_audio_graph::NodeId, handle: deluge_audio_graph::PoolHandle, path: &str) {
+    fn stream_register(
+        &mut self,
+        node: deluge_audio_graph::NodeId,
+        handle: deluge_audio_graph::PoolHandle,
+        path: &str,
+    ) {
         let _ = (node, handle, path);
     }
 }

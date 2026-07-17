@@ -3,7 +3,7 @@
 //! round-trip); each emitter builds a `deluge_audio_graph::Cmd` and ships it
 //! through the registered [`Host`](crate::Host). Single-threaded VM context.
 
-use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId, MAX_GATES, MAX_TRIGGERS};
+use deluge_audio_graph::{BusId, Cmd, Input, Kind, MAX_GATES, MAX_TRIGGERS, NodeId};
 
 use crate::host::host;
 
@@ -17,15 +17,20 @@ pub const MASTER_BUS: u16 = 0;
 pub const NULL_ID: u16 = u16::MAX;
 
 struct Alloc {
-    next: u16,                     // bump pointer for node ids
-    free: [u16; WREN_MAX_NODES],   // stack of freed node ids
+    next: u16,                   // bump pointer for node ids
+    free: [u16; WREN_MAX_NODES], // stack of freed node ids
     free_len: usize,
-    next_bus: u16,                 // bump pointer for bus ids (1.. ; 0 = master)
+    next_bus: u16, // bump pointer for bus ids (1.. ; 0 = master)
 }
 
 impl Alloc {
     const fn new() -> Self {
-        Alloc { next: 0, free: [0; WREN_MAX_NODES], free_len: 0, next_bus: 1 }
+        Alloc {
+            next: 0,
+            free: [0; WREN_MAX_NODES],
+            free_len: 0,
+            next_bus: 1,
+        }
     }
     fn alloc_node(&mut self) -> u16 {
         if self.free_len > 0 {
@@ -76,11 +81,11 @@ fn alloc() -> &'static mut Alloc {
 /// Voice-build state for `Synth.new` (set between polyBegin_/polyEnd_).
 struct PolyCtx {
     mode: bool,
-    pitch_ctrl: u16,          // the PolyCtrl created by polyBegin_
-    gates: [u16; MAX_GATES],  // envelope node ids (first `gate_count`)
-    gate_count: u8,  // total envelopes created this build (may exceed MAX_GATES → guard aborts)
-    vel_node: u16,   // velocity PolyCtrl id, or NULL_ID if the builder didn't take velocity
-    slew_node: u16,  // the PolySlew created by mono_begin, or NULL_ID for a poly build
+    pitch_ctrl: u16,               // the PolyCtrl created by polyBegin_
+    gates: [u16; MAX_GATES],       // envelope node ids (first `gate_count`)
+    gate_count: u8, // total envelopes created this build (may exceed MAX_GATES → guard aborts)
+    vel_node: u16,  // velocity PolyCtrl id, or NULL_ID if the builder didn't take velocity
+    slew_node: u16, // the PolySlew created by mono_begin, or NULL_ID for a poly build
     triggers: [u16; MAX_TRIGGERS], // registered sample-source node ids (first `trigger_count`)
     trigger_count: u8, // total sources registered this build (may exceed MAX_TRIGGERS → guard aborts)
 }
@@ -123,7 +128,14 @@ pub fn poly_begin() -> u16 {
     new_node(
         mtof,
         Kind::PolyMtof,
-        [Input::Node { node: NodeId(ctrl), port: 0 }, Input::Const(0.0), Input::Const(0.0)],
+        [
+            Input::Node {
+                node: NodeId(ctrl),
+                port: 0,
+            },
+            Input::Const(0.0),
+            Input::Const(0.0),
+        ],
     );
     let p = poly();
     p.mode = true;
@@ -143,9 +155,31 @@ pub fn mono_begin() -> u16 {
     let ctrl = alloc_node_id();
     new_node(ctrl, Kind::PolyCtrl, [Input::Const(0.0); 3]);
     let slew = alloc_node_id();
-    new_node(slew, Kind::PolySlew, [Input::Node { node: NodeId(ctrl), port: 0 }, Input::Const(0.0), Input::Const(0.0)]);
+    new_node(
+        slew,
+        Kind::PolySlew,
+        [
+            Input::Node {
+                node: NodeId(ctrl),
+                port: 0,
+            },
+            Input::Const(0.0),
+            Input::Const(0.0),
+        ],
+    );
     let mtof = alloc_node_id();
-    new_node(mtof, Kind::PolyMtof, [Input::Node { node: NodeId(slew), port: 0 }, Input::Const(0.0), Input::Const(0.0)]);
+    new_node(
+        mtof,
+        Kind::PolyMtof,
+        [
+            Input::Node {
+                node: NodeId(slew),
+                port: 0,
+            },
+            Input::Const(0.0),
+            Input::Const(0.0),
+        ],
+    );
     let p = poly();
     p.mode = true;
     p.pitch_ctrl = ctrl;
@@ -191,14 +225,29 @@ pub fn poly_vel_begin() -> u16 {
 pub fn poly_end() -> (u16, [u16; MAX_GATES], u8, u16, [u16; MAX_TRIGGERS], u8) {
     let p = poly();
     p.mode = false;
-    (p.pitch_ctrl, p.gates, p.gate_count, p.vel_node, p.triggers, p.trigger_count)
+    (
+        p.pitch_ctrl,
+        p.gates,
+        p.gate_count,
+        p.vel_node,
+        p.triggers,
+        p.trigger_count,
+    )
 }
 /// Returns (pitch_ctrl, slew_node, gates, gate_count, vel_node, triggers,
 /// trigger_count) for the mono SynthObj.
 pub fn mono_end() -> (u16, u16, [u16; MAX_GATES], u8, u16, [u16; MAX_TRIGGERS], u8) {
     let p = poly();
     p.mode = false;
-    (p.pitch_ctrl, p.slew_node, p.gates, p.gate_count, p.vel_node, p.triggers, p.trigger_count)
+    (
+        p.pitch_ctrl,
+        p.slew_node,
+        p.gates,
+        p.gate_count,
+        p.vel_node,
+        p.triggers,
+        p.trigger_count,
+    )
 }
 
 pub fn alloc_node_id() -> u16 {
@@ -216,7 +265,11 @@ pub fn new_node(id: u16, kind: Kind, args: [Input; 3]) {
     if id == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::NewNode { node: NodeId(id), kind, args });
+    host().audio_cmd(Cmd::NewNode {
+        node: NodeId(id),
+        kind,
+        args,
+    });
 }
 /// Create a `Kind::Wavetable` node and bind it to a named static table (the
 /// generated `TABLES` registry, Task 3). Used by `Node.wavetable_(table, freq)`.
@@ -328,7 +381,13 @@ pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
 /// failed) still creates the node but skips the bind, so it renders as dry
 /// passthrough instead of panicking — the same contract as
 /// [`new_wavetable_pooled`].
-pub fn new_delay(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, input: Input, time: Input, feedback: Input) {
+pub fn new_delay(
+    id: u16,
+    handle: Option<deluge_audio_graph::PoolHandle>,
+    input: Input,
+    time: Input,
+    feedback: Input,
+) {
     if id == NULL_ID {
         return;
     }
@@ -366,7 +425,11 @@ pub fn new_sample_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
             node: NodeId(id),
             src: deluge_audio_graph::node::TableSrc::Pooled(h),
         });
-        host().audio_cmd(Cmd::SetParam { node: NodeId(id), param: 3, value: len as f32 }); // loop_end = buffer len
+        host().audio_cmd(Cmd::SetParam {
+            node: NodeId(id),
+            param: 3,
+            value: len as f32,
+        }); // loop_end = buffer len
     }
 }
 
@@ -403,7 +466,13 @@ pub fn new_poly_sample_player(
             node: NodeId(id),
             src: deluge_audio_graph::node::TableSrc::Pooled(h),
         });
-        let sp = |param: u8, value: f32| host().audio_cmd(Cmd::SetParam { node: NodeId(id), param, value });
+        let sp = |param: u8, value: f32| {
+            host().audio_cmd(Cmd::SetParam {
+                node: NodeId(id),
+                param,
+                value,
+            })
+        };
         sp(0, zones.len() as f32); // n_zones
         sp(1, if loop_mode { 1.0 } else { 0.0 });
         for (z, &(off, len, lo, hi, root)) in zones.iter().enumerate() {
@@ -450,7 +519,12 @@ pub fn new_poly_granular(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
 /// Create a `Kind::StreamPlayer` node bound to a `VOICES*cap` ring `handle`,
 /// wired to `pitch`, with `root` note (param 0). Streaming data is filled by the
 /// host prefetch task (registered separately via `stream_register`).
-pub fn new_stream_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, pitch: Input, root: f32) {
+pub fn new_stream_player(
+    id: u16,
+    handle: Option<deluge_audio_graph::PoolHandle>,
+    pitch: Input,
+    root: f32,
+) {
     if id == NULL_ID {
         return;
     }
@@ -465,7 +539,11 @@ pub fn new_stream_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
             src: deluge_audio_graph::node::TableSrc::Pooled(h),
         });
     }
-    host().audio_cmd(Cmd::SetParam { node: NodeId(id), param: 0, value: root });
+    host().audio_cmd(Cmd::SetParam {
+        node: NodeId(id),
+        param: 0,
+        value: root,
+    });
 }
 
 /// Register a streamed node+ring with the host's prefetch (no-op host → ignored).
@@ -478,7 +556,12 @@ pub fn stream_register(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, 
 /// Create a pooled effect node of `kind` with `input` on port 0, binding a
 /// pool ring if `handle` is `Some` (unbound → dry passthrough). Params are set
 /// separately by the caller via `set_param`. Used by `Chorus`/`Flanger`.
-pub fn new_pooled_node(id: u16, kind: Kind, handle: Option<deluge_audio_graph::PoolHandle>, input: Input) {
+pub fn new_pooled_node(
+    id: u16,
+    kind: Kind,
+    handle: Option<deluge_audio_graph::PoolHandle>,
+    input: Input,
+) {
     if id == NULL_ID {
         return;
     }
@@ -499,19 +582,30 @@ pub fn set_input(id: u16, port: u8, src: Input) {
     if id == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::SetInput { node: NodeId(id), port, src });
+    host().audio_cmd(Cmd::SetInput {
+        node: NodeId(id),
+        port,
+        src,
+    });
 }
 pub fn set_param(id: u16, param: u8, value: f32) {
     if id == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::SetParam { node: NodeId(id), param, value });
+    host().audio_cmd(Cmd::SetParam {
+        node: NodeId(id),
+        param,
+        value,
+    });
 }
 pub fn gate(id: u16, on: bool) {
     if id == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::Gate { node: NodeId(id), on });
+    host().audio_cmd(Cmd::Gate {
+        node: NodeId(id),
+        on,
+    });
 }
 pub fn trigger(id: u16) {
     if id == NULL_ID {
@@ -523,7 +617,10 @@ pub fn bus_write(src: Input, bus: u16) {
     if bus == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::BusWrite { src, bus: BusId(bus) });
+    host().audio_cmd(Cmd::BusWrite {
+        src,
+        bus: BusId(bus),
+    });
 }
 /// Emit a per-side gained bus write (`gl` → L, `gr` → R). Used by width-aware
 /// routing (`write_source_to_bus` in `bindings_audio.rs`) to send a stereo
@@ -532,7 +629,12 @@ pub fn bus_write_gains(src: Input, bus: u16, gl: f32, gr: f32) {
     if bus == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::BusWriteGains { src, bus: BusId(bus), gl, gr });
+    host().audio_cmd(Cmd::BusWriteGains {
+        src,
+        bus: BusId(bus),
+        gl,
+        gr,
+    });
 }
 pub fn set_root(bus: u16) {
     if bus == NULL_ID {
@@ -544,13 +646,20 @@ pub fn set_bus_gain(bus: u16, gain: f32) {
     if bus == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::BusGain { bus: BusId(bus), gain });
+    host().audio_cmd(Cmd::BusGain {
+        bus: BusId(bus),
+        gain,
+    });
 }
 pub fn bus_send(from: u16, to: u16, gain: f32) {
     if from == NULL_ID || to == NULL_ID {
         return;
     }
-    host().audio_cmd(Cmd::BusSend { from: BusId(from), to: BusId(to), gain });
+    host().audio_cmd(Cmd::BusSend {
+        from: BusId(from),
+        to: BusId(to),
+        gain,
+    });
 }
 pub fn set_master_limit(ceiling: f32, release: f32) {
     host().audio_cmd(Cmd::SetMasterLimit { ceiling, release });
@@ -559,7 +668,12 @@ pub fn set_master_dcblock(cutoff_hz: f32) {
     host().audio_cmd(Cmd::SetMasterDcBlock { cutoff_hz });
 }
 pub fn set_master_eq(freq: f32, gain_db: f32, q: f32, eq_type: u8) {
-    host().audio_cmd(Cmd::SetMasterEq { freq, gain_db, q, eq_type });
+    host().audio_cmd(Cmd::SetMasterEq {
+        freq,
+        gain_db,
+        q,
+        eq_type,
+    });
 }
 /// Free a node: return its id to the free-list and emit `Cmd::Free`.
 /// Used by `Node.free()`.

@@ -52,10 +52,9 @@ use super::fifo::{
 };
 use super::pipe::{
     BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_IS_IN, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig,
-    XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable, pipe_brdy_enable,
-    is_iso_in_hook_pipe, pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate,
-    pipe_reset, pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start,
-    pipe_xfer_out_brdy,
+    XferType, is_iso_in_hook_pipe, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable,
+    pipe_brdy_enable, pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate, pipe_reset,
+    pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start, pipe_xfer_out_brdy,
 };
 use super::regs::{
     BUSWAIT_VALUE, DCPMAXP_MXPS_MASK, DVSQ_DEFAULT, DVSQ_SUSP0, DVSTCTR0_RHST, DVSTCTR0_RHST_FS,
@@ -64,8 +63,8 @@ use super::regs::{
     INTSTS0_DVSQ_MASK, INTSTS0_DVSQ_SHIFT, INTSTS0_DVST, INTSTS0_RESM, INTSTS0_VALID,
     INTSTS0_VBINT, INTSTS0_VBSTS, PIPECTR_ACLRM, PIPECTR_CCPL, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
     PIPECTR_PID_STALL10, PIPECTR_PID_STALL11, PIPECTR_SQCLR, PKT_BUF_BLOCK_SIZE, Rusb1Regs,
-    SUSPMODE_SUSPM, SYSCFG_DCFM,
-    SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE, pipectr_ptr, rd, rmw, wr,
+    SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE,
+    pipectr_ptr, rd, rmw, wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -278,8 +277,10 @@ impl<'d> Driver<'d> for Rusb1Driver {
                         let mult = if dbl { 2 } else { 1 };
                         let new_blocks = mps_to_blocks(max_packet_size);
                         alloc.buf.free(cur_start, cur_blocks as usize * mult);
-                        let new_start =
-                            alloc.buf.alloc(new_blocks * mult).ok_or(EndpointAllocError)?;
+                        let new_start = alloc
+                            .buf
+                            .alloc(new_blocks * mult)
+                            .ok_or(EndpointAllocError)?;
                         if let Some(c) = alloc.pipe_cfg[existing_pipe].as_mut() {
                             c.mps = max_packet_size;
                             c.buf_blocks = new_blocks as u8;
@@ -377,8 +378,10 @@ impl<'d> Driver<'d> for Rusb1Driver {
                         let mult = if dbl { 2 } else { 1 };
                         let new_blocks = mps_to_blocks(max_packet_size);
                         alloc.buf.free(cur_start, cur_blocks as usize * mult);
-                        let new_start =
-                            alloc.buf.alloc(new_blocks * mult).ok_or(EndpointAllocError)?;
+                        let new_start = alloc
+                            .buf
+                            .alloc(new_blocks * mult)
+                            .ok_or(EndpointAllocError)?;
                         if let Some(c) = alloc.pipe_cfg[existing_pipe].as_mut() {
                             c.mps = max_packet_size;
                             c.buf_blocks = new_blocks as u8;
@@ -509,7 +512,11 @@ impl<'d> Driver<'d> for Rusb1Driver {
             let regs0 = Rusb1Regs::ptr(0);
             if rd(core::ptr::addr_of!((*regs0).syscfg0)) & SYSCFG_UPLLE == 0 {
                 let other = Rusb1Regs::ptr(if self.port == 0 { 1 } else { 0 });
-                rmw(core::ptr::addr_of_mut!((*other).suspmode), SUSPMODE_SUSPM, 0);
+                rmw(
+                    core::ptr::addr_of_mut!((*other).suspmode),
+                    SUSPMODE_SUSPM,
+                    0,
+                );
                 rmw(
                     core::ptr::addr_of_mut!((*regs0).syscfg0),
                     SYSCFG_UPLLE,

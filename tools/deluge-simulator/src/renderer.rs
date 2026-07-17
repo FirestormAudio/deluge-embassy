@@ -237,11 +237,8 @@ impl canvas::Program<SimulatorMessage> for DynamicElementsRenderer {
                     {
                         state.held_pad = Some((col, row));
                         return Some(
-                            canvas::Action::publish(SimulatorMessage::PadPressed {
-                                col,
-                                row,
-                            })
-                            .and_capture(),
+                            canvas::Action::publish(SimulatorMessage::PadPressed { col, row })
+                                .and_capture(),
                         );
                     }
 
@@ -280,11 +277,8 @@ impl canvas::Program<SimulatorMessage> for DynamicElementsRenderer {
                     // the cursor currently sits within that pad.
                     if let Some((col, row)) = state.held_pad.take() {
                         return Some(
-                            canvas::Action::publish(SimulatorMessage::PadReleased {
-                                col,
-                                row,
-                            })
-                            .and_capture(),
+                            canvas::Action::publish(SimulatorMessage::PadReleased { col, row })
+                                .and_capture(),
                         );
                     }
 

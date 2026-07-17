@@ -94,9 +94,5 @@ pub fn fast_sin_x8(p: core::simd::f32x8) -> core::simd::f32x8 {
 #[inline]
 pub(crate) fn floorf(x: f32) -> f32 {
     let t = x as i32 as f32;
-    if t > x {
-        t - 1.0
-    } else {
-        t
-    }
+    if t > x { t - 1.0 } else { t }
 }

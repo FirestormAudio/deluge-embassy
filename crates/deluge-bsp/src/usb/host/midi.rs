@@ -7,7 +7,7 @@
 //! MIDI 2.0 / UMP is **not** supported here — see the device-side
 //! [`crate::usb::classes::midi`] for that.
 
-use embassy_usb_driver::host::{pipe, HostError, PipeError, SplitInfo, UsbHostAllocator, UsbPipe};
+use embassy_usb_driver::host::{HostError, PipeError, SplitInfo, UsbHostAllocator, UsbPipe, pipe};
 use embassy_usb_driver::{Direction, EndpointType};
 use embassy_usb_host::descriptor::{ConfigurationDescriptor, EndpointDescriptor};
 

@@ -389,12 +389,19 @@ mod tests {
         let small = Layout::from_size_align(256, 8).unwrap();
         let a = spill.allocate(small).expect("primary alloc").cast::<u8>();
         assert!(primary.contains(a), "young allocation lands in the primary");
-        assert_eq!(fallback.used(), 0, "fallback untouched while primary has room");
+        assert_eq!(
+            fallback.used(),
+            0,
+            "fallback untouched while primary has room"
+        );
 
         // A request the primary can't satisfy spills to the fallback.
         let big = Layout::from_size_align(16 * 1024, 8).unwrap();
         let b = spill.allocate(big).expect("spill to fallback").cast::<u8>();
-        assert!(fallback.contains(b), "oversized allocation spills to the fallback");
+        assert!(
+            fallback.contains(b),
+            "oversized allocation spills to the fallback"
+        );
         assert!(!primary.contains(b));
 
         // Each frees back to the arena it came from.

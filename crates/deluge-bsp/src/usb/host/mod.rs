@@ -138,12 +138,12 @@ mod runtime {
     use core::sync::atomic::{AtomicU16, Ordering};
 
     use embassy_executor::Spawner;
-    use embassy_futures::select::{select, Either};
+    use embassy_futures::select::{Either, select};
     use embassy_usb_driver::host::DeviceEvent;
     use embassy_usb_host::class::hub::{HubEvent, HubHandler};
     use embassy_usb_host::descriptor::ConfigurationDescriptor;
     use embassy_usb_host::handler::{BusRoute, HandlerEvent, RegisterError};
-    use embassy_usb_host::{bus, BusHandle, BusState};
+    use embassy_usb_host::{BusHandle, BusState, bus};
     use log::{error, info, warn};
     use rza1l_hal::usb::{Rusb1Allocator, Rusb1HostDriver};
 
@@ -360,41 +360,40 @@ mod runtime {
 
             // Try the hub first: a hub is not a MIDI device, so the MIDI
             // matcher would reject it and free its address.
-            let bound = match HubHandler::<Rusb1Allocator, MAX_HUB_PORTS>::try_register(
-                &handle, &dev_info,
-            )
-            .await
-            {
-                Ok(hub) => {
-                    info!("usb_host: hub at addr={}", addr);
-                    // `BusHandle` is Clone (allocator + &'static BusState), so
-                    // handing the hub task its own clone is cheap.
-                    match hub_task(hub, handle.clone(), spawner) {
-                        Ok(token) => {
-                            spawner.spawn(token);
-                            true
-                        }
-                        Err(_) => {
-                            error!("usb_host: could not spawn hub task");
-                            false
-                        }
-                    }
-                }
-                Err(RegisterError::NoSupportedInterface) => {
-                    // Not a hub — fall through to the MIDI matcher.
-                    match ConfigurationDescriptor::try_from_slice(&config_buf) {
-                        Ok(cfg) => bind_midi(&handle, spawner, &dev_info, &cfg),
-                        Err(e) => {
-                            error!("usb_host: bad config descriptor: {:?}", e);
-                            false
+            let bound =
+                match HubHandler::<Rusb1Allocator, MAX_HUB_PORTS>::try_register(&handle, &dev_info)
+                    .await
+                {
+                    Ok(hub) => {
+                        info!("usb_host: hub at addr={}", addr);
+                        // `BusHandle` is Clone (allocator + &'static BusState), so
+                        // handing the hub task its own clone is cheap.
+                        match hub_task(hub, handle.clone(), spawner) {
+                            Ok(token) => {
+                                spawner.spawn(token);
+                                true
+                            }
+                            Err(_) => {
+                                error!("usb_host: could not spawn hub task");
+                                false
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    error!("usb_host: hub register failed: {:?}", e);
-                    false
-                }
-            };
+                    Err(RegisterError::NoSupportedInterface) => {
+                        // Not a hub — fall through to the MIDI matcher.
+                        match ConfigurationDescriptor::try_from_slice(&config_buf) {
+                            Ok(cfg) => bind_midi(&handle, spawner, &dev_info, &cfg),
+                            Err(e) => {
+                                error!("usb_host: bad config descriptor: {:?}", e);
+                                false
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("usb_host: hub register failed: {:?}", e);
+                        false
+                    }
+                };
 
             if !bound {
                 handle.free_address(addr);

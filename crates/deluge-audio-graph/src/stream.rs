@@ -15,7 +15,10 @@ pub struct StreamCursors {
 
 impl StreamCursors {
     pub fn new() -> Self {
-        StreamCursors { total: 0, fill: [(0, 0); VOICES] }
+        StreamCursors {
+            total: 0,
+            fill: [(0, 0); VOICES],
+        }
     }
 }
 

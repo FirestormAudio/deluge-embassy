@@ -396,9 +396,24 @@ const C: f32 = 0.5403;
 const S: f32 = 0.8414;
 
 const R_MAT: [[u32; 4]; 4] = [
-    [(C * ONE_Q16 as f32) as u32, 0, (S * ONE_Q16 as f32) as u32, 0],
-    [(S * ONE_Q16 as f32) as u32, (C * ONE_Q16 as f32) as u32, 0, 0],
-    [0, (S * ONE_Q16 as f32) as u32, (C * ONE_Q16 as f32) as u32, 0],
+    [
+        (C * ONE_Q16 as f32) as u32,
+        0,
+        (S * ONE_Q16 as f32) as u32,
+        0,
+    ],
+    [
+        (S * ONE_Q16 as f32) as u32,
+        (C * ONE_Q16 as f32) as u32,
+        0,
+        0,
+    ],
+    [
+        0,
+        (S * ONE_Q16 as f32) as u32,
+        (C * ONE_Q16 as f32) as u32,
+        0,
+    ],
     [0, 0, 0, ONE_Q16],
 ];
 

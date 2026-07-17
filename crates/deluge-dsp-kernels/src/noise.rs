@@ -82,7 +82,8 @@ impl Noise {
                 b[3] = 0.86650 * b[3] + white * 0.3104856;
                 b[4] = 0.55000 * b[4] + white * 0.5329522;
                 b[5] = -0.7616 * b[5] - white * 0.016898;
-                let pink = (b[0]+b[1]+b[2]+b[3]+b[4]+b[5]+b[6] + white*0.5362) * PINK_GAIN;
+                let pink =
+                    (b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + white * 0.5362) * PINK_GAIN;
                 b[6] = white * 0.115926;
                 pink
             }
@@ -105,8 +106,8 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use deluge_dsp_test::spectrum::{analyze_buf, slope_db_per_octave, Spectrum};
     use deluge_dsp_test::FFT_N;
+    use deluge_dsp_test::spectrum::{Spectrum, analyze_buf, slope_db_per_octave};
     use proptest::prelude::*;
     use std::vec;
 
@@ -185,7 +186,11 @@ mod tests {
         for a in acc.iter_mut() {
             *a /= blocks as f32;
         }
-        Spectrum { bins: acc, bin_hz, sample_rate: sr }
+        Spectrum {
+            bins: acc,
+            bin_hz,
+            sample_rate: sr,
+        }
     }
 
     #[test]

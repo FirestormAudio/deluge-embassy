@@ -40,13 +40,13 @@ use log::{debug, error, info};
 use embassy_executor::{Executor, Spawner};
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use deluge_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
+use rza1l_hal::gic;
 use rza1l_hal::usb::{
     Rusb1Driver, dcd_int_handler, hcd_int_handler, init_device_mode, init_host_mode,
 };
-use deluge_alloc as allocator;
-use rza1l_hal::gic;
 
 unsafe extern "C" {
     /// Start of the free SRAM heap region (set by the linker script).

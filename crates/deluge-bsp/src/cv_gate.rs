@@ -28,9 +28,9 @@
 //! | 2       | 2    | 9   |
 //! | 3       | 4    | 0   |
 
-use rza1l_hal::{gpio, rspi};
 #[cfg(target_os = "none")]
 use rza1l_hal::ostm;
+use rza1l_hal::{gpio, rspi};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

@@ -1,11 +1,11 @@
 //! Vertical bar-graph columns for automation / velocity values.
 
+use crate::Pad;
 use crate::color::ColorExt as _;
 #[allow(unused_imports)] // needed on targets whose `core` lacks inherent f32 math
 use crate::float_ext::F32Ext as _;
 use crate::imode::Frame;
 use crate::pad::GRID_ROWS;
-use crate::Pad;
 use deluge_bsp::rgb::Color as RGB;
 
 // Normalized thresholds for the 8-row bar graph. Each element is the minimum

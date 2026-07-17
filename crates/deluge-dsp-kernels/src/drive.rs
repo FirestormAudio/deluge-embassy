@@ -2,8 +2,8 @@
 //! A small per-sample kernel — no heap, no buffer. Reuses `pade_tanh` and the
 //! `Svf` LP (as a constant-coefficient 4-pole decimation filter).
 
-use crate::filter::{pade_tanh, svf_coeffs, Svf, SvfResp};
 use crate::In;
+use crate::filter::{Svf, SvfResp, pade_tanh, svf_coeffs};
 
 #[derive(Clone, Copy)]
 pub enum Shape {
@@ -63,9 +63,15 @@ impl Drive {
             tone_z: 0.0,
         }
     }
-    pub fn set_drive(&mut self, v: f32) { self.drive = v.clamp(0.0, 1.0); }
-    pub fn set_tone(&mut self, v: f32) { self.tone = v.clamp(0.0, 1.0); }
-    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
+    pub fn set_drive(&mut self, v: f32) {
+        self.drive = v.clamp(0.0, 1.0);
+    }
+    pub fn set_tone(&mut self, v: f32) {
+        self.tone = v.clamp(0.0, 1.0);
+    }
+    pub fn set_mix(&mut self, v: f32) {
+        self.mix = v.clamp(0.0, 1.0);
+    }
     pub fn set_shape(&mut self, code: u8) {
         self.shape = match code {
             1 => Shape::Hard,
@@ -160,7 +166,10 @@ mod tests {
             })
             .thd(220.0, 10)
         };
-        assert!(thd(Shape::Hard) > thd(Shape::Soft), "hard should distort more than soft");
+        assert!(
+            thd(Shape::Hard) > thd(Shape::Soft),
+            "hard should distort more than soft"
+        );
     }
 
     #[test]
@@ -176,7 +185,10 @@ mod tests {
             });
             spec.level_at(440.0) // 2nd harmonic
         };
-        assert!(second(Shape::Tube) > second(Shape::Soft) * 3.0, "tube should have a much stronger 2nd harmonic");
+        assert!(
+            second(Shape::Tube) > second(Shape::Soft) * 3.0,
+            "tube should have a much stronger 2nd harmonic"
+        );
     }
 
     #[test]
@@ -217,7 +229,10 @@ mod tests {
         let input = std::vec![0.5f32; 128];
         let mut out = std::vec![0.0f32; 128];
         d.process(In::A(&input), 1.0 / FS, &mut out);
-        assert!(out.iter().all(|&v| (v - 0.5).abs() < 1e-4), "mix=0 should pass dry");
+        assert!(
+            out.iter().all(|&v| (v - 0.5).abs() < 1e-4),
+            "mix=0 should pass dry"
+        );
     }
 
     use proptest::prelude::*;

@@ -3,9 +3,9 @@
 //! Renders a single clip as a cell in a session grid view — transforming clip
 //! visual state into a colour on a single grid pad.
 
+use crate::Pad;
 use crate::color::ColorExt as _;
 use crate::imode::{Frame, Response};
-use crate::Pad;
 use deluge_bsp::rgb::Color as RGB;
 use uuid::Uuid;
 
@@ -220,7 +220,8 @@ mod tests {
 
     #[test]
     fn test_muted_cell() {
-        let cell = ClipCellComponent::new(Uuid::from_u128(1), RGB::new(255, 255, 255)).with_muted(true);
+        let cell =
+            ClipCellComponent::new(Uuid::from_u128(1), RGB::new(255, 255, 255)).with_muted(true);
         let expected = (255.0 * 0.1) as u8;
         let color = cell.get_color();
         assert_eq!(color.r, expected);

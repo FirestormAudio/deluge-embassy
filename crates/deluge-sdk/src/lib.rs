@@ -437,9 +437,9 @@ pub mod __rt {
     // embassy-executor directly (the SDK owns the executor). The macro points the
     // task expansion at this re-export via `embassy_executor = …`, so the
     // generated code resolves against the SDK's (device or host) executor.
-    pub use embassy_executor::task;
     #[doc(hidden)]
     pub use ::embassy_executor;
+    pub use embassy_executor::task;
 
     /// Device entry points used by the `#[deluge::app]` expansion on the Deluge.
     #[cfg(target_os = "none")]
@@ -448,196 +448,196 @@ pub mod __rt {
     /// The bare-metal platform runtime: heaps, clocks, interrupts, executor.
     #[cfg(target_os = "none")]
     mod device {
-    use super::Spawner;
-    use core::mem::MaybeUninit;
-    use embassy_executor::Executor;
+        use super::Spawner;
+        use core::mem::MaybeUninit;
+        use embassy_executor::Executor;
 
-    unsafe extern "C" {
-        /// Start of the free SRAM heap region (set by the linker script).
-        static __sram_heap_start: u8;
-        /// End of the free SRAM heap region (start of RTT/stack reservation).
-        static __sram_heap_end: u8;
-    }
-
-    /// Base address of the 64 MB external SDRAM window.
-    const SDRAM_BASE: usize = 0x0C00_0000;
-    /// Size of the external SDRAM window in bytes.
-    const SDRAM_SIZE: usize = 64 * 1024 * 1024;
-
-    /// Set up RTT (only with the `rtt` feature).
-    ///
-    /// Always defines the `_SEGGER_RTT` control block (in the `.rtt_buffer`
-    /// section provided by the rtt linker script) — the HAL's abort/panic
-    /// handlers reference this symbol whenever `rza1l-hal/rtt` is on, so it must
-    /// exist even when `usb-log` is the active logger (e.g. when both features
-    /// are unified on in a workspace build). The `log` backend is registered
-    /// only when `usb-log` is *not* enabled, since there can be just one global
-    /// logger and `usb-log` takes precedence.
-    #[cfg(feature = "rtt")]
-    fn init_logging() {
-        let channels = rtt_target::rtt_init! {
-            up: {
-                0: { size: 16384, name: "Terminal", section: ".rtt_buffer" }
-            }
-            section_cb: ".rtt_buffer"
-        };
-        #[cfg(not(feature = "usb-log"))]
-        {
-            rtt_target::set_print_channel(channels.up.0);
-            rtt_target::init_logger_with_level(log::LevelFilter::Debug);
+        unsafe extern "C" {
+            /// Start of the free SRAM heap region (set by the linker script).
+            static __sram_heap_start: u8;
+            /// End of the free SRAM heap region (start of RTT/stack reservation).
+            static __sram_heap_end: u8;
         }
-        // With `usb-log` active the RTT block still exists (for the HAL fault
-        // handlers) but RTT is not the `log` backend.
-        #[cfg(feature = "usb-log")]
-        let _ = channels;
-    }
 
-    /// Bring up the platform short of enabling interrupts: SRAM/SDRAM heaps and
-    /// clocks/MMU/caches/SDRAM/GIC/OSTM time driver.
-    ///
-    /// Interrupts are enabled separately, *after* the app's `setup` phase, so
-    /// drivers whose init must run with IRQs masked (e.g. GIC source setup) keep
-    /// working — see [`run`].
-    ///
-    /// # Safety
-    /// Must run exactly once, at startup, before any allocation.
-    unsafe fn init_platform() {
-        unsafe {
-            // SRAM heap (internal RAM) — initialise before any allocation.
-            let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
-            let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
-            deluge_alloc::SRAM.init(start, size);
+        /// Base address of the 64 MB external SDRAM window.
+        const SDRAM_BASE: usize = 0x0C00_0000;
+        /// Size of the external SDRAM window in bytes.
+        const SDRAM_SIZE: usize = 64 * 1024 * 1024;
 
-            // Module clocks, MMU, caches, SDRAM controller, GIC, OSTM time driver.
-            deluge_bsp::system::init_clocks();
-
-            // SDRAM heap — now that the SDRAM window is accessible.
-            deluge_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
-        }
-    }
-
-    static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
-
-    /// The `#[deluge::app]` entry point.
-    ///
-    /// Sequence: logging → heaps + clocks → `setup()` (app's synchronous,
-    /// interrupts-masked init) → enable interrupts → run the Embassy executor,
-    /// invoking `spawn` once with the [`Spawner`].
-    ///
-    /// `setup` runs with IRQs still masked so peripheral/GIC bring-up that
-    /// requires it (per some HAL drivers' contracts) is safe; it is empty for
-    /// apps that don't opt into `#[deluge::app(setup = …)]`.
-    pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner)) -> ! {
-        // Pick the logger: `usb-log` takes precedence over `rtt` (one logger).
-        // `init_logging` still runs when `rtt` is on so the `_SEGGER_RTT` control
-        // block exists for the HAL fault handlers; it only registers the RTT log
-        // backend when `usb-log` is not also enabled.
-        #[cfg(feature = "usb-log")]
-        crate::usb_debug::init_logger();
+        /// Set up RTT (only with the `rtt` feature).
+        ///
+        /// Always defines the `_SEGGER_RTT` control block (in the `.rtt_buffer`
+        /// section provided by the rtt linker script) — the HAL's abort/panic
+        /// handlers reference this symbol whenever `rza1l-hal/rtt` is on, so it must
+        /// exist even when `usb-log` is the active logger (e.g. when both features
+        /// are unified on in a workspace build). The `log` backend is registered
+        /// only when `usb-log` is *not* enabled, since there can be just one global
+        /// logger and `usb-log` takes precedence.
         #[cfg(feature = "rtt")]
-        init_logging();
-
-        unsafe { init_platform() };
-
-        // App's synchronous, interrupts-masked initialisation.
-        setup();
-
-        // Bring up the USB-debug device (registers the USB0 ISR and starts the
-        // controller) while interrupts are still masked — matches the proven
-        // controller-firmware ordering. Spawned below once the executor runs.
-        #[cfg(feature = "usb-log")]
-        let usb = unsafe { crate::usb_debug::build() };
-
-        // Unmask IRQs so the Embassy time driver and peripheral ISRs fire.
-        unsafe { cortex_ar::interrupt::enable() };
-
-        #[allow(static_mut_refs)]
-        let executor: &'static mut Executor = unsafe {
-            EXECUTOR.write(Executor::new());
-            EXECUTOR.assume_init_mut()
-        };
-        executor.run(move |spawner| {
+        fn init_logging() {
+            let channels = rtt_target::rtt_init! {
+                up: {
+                    0: { size: 16384, name: "Terminal", section: ".rtt_buffer" }
+                }
+                section_cb: ".rtt_buffer"
+            };
+            #[cfg(not(feature = "usb-log"))]
+            {
+                rtt_target::set_print_channel(channels.up.0);
+                rtt_target::init_logger_with_level(log::LevelFilter::Debug);
+            }
+            // With `usb-log` active the RTT block still exists (for the HAL fault
+            // handlers) but RTT is not the `log` backend.
             #[cfg(feature = "usb-log")]
-            crate::usb_debug::spawn(spawner, usb);
-            spawn(spawner);
-        })
-    }
-
-    /// Default panic behaviour: stop the world, show it, keep signalling.
-    ///
-    /// Masks interrupts, logs via RTT (if enabled), draws `APP PANIC` + the panic
-    /// location to the OLED (best-effort, via the blocking panic path — no-op if
-    /// the OLED was never brought up), then strobes the SYNC LED forever so a
-    /// probe-less user sees the crash.
-    pub fn panic(info: &core::panic::PanicInfo) -> ! {
-        // Stop the world: no more ISRs or task switches.
-        cortex_ar::interrupt::disable();
-
-        log::error!("PANIC: {}", info);
-
-        // Best-effort OLED message.
-        let mut fb = deluge_bsp::oled::FrameBuffer::new();
-        deluge_bsp::oled::text::draw_str(&mut fb, 0, 0, b"APP PANIC");
-        if let Some(loc) = info.location() {
-            use core::fmt::Write;
-            let mut line = LineBuf::new();
-            let _ = write!(line, "{}:{}", basename(loc.file()), loc.line());
-            deluge_bsp::oled::text::draw_str(&mut fb, 0, 10, line.as_bytes());
+            let _ = channels;
         }
-        // SAFETY: interrupts are masked and we are single-threaded here.
-        unsafe { deluge_bsp::oled::draw_blocking(&fb) };
 
-        // Always-visible fallback: strobe the SYNC LED forever.
-        unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
-        loop {
+        /// Bring up the platform short of enabling interrupts: SRAM/SDRAM heaps and
+        /// clocks/MMU/caches/SDRAM/GIC/OSTM time driver.
+        ///
+        /// Interrupts are enabled separately, *after* the app's `setup` phase, so
+        /// drivers whose init must run with IRQs masked (e.g. GIC source setup) keep
+        /// working — see [`run`].
+        ///
+        /// # Safety
+        /// Must run exactly once, at startup, before any allocation.
+        unsafe fn init_platform() {
             unsafe {
-                rza1l_hal::gpio::write(6, 7, true);
-                rza1l_hal::ostm::delay_ms(100);
-                rza1l_hal::gpio::write(6, 7, false);
-                rza1l_hal::ostm::delay_ms(100);
+                // SRAM heap (internal RAM) — initialise before any allocation.
+                let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
+                let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
+                deluge_alloc::SRAM.init(start, size);
+
+                // Module clocks, MMU, caches, SDRAM controller, GIC, OSTM time driver.
+                deluge_bsp::system::init_clocks();
+
+                // SDRAM heap — now that the SDRAM window is accessible.
+                deluge_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
             }
         }
-    }
 
-    /// Last path component of `path` (so the OLED shows `main.rs`, not the full
-    /// crate path).
-    fn basename(path: &str) -> &str {
-        match path.rsplit_once(['/', '\\']) {
-            Some((_, name)) => name,
-            None => path,
+        static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
+
+        /// The `#[deluge::app]` entry point.
+        ///
+        /// Sequence: logging → heaps + clocks → `setup()` (app's synchronous,
+        /// interrupts-masked init) → enable interrupts → run the Embassy executor,
+        /// invoking `spawn` once with the [`Spawner`].
+        ///
+        /// `setup` runs with IRQs still masked so peripheral/GIC bring-up that
+        /// requires it (per some HAL drivers' contracts) is safe; it is empty for
+        /// apps that don't opt into `#[deluge::app(setup = …)]`.
+        pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner)) -> ! {
+            // Pick the logger: `usb-log` takes precedence over `rtt` (one logger).
+            // `init_logging` still runs when `rtt` is on so the `_SEGGER_RTT` control
+            // block exists for the HAL fault handlers; it only registers the RTT log
+            // backend when `usb-log` is not also enabled.
+            #[cfg(feature = "usb-log")]
+            crate::usb_debug::init_logger();
+            #[cfg(feature = "rtt")]
+            init_logging();
+
+            unsafe { init_platform() };
+
+            // App's synchronous, interrupts-masked initialisation.
+            setup();
+
+            // Bring up the USB-debug device (registers the USB0 ISR and starts the
+            // controller) while interrupts are still masked — matches the proven
+            // controller-firmware ordering. Spawned below once the executor runs.
+            #[cfg(feature = "usb-log")]
+            let usb = unsafe { crate::usb_debug::build() };
+
+            // Unmask IRQs so the Embassy time driver and peripheral ISRs fire.
+            unsafe { cortex_ar::interrupt::enable() };
+
+            #[allow(static_mut_refs)]
+            let executor: &'static mut Executor = unsafe {
+                EXECUTOR.write(Executor::new());
+                EXECUTOR.assume_init_mut()
+            };
+            executor.run(move |spawner| {
+                #[cfg(feature = "usb-log")]
+                crate::usb_debug::spawn(spawner, usb);
+                spawn(spawner);
+            })
         }
-    }
 
-    /// A tiny fixed-width `core::fmt::Write` sink for one OLED text line
-    /// (128 px / 6 px per glyph ≈ 21 chars). Excess is dropped.
-    struct LineBuf {
-        buf: [u8; 21],
-        len: usize,
-    }
+        /// Default panic behaviour: stop the world, show it, keep signalling.
+        ///
+        /// Masks interrupts, logs via RTT (if enabled), draws `APP PANIC` + the panic
+        /// location to the OLED (best-effort, via the blocking panic path — no-op if
+        /// the OLED was never brought up), then strobes the SYNC LED forever so a
+        /// probe-less user sees the crash.
+        pub fn panic(info: &core::panic::PanicInfo) -> ! {
+            // Stop the world: no more ISRs or task switches.
+            cortex_ar::interrupt::disable();
 
-    impl LineBuf {
-        fn new() -> Self {
-            Self {
-                buf: [0; 21],
-                len: 0,
+            log::error!("PANIC: {}", info);
+
+            // Best-effort OLED message.
+            let mut fb = deluge_bsp::oled::FrameBuffer::new();
+            deluge_bsp::oled::text::draw_str(&mut fb, 0, 0, b"APP PANIC");
+            if let Some(loc) = info.location() {
+                use core::fmt::Write;
+                let mut line = LineBuf::new();
+                let _ = write!(line, "{}:{}", basename(loc.file()), loc.line());
+                deluge_bsp::oled::text::draw_str(&mut fb, 0, 10, line.as_bytes());
             }
-        }
-        fn as_bytes(&self) -> &[u8] {
-            &self.buf[..self.len]
-        }
-    }
+            // SAFETY: interrupts are masked and we are single-threaded here.
+            unsafe { deluge_bsp::oled::draw_blocking(&fb) };
 
-    impl core::fmt::Write for LineBuf {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            for &b in s.as_bytes() {
-                if self.len < self.buf.len() {
-                    self.buf[self.len] = b;
-                    self.len += 1;
+            // Always-visible fallback: strobe the SYNC LED forever.
+            unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+            loop {
+                unsafe {
+                    rza1l_hal::gpio::write(6, 7, true);
+                    rza1l_hal::ostm::delay_ms(100);
+                    rza1l_hal::gpio::write(6, 7, false);
+                    rza1l_hal::ostm::delay_ms(100);
                 }
             }
-            Ok(())
         }
-    }
+
+        /// Last path component of `path` (so the OLED shows `main.rs`, not the full
+        /// crate path).
+        fn basename(path: &str) -> &str {
+            match path.rsplit_once(['/', '\\']) {
+                Some((_, name)) => name,
+                None => path,
+            }
+        }
+
+        /// A tiny fixed-width `core::fmt::Write` sink for one OLED text line
+        /// (128 px / 6 px per glyph ≈ 21 chars). Excess is dropped.
+        struct LineBuf {
+            buf: [u8; 21],
+            len: usize,
+        }
+
+        impl LineBuf {
+            fn new() -> Self {
+                Self {
+                    buf: [0; 21],
+                    len: 0,
+                }
+            }
+            fn as_bytes(&self) -> &[u8] {
+                &self.buf[..self.len]
+            }
+        }
+
+        impl core::fmt::Write for LineBuf {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                for &b in s.as_bytes() {
+                    if self.len < self.buf.len() {
+                        self.buf[self.len] = b;
+                        self.len += 1;
+                    }
+                }
+                Ok(())
+            }
+        }
     } // mod device
 
     /// Host (desktop-simulator) runtime.
@@ -657,7 +657,10 @@ pub mod __rt {
         /// Sets up the shared panel + audio bridge, runs `setup`, spawns the app
         /// (and the input pump) on a std executor on a worker thread, then hands
         /// the main thread to the simulator GUI. Returns when the window closes.
-        pub fn run(setup: impl FnOnce() + Send + 'static, spawn: impl FnOnce(Spawner) + Send + 'static) -> ! {
+        pub fn run(
+            setup: impl FnOnce() + Send + 'static,
+            spawn: impl FnOnce(Spawner) + Send + 'static,
+        ) -> ! {
             // Logs to stderr (RUST_LOG controls level), mirroring the device's
             // RTT/USB logger so `info!`/`warn!` from app code are visible.
             let _ = env_logger::try_init();
@@ -675,8 +678,7 @@ pub mod __rt {
                 .name("deluge-brain".into())
                 .spawn(move || {
                     setup();
-                    let executor: &'static mut Executor =
-                        Box::leak(Box::new(Executor::new()));
+                    let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
                     executor.run(move |spawner| {
                         // Bridge GUI input → the SDK event queue.
                         crate::input::start_host_pump(spawner);

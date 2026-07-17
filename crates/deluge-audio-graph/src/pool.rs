@@ -117,7 +117,10 @@ mod tests {
 
     // Tiny fixed vec so the test needs no std collections.
     fn heapless_like() -> TestVec {
-        TestVec { n: 0, items: [PoolHandle { off: 0, len: 0 }; 8] }
+        TestVec {
+            n: 0,
+            items: [PoolHandle { off: 0, len: 0 }; 8],
+        }
     }
     struct TestVec {
         n: usize,

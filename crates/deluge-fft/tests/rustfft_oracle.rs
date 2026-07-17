@@ -17,8 +17,8 @@
 #![allow(incomplete_features)]
 
 use deluge_fft::{Complex, Fft, RealFft};
-use rustfft::num_complex::Complex as C32;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex as C32;
 
 /// Tiny deterministic PRNG (xorshift64*) → f32 in [-1, 1]. Avoids a `rand` dep
 /// and keeps failures reproducible from the seed.
@@ -98,7 +98,9 @@ macro_rules! real_oracle {
 
             let mut max_err = 0f32;
             for (i, g) in got.iter().enumerate() {
-                max_err = max_err.max((g.re - want[i].re).abs()).max((g.im - want[i].im).abs());
+                max_err = max_err
+                    .max((g.re - want[i].re).abs())
+                    .max((g.im - want[i].im).abs());
             }
             assert!(
                 max_err < tol(N),
@@ -153,7 +155,14 @@ macro_rules! real_roundtrip {
             deluge_fft::RealFft::<N, 4>::process_inverse(&bins, &mut y);
             let tol = 1e-4 * (N as f32).sqrt();
             for i in 0..N {
-                assert!((x[i] - y[i]).abs() < tol, "N={} i={} x={} y={}", N, i, x[i], y[i]);
+                assert!(
+                    (x[i] - y[i]).abs() < tol,
+                    "N={} i={} x={} y={}",
+                    N,
+                    i,
+                    x[i],
+                    y[i]
+                );
             }
         }
     };
@@ -203,5 +212,8 @@ fn real_fft_inverse_matches_rustfft() {
         let want = full[i].re / N as f32;
         max_err = max_err.max((ours[i] - want).abs());
     }
-    assert!(max_err < tol, "inverse vs rustfft: max_err={max_err} tol={tol}");
+    assert!(
+        max_err < tol,
+        "inverse vs rustfft: max_err={max_err} tol={tol}"
+    );
 }

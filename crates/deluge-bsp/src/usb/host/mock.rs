@@ -10,10 +10,10 @@ extern crate std;
 use core::cell::RefCell;
 use std::boxed::Box;
 
-use embassy_usb_driver::host::{
-    pipe, HostError, PipeError, SplitInfo, TimeoutConfig, UsbHostAllocator, UsbPipe,
-};
 use embassy_usb_driver::EndpointInfo;
+use embassy_usb_driver::host::{
+    HostError, PipeError, SplitInfo, TimeoutConfig, UsbHostAllocator, UsbPipe, pipe,
+};
 use heapless::Vec;
 
 /// What a [`MockPipe`] should do on successive `request_in` calls.

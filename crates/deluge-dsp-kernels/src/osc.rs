@@ -1,7 +1,7 @@
 //! Phase-accumulating oscillator — the prototype's four naïve waveforms.
 //! Serial phase recurrence, so scalar in P0 (const-freq SIMD is a later opt).
 
-use crate::{fast_sin, floorf, In};
+use crate::{In, fast_sin, floorf};
 
 /// Standard 4-point PolyBLEP residual correcting a unit step at phase
 /// `t ∈ [0,1)`, given the per-sample phase increment `dtp`. Active for two
@@ -86,7 +86,9 @@ pub(crate) fn wave_sample(wave: Wave, ph: f32, dtp: f32, width: f32) -> f32 {
         Wave::Saw => (2.0 * ph - 1.0) - poly_blep(ph, dtp),
         Wave::Square => {
             let mut w = width;
-            if w <= 0.0 { w = 0.5; }
+            if w <= 0.0 {
+                w = 0.5;
+            }
             let w = w.clamp(0.01, 0.99);
             let naive = if ph < w { 1.0 } else { -1.0 };
             let mut pw = ph - w;
@@ -117,8 +119,13 @@ pub(crate) fn floor_x8(x: f32x8) -> f32x8 {
 #[cfg(feature = "simd")]
 #[inline]
 fn blep_right_x8(x: f32x8) -> f32x8 {
-    let lo = x * (x * x * (x * f32x8::splat(0.25) - f32x8::splat(2.0 / 3.0)) + f32x8::splat(4.0 / 3.0)) - f32x8::splat(1.0);
-    let hi = x * (x * (x * (x * f32x8::splat(-1.0 / 12.0) + f32x8::splat(2.0 / 3.0)) - f32x8::splat(2.0)) + f32x8::splat(8.0 / 3.0)) - f32x8::splat(4.0 / 3.0);
+    let lo = x
+        * (x * x * (x * f32x8::splat(0.25) - f32x8::splat(2.0 / 3.0)) + f32x8::splat(4.0 / 3.0))
+        - f32x8::splat(1.0);
+    let hi = x
+        * (x * (x * (x * f32x8::splat(-1.0 / 12.0) + f32x8::splat(2.0 / 3.0)) - f32x8::splat(2.0))
+            + f32x8::splat(8.0 / 3.0))
+        - f32x8::splat(4.0 / 3.0);
     x.simd_lt(f32x8::splat(1.0)).select(lo, hi)
 }
 
@@ -163,8 +170,11 @@ pub(crate) fn wave_sample_x8(wave: Wave, ph: f32x8, dtp: f32x8, width: f32x8) ->
         Wave::Square => {
             // width <= 0 ⇒ 0.5, else clamp [0.01, 0.99] (matches scalar wave_sample).
             let half = f32x8::splat(0.5);
-            let w = width.simd_le(f32x8::splat(0.0)).select(half, width)
-                .simd_max(f32x8::splat(0.01)).simd_min(f32x8::splat(0.99));
+            let w = width
+                .simd_le(f32x8::splat(0.0))
+                .select(half, width)
+                .simd_max(f32x8::splat(0.01))
+                .simd_min(f32x8::splat(0.99));
             let naive = ph.simd_lt(w).select(one, -one);
             let mut pw = ph - w;
             pw -= floor_x8(pw);
@@ -186,7 +196,13 @@ fn naive_wave(wave: Wave, ph: f32) -> f32 {
     match wave {
         Wave::Sine => fast_sin(ph),
         Wave::Saw => 2.0 * ph - 1.0,
-        Wave::Square => if ph < 0.5 { 1.0 } else { -1.0 },
+        Wave::Square => {
+            if ph < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
         Wave::Tri => 1.0 - 4.0 * (ph - 0.5).abs(),
     }
 }
@@ -215,7 +231,12 @@ pub struct Osc {
 
 impl Osc {
     pub fn new() -> Osc {
-        Osc { phase: 0.0, last: 0.0, last2: 0.0, feedback: 0.0 }
+        Osc {
+            phase: 0.0,
+            last: 0.0,
+            last2: 0.0,
+            feedback: 0.0,
+        }
     }
 
     /// Feedback-FM depth (control-rate scalar), clamped for stability.
@@ -293,7 +314,14 @@ impl SyncOsc {
     /// `(-2)/2` of the jump.) This measured as the clear winner over
     /// `poly_blep(t_reset, ...)`, sign-flipped, and `dtp_s`-width variants —
     /// see the measurements recorded on `sync_saw_is_band_limited`.
-    pub fn process(&mut self, wave: Wave, master_freq: In, slave_freq: In, dt: f32, out: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        wave: Wave,
+        master_freq: In,
+        slave_freq: In,
+        dt: f32,
+        out: &mut [f32],
+    ) {
         for (i, s) in out.iter_mut().enumerate() {
             *s = self.tick(wave, master_freq.at(i), slave_freq.at(i), dt);
         }
@@ -316,7 +344,11 @@ impl SyncOsc {
         if mp >= 1.0 && dtp_m > 0.0 {
             let t_reset = (1.0 - mp_before) / dtp_m; // sub-sample position in [0,1)
             // slave phase at the reset instant, and the naïve step across the reset:
-            let ph_at_reset = { let mut p = self.slave_phase + t_reset * dtp_s; p -= floorf(p); p };
+            let ph_at_reset = {
+                let mut p = self.slave_phase + t_reset * dtp_s;
+                p -= floorf(p);
+                p
+            };
             let step = naive_wave(wave, 0.0) - naive_wave(wave, ph_at_reset);
             // Reset-BLEP: see the doc comment above for the derivation.
             y += 0.5 * step * poly_blep(mp_before, dtp_m);
@@ -336,7 +368,14 @@ impl SyncOsc {
     /// (hard reset, no correction) — the naïve baseline `sync_blep_beats_naive`
     /// compares against.
     #[cfg(test)]
-    fn process_naive_reset(&mut self, wave: Wave, master_freq: In, slave_freq: In, dt: f32, out: &mut [f32]) {
+    fn process_naive_reset(
+        &mut self,
+        wave: Wave,
+        master_freq: In,
+        slave_freq: In,
+        dt: f32,
+        out: &mut [f32],
+    ) {
         for (i, s) in out.iter_mut().enumerate() {
             let dtp_m = master_freq.at(i) * dt;
             let dtp_s = slave_freq.at(i) * dt;
@@ -369,15 +408,27 @@ mod tests {
     fn wave_sample_x8_matches_scalar() {
         use core::simd::f32x8;
         let dt = 1.0 / 48_000.0;
-        for (wi, &shape) in [Wave::Sine, Wave::Saw, Wave::Square, Wave::Tri].iter().enumerate() {
+        for (wi, &shape) in [Wave::Sine, Wave::Saw, Wave::Square, Wave::Tri]
+            .iter()
+            .enumerate()
+        {
             for fk in 0..40 {
                 let freq = 55.0 + fk as f32 * 200.0; // 55 Hz .. ~8 kHz
                 let dtp = freq * dt;
                 for pk in 0..97 {
                     let ph = pk as f32 / 97.0; // sweep [0,1)
                     let s = wave_sample(shape, ph, dtp, 0.5);
-                    let v = wave_sample_x8(shape, f32x8::splat(ph), f32x8::splat(dtp), f32x8::splat(0.5)).to_array()[0];
-                    assert!((v - s).abs() < 1e-4, "shape idx {wi} f {freq} ph {ph}: {v} vs {s}");
+                    let v = wave_sample_x8(
+                        shape,
+                        f32x8::splat(ph),
+                        f32x8::splat(dtp),
+                        f32x8::splat(0.5),
+                    )
+                    .to_array()[0];
+                    assert!(
+                        (v - s).abs() < 1e-4,
+                        "shape idx {wi} f {freq} ph {ph}: {v} vs {s}"
+                    );
                 }
             }
         }
@@ -390,9 +441,20 @@ mod tests {
         let dtp = 0.01f32;
         for &w in &[0.0f32, 0.1, 0.25, 0.5, 0.75, 0.99, 1.5] {
             for &ph in &[0.0f32, 0.1, 0.49, 0.5, 0.51, 0.9] {
-                let got = wave_sample_x8(Wave::Square, f32x8::splat(ph), f32x8::splat(dtp), f32x8::splat(w)).to_array();
+                let got = wave_sample_x8(
+                    Wave::Square,
+                    f32x8::splat(ph),
+                    f32x8::splat(dtp),
+                    f32x8::splat(w),
+                )
+                .to_array();
                 let want = wave_sample(Wave::Square, ph, dtp, w);
-                for lane in got { assert!((lane - want).abs() <= 1e-4, "w={w} ph={ph}: {lane} vs {want}"); }
+                for lane in got {
+                    assert!(
+                        (lane - want).abs() <= 1e-4,
+                        "w={w} ph={ph}: {lane} vs {want}"
+                    );
+                }
             }
         }
     }
@@ -428,9 +490,19 @@ mod tests {
     fn saw_ramps_upward_over_a_cycle() {
         let mut osc = Osc::new();
         let mut out = [0.0f32; 48]; // 1 kHz at 48 kHz → exactly one cycle
-        osc.process(Wave::Saw, In::K(1_000.0), In::K(0.0), In::K(0.0), 1.0 / 48_000.0, &mut out);
+        osc.process(
+            Wave::Saw,
+            In::K(1_000.0),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / 48_000.0,
+            &mut out,
+        );
         // Interior samples (away from the wrap at index 0) follow the ramp.
-        assert!(out[10] < out[20] && out[20] < out[30], "saw rises through the cycle");
+        assert!(
+            out[10] < out[20] && out[20] < out[30],
+            "saw rises through the cycle"
+        );
         assert!(out[5] < -0.5 && out[40] > 0.5, "saw spans roughly [-1, 1]");
     }
 
@@ -440,7 +512,14 @@ mod tests {
         let sr = 48_000.0;
         let mut osc = Osc::new();
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(Wave::Saw, In::K(f0), In::K(0.0), In::K(0.0), 1.0 / sr, &mut buf);
+        osc.process(
+            Wave::Saw,
+            In::K(f0),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf,
+        );
         deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
     }
 
@@ -451,7 +530,10 @@ mod tests {
             let tol = 3.0 * spec.bin_hz;
             let wa = spec.worst_alias_db(f0, tol);
             // 4-point PolyBLEP measures ~-30.5 dB worst-alias at 5 kHz (hardest case); gate at -28 with margin.
-            assert!(wa < -28.0, "saw f0={f0}: worst_alias {wa} dB should be < -28");
+            assert!(
+                wa < -28.0,
+                "saw f0={f0}: worst_alias {wa} dB should be < -28"
+            );
         }
     }
 
@@ -472,7 +554,10 @@ mod tests {
         let tol = 3.0 * spec_bl.bin_hz;
         let improvement = spec_n.worst_alias_db(f0, tol) - spec_bl.worst_alias_db(f0, tol);
         // 4-point PolyBLEP: ~+16.7 dB over naïve at 5 kHz; gate at 12 with margin.
-        assert!(improvement > 12.0, "band-limited should beat naïve by >12 dB, got {improvement}");
+        assert!(
+            improvement > 12.0,
+            "band-limited should beat naïve by >12 dB, got {improvement}"
+        );
     }
 
     #[test]
@@ -481,12 +566,22 @@ mod tests {
         for &f0 in &[2_000.0f32, 5_000.0, 8_000.0] {
             let mut osc = Osc::new();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            osc.process(Wave::Square, In::K(f0), In::K(0.0), In::K(0.0), 1.0 / sr, &mut buf);
+            osc.process(
+                Wave::Square,
+                In::K(f0),
+                In::K(0.0),
+                In::K(0.0),
+                1.0 / sr,
+                &mut buf,
+            );
             let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
             let wa = spec.worst_alias_db(f0, 3.0 * spec.bin_hz);
             // Measured: 2kHz -41.1 dB, 5kHz -30.5 dB (hardest case), 8kHz -41.1 dB.
             // Matches saw's floor (same 4-point PolyBLEP, two edges); gate at -28 with margin.
-            assert!(wa < -28.0, "square f0={f0}: worst_alias {wa} dB should be < -28");
+            assert!(
+                wa < -28.0,
+                "square f0={f0}: worst_alias {wa} dB should be < -28"
+            );
         }
     }
 
@@ -506,20 +601,37 @@ mod tests {
 
         let mut osc = Osc::new();
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(Wave::Square, In::K(f0), In::K(0.0), In::K(0.0), 1.0 / sr, &mut buf);
+        osc.process(
+            Wave::Square,
+            In::K(f0),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf,
+        );
         let spec_bl = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
 
         let tol = 3.0 * spec_bl.bin_hz;
         let improvement = spec_n.worst_alias_db(f0, tol) - spec_bl.worst_alias_db(f0, tol);
         // Measured: +16.7 dB over naïve at 5 kHz (matches saw's improvement); gate at 12 with margin.
-        assert!(improvement > 12.0, "band-limited square should beat naïve by >12 dB, got {improvement}");
+        assert!(
+            improvement > 12.0,
+            "band-limited square should beat naïve by >12 dB, got {improvement}"
+        );
     }
 
     #[test]
     fn sine_is_bounded_and_starts_near_zero() {
         let mut osc = Osc::new();
         let mut out = [0.0f32; 64];
-        osc.process(Wave::Sine, In::K(100.0), In::K(0.0), In::K(0.0), 1.0 / 1000.0, &mut out);
+        osc.process(
+            Wave::Sine,
+            In::K(100.0),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / 1000.0,
+            &mut out,
+        );
         assert!(out[0].abs() < 1e-3);
         assert!(out.iter().all(|s| s.abs() <= 1.001));
     }
@@ -530,12 +642,22 @@ mod tests {
         for &f0 in &[2_000.0f32, 5_000.0, 8_000.0] {
             let mut osc = Osc::new();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            osc.process(Wave::Tri, In::K(f0), In::K(0.0), In::K(0.0), 1.0 / sr, &mut buf);
+            osc.process(
+                Wave::Tri,
+                In::K(f0),
+                In::K(0.0),
+                In::K(0.0),
+                1.0 / sr,
+                &mut buf,
+            );
             let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
             let wa = spec.worst_alias_db(f0, 3.0 * spec.bin_hz);
             // BLAMP measures: 2kHz -41.1 dB, 5kHz -34.5 dB (hardest case), 8kHz -41.1 dB.
             // Gate at -32 with margin below the measured floor.
-            assert!(wa < -32.0, "triangle f0={f0}: worst_alias {wa} dB should be < -32");
+            assert!(
+                wa < -32.0,
+                "triangle f0={f0}: worst_alias {wa} dB should be < -32"
+            );
         }
     }
 
@@ -553,12 +675,22 @@ mod tests {
         let spec_n = deluge_dsp_test::spectrum::analyze_buf(sr, &naive);
         let mut osc = Osc::new();
         let mut bl = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(Wave::Tri, In::K(f0), In::K(0.0), In::K(0.0), 1.0 / sr, &mut bl);
+        osc.process(
+            Wave::Tri,
+            In::K(f0),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut bl,
+        );
         let spec_bl = deluge_dsp_test::spectrum::analyze_buf(sr, &bl);
         let tol = 3.0 * spec_bl.bin_hz;
         let improvement = spec_n.worst_alias_db(f0, tol) - spec_bl.worst_alias_db(f0, tol);
         // Measured: naive -27.7 dB, band-limited -34.5 dB at 5 kHz -> +6.8 dB improvement.
-        assert!(improvement > 6.0, "band-limited triangle should beat naïve by >6 dB, got {improvement}");
+        assert!(
+            improvement > 6.0,
+            "band-limited triangle should beat naïve by >6 dB, got {improvement}"
+        );
     }
 
     #[test]
@@ -566,10 +698,20 @@ mod tests {
         // At 200 Hz the triangle should still peak near +1 and trough near -1.
         let mut osc = Osc::new();
         let mut buf = [0.0f32; 512];
-        osc.process(Wave::Tri, In::K(200.0), In::K(0.0), In::K(0.0), 1.0 / 48_000.0, &mut buf);
+        osc.process(
+            Wave::Tri,
+            In::K(200.0),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / 48_000.0,
+            &mut buf,
+        );
         let max = buf.iter().cloned().fold(f32::MIN, f32::max);
         let min = buf.iter().cloned().fold(f32::MAX, f32::min);
-        assert!(max > 0.9 && min < -0.9, "triangle spans ~[-1,1]: min {min} max {max}");
+        assert!(
+            max > 0.9 && min < -0.9,
+            "triangle spans ~[-1,1]: min {min} max {max}"
+        );
         assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 1.1));
     }
 
@@ -580,7 +722,14 @@ mod tests {
             for &f0 in &[2_000.0f32, 5_000.0] {
                 let mut osc = Osc::new();
                 let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-                osc.process(Wave::Square, In::K(f0), In::K(0.0), In::K(w), 1.0 / sr, &mut buf);
+                osc.process(
+                    Wave::Square,
+                    In::K(f0),
+                    In::K(0.0),
+                    In::K(w),
+                    1.0 / sr,
+                    &mut buf,
+                );
                 let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
                 let wa = spec.worst_alias_db(f0, 3.0 * spec.bin_hz);
                 // Measured: w=0.1 -> 2kHz -41.1 dB, 5kHz -20.3 dB (hardest case);
@@ -593,7 +742,10 @@ mod tests {
                 // 5 kHz. This isn't a kernel bug — gate at -18 (below the
                 // measured -20.3 dB floor with ~2 dB margin) rather than
                 // widen/alter the band-limiting kernel to chase -25.
-                assert!(wa < -18.0, "pwm w={w} f0={f0}: worst_alias {wa} dB should be < -18");
+                assert!(
+                    wa < -18.0,
+                    "pwm w={w} f0={f0}: worst_alias {wa} dB should be < -18"
+                );
             }
         }
     }
@@ -603,7 +755,14 @@ mod tests {
         // At low freq the +1 fraction should ≈ width.
         let mut osc = Osc::new();
         let mut buf = [0.0f32; 4800]; // 100 Hz at 48k → 48 cycles
-        osc.process(Wave::Square, In::K(100.0), In::K(0.0), In::K(0.3), 1.0 / 48_000.0, &mut buf);
+        osc.process(
+            Wave::Square,
+            In::K(100.0),
+            In::K(0.0),
+            In::K(0.3),
+            1.0 / 48_000.0,
+            &mut buf,
+        );
         let high = buf.iter().filter(|&&s| s > 0.0).count() as f32 / buf.len() as f32;
         assert!((high - 0.3).abs() < 0.03, "duty ≈ 0.3, got {high}");
     }
@@ -616,16 +775,38 @@ mod tests {
         let (fc, fm, index) = (4_000.0f32, 500.0f32, 1.0f32);
         let mut modbuf = [0.0f32; deluge_dsp_test::FFT_N];
         let mut m = Osc::new();
-        m.process(Wave::Sine, In::K(fm), In::K(0.0), In::K(0.0), 1.0 / sr, &mut modbuf);
-        for s in modbuf.iter_mut() { *s *= index; } // pmod in cycles
+        m.process(
+            Wave::Sine,
+            In::K(fm),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut modbuf,
+        );
+        for s in modbuf.iter_mut() {
+            *s *= index;
+        } // pmod in cycles
         let mut carrier = [0.0f32; deluge_dsp_test::FFT_N];
         let mut c = Osc::new();
-        c.process(Wave::Sine, In::K(fc), In::A(&modbuf), In::K(0.0), 1.0 / sr, &mut carrier);
+        c.process(
+            Wave::Sine,
+            In::K(fc),
+            In::A(&modbuf),
+            In::K(0.0),
+            1.0 / sr,
+            &mut carrier,
+        );
         let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &carrier);
         let fund = spec.level_at(fc);
         // First sidebands present well above the noise floor.
-        assert!(spec.level_at(fc + fm) > 0.05 * fund, "upper sideband present");
-        assert!(spec.level_at(fc - fm) > 0.05 * fund, "lower sideband present");
+        assert!(
+            spec.level_at(fc + fm) > 0.05 * fund,
+            "upper sideband present"
+        );
+        assert!(
+            spec.level_at(fc - fm) > 0.05 * fund,
+            "lower sideband present"
+        );
     }
 
     #[test]
@@ -634,7 +815,14 @@ mod tests {
         let f0 = 64.0 * (sr / deluge_dsp_test::FFT_N as f32);
         let mut osc = Osc::new();
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        osc.process(Wave::Sine, In::K(f0), In::K(0.0), In::K(0.0), 1.0 / sr, &mut buf);
+        osc.process(
+            Wave::Sine,
+            In::K(f0),
+            In::K(0.0),
+            In::K(0.0),
+            1.0 / sr,
+            &mut buf,
+        );
         let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
         assert!(spec.thd(f0, 5) < 1e-2, "pmod=0 sine stays clean");
     }
@@ -663,14 +851,23 @@ mod tests {
         for slave_mul in [1.5f32, 2.7, 4.3] {
             let mut so = SyncOsc::new();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            so.process(Wave::Saw, In::K(master), In::K(master * slave_mul), 1.0 / sr, &mut buf);
+            so.process(
+                Wave::Saw,
+                In::K(master),
+                In::K(master * slave_mul),
+                1.0 / sr,
+                &mut buf,
+            );
             let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
                 .worst_alias_db(master, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
             eprintln!("sync saw slave×{slave_mul}: worst_alias {wa} dB");
             // Measured floors (master 220 Hz, reset-BLEP = 0.5*step*poly_blep(mp_before,dtp_m)):
             // ×1.5 -> -40.2 dB, ×2.7 -> -31.6 dB, ×4.3 -> -27.2 dB (hardest case).
             // Gate tightened to -25 dB, ~2 dB below the measured -27.2 dB floor.
-            assert!(wa < -25.0, "sync saw slave×{slave_mul}: worst_alias {wa} dB");
+            assert!(
+                wa < -25.0,
+                "sync saw slave×{slave_mul}: worst_alias {wa} dB"
+            );
         }
     }
 
@@ -683,18 +880,33 @@ mod tests {
 
         let mut so_blep = SyncOsc::new();
         let mut buf_blep = [0.0f32; deluge_dsp_test::FFT_N];
-        so_blep.process(Wave::Saw, In::K(master), In::K(slave), 1.0 / sr, &mut buf_blep);
+        so_blep.process(
+            Wave::Saw,
+            In::K(master),
+            In::K(slave),
+            1.0 / sr,
+            &mut buf_blep,
+        );
         let spec_blep = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_blep);
 
         let mut so_naive = SyncOsc::new();
         let mut buf_naive = [0.0f32; deluge_dsp_test::FFT_N];
-        so_naive.process_naive_reset(Wave::Saw, In::K(master), In::K(slave), 1.0 / sr, &mut buf_naive);
+        so_naive.process_naive_reset(
+            Wave::Saw,
+            In::K(master),
+            In::K(slave),
+            1.0 / sr,
+            &mut buf_naive,
+        );
         let spec_naive = deluge_dsp_test::spectrum::analyze_buf(sr, &buf_naive);
 
         let tol = 3.0 * spec_blep.bin_hz;
         let wa_blep = spec_blep.worst_alias_db(master, tol);
         let wa_naive = spec_naive.worst_alias_db(master, tol);
-        eprintln!("sync blep worst_alias {wa_blep} dB, naive worst_alias {wa_naive} dB, margin {}", wa_naive - wa_blep);
+        eprintln!(
+            "sync blep worst_alias {wa_blep} dB, naive worst_alias {wa_naive} dB, margin {}",
+            wa_naive - wa_blep
+        );
         // Measured: blep -30.5 dB vs naive -27.7 dB, a +2.8 dB margin. Explored a dozen
         // reset-BLEP forms (poly_blep argument = t_reset/1-t_reset/mp_before/0, width =
         // dtp_s/dtp_m, sign flips, two-sided before+after corrections, coefficient sweeps
@@ -703,7 +915,10 @@ mod tests {
         // consistent winner; sign-flipped variants measured *worse* than naive (e.g. -3.4
         // dB), confirming this sign is correct. Gate tightened to >2 dB, just below the
         // measured 2.8 dB margin.
-        assert!(wa_blep < wa_naive - 2.0, "blep {wa_blep} dB should beat naive {wa_naive} dB by >2 dB");
+        assert!(
+            wa_blep < wa_naive - 2.0,
+            "blep {wa_blep} dB should beat naive {wa_naive} dB by >2 dB"
+        );
     }
 
     #[test]
@@ -727,14 +942,28 @@ mod tests {
         let sr = 48_000.0f32;
         let master = 220.0f32;
         let slave_mul = 2.7f32;
-        for (name, wave) in [("Sine", Wave::Sine), ("Saw", Wave::Saw), ("Square", Wave::Square), ("Tri", Wave::Tri)] {
+        for (name, wave) in [
+            ("Sine", Wave::Sine),
+            ("Saw", Wave::Saw),
+            ("Square", Wave::Square),
+            ("Tri", Wave::Tri),
+        ] {
             let mut so = SyncOsc::new();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-            so.process(wave, In::K(master), In::K(master * slave_mul), 1.0 / sr, &mut buf);
+            so.process(
+                wave,
+                In::K(master),
+                In::K(master * slave_mul),
+                1.0 / sr,
+                &mut buf,
+            );
             let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
                 .worst_alias_db(master, 3.0 * (sr / deluge_dsp_test::FFT_N as f32));
             eprintln!("sync {name} slave×{slave_mul}: worst_alias {wa} dB");
-            assert!(wa < -22.0, "sync {name} slave×{slave_mul}: worst_alias {wa} dB should be < -22");
+            assert!(
+                wa < -22.0,
+                "sync {name} slave×{slave_mul}: worst_alias {wa} dB should be < -22"
+            );
         }
     }
 

@@ -6,8 +6,8 @@
 
 use crate::display::SimulatorDisplay;
 use crate::hardware::{HardwareButton, HardwareEncoder, HardwareLED};
-use crate::hardware_state::DelugeHardware;
 use crate::hardware_link::HardwareMirror;
+use crate::hardware_state::DelugeHardware;
 use crate::link::{self, LinkKind};
 use crate::pad_grid::PadGrid;
 #[cfg(feature = "rack")]
@@ -16,17 +16,17 @@ use crate::renderer::DynamicElementsRenderer;
 use crate::rgb::RGB;
 
 use deluge_protocol::{FromDeluge, ToDeluge};
-use deluge_sim_link::audio::HeapCons;
 #[cfg(feature = "rack")]
 use deluge_sim_link::audio::Consumer;
+use deluge_sim_link::audio::HeapCons;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
+#[cfg(feature = "rack")]
+use iced::widget::column;
 use iced::{
     Color, Element, Length, Task, Theme,
     widget::{Canvas, Image, Stack, container, image},
 };
-#[cfg(feature = "rack")]
-use iced::widget::column;
 
 /// Window width (px): the faceplate's half-SVG width.
 pub(crate) const WINDOW_WIDTH: f32 = 1089.0;
@@ -37,19 +37,32 @@ pub(crate) const RACK_HEIGHT: f32 = 92.0;
 /// Total window height: the faceplate, plus the rack strip when the `rack`
 /// feature is enabled. With the feature off the top panel is compiled out and
 /// the window is faceplate-only.
-pub(crate) const WINDOW_HEIGHT: f32 =
-    FACEPLATE_HEIGHT + if cfg!(feature = "rack") { RACK_HEIGHT } else { 0.0 };
+pub(crate) const WINDOW_HEIGHT: f32 = FACEPLATE_HEIGHT
+    + if cfg!(feature = "rack") {
+        RACK_HEIGHT
+    } else {
+        0.0
+    };
 
 /// Messages produced by the canvas (input) and the periodic tick.
 #[derive(Debug, Clone)]
 pub enum SimulatorMessage {
     /// 60 Hz tick: drain inbound illumination frames.
     Tick,
-    PadPressed { col: usize, row: usize },
-    PadReleased { col: usize, row: usize },
+    PadPressed {
+        col: usize,
+        row: usize,
+    },
+    PadReleased {
+        col: usize,
+        row: usize,
+    },
     ButtonPressed(HardwareButton),
     ButtonReleased(HardwareButton),
-    EncoderRotated { encoder: HardwareEncoder, delta: i32 },
+    EncoderRotated {
+        encoder: HardwareEncoder,
+        delta: i32,
+    },
     EncoderPressed(HardwareEncoder),
     EncoderReleased(HardwareEncoder),
     ToggleStickyKeys,
@@ -153,7 +166,9 @@ impl DelugeSimulator {
         );
         // The Volume knob is a pot (0–100 %); start at full to match the default
         // master gain (1.0).
-        renderer.hardware.set_encoder_value(HardwareEncoder::Volume, 100);
+        renderer
+            .hardware
+            .set_encoder_value(HardwareEncoder::Volume, 100);
         Self {
             renderer,
             #[cfg(feature = "rack")]
@@ -184,23 +199,33 @@ impl DelugeSimulator {
             SimulatorMessage::PadPressed { col, row } => {
                 self.renderer.grid.set_pressed(col, row, true);
                 self.renderer.pad_cache.clear();
-                self.send(FromDeluge::PadPressed { col: col as u8, row: row as u8 });
+                self.send(FromDeluge::PadPressed {
+                    col: col as u8,
+                    row: row as u8,
+                });
             }
             SimulatorMessage::PadReleased { col, row } => {
                 self.renderer.grid.set_pressed(col, row, false);
                 self.renderer.pad_cache.clear();
-                self.send(FromDeluge::PadReleased { col: col as u8, row: row as u8 });
+                self.send(FromDeluge::PadReleased {
+                    col: col as u8,
+                    row: row as u8,
+                });
             }
 
             SimulatorMessage::ButtonPressed(b) => {
                 self.renderer.pressed_buttons.insert(b);
                 self.renderer.controls_cache.clear();
-                self.send(FromDeluge::ButtonPressed { id: link::button_to_id(b) });
+                self.send(FromDeluge::ButtonPressed {
+                    id: link::button_to_id(b),
+                });
             }
             SimulatorMessage::ButtonReleased(b) => {
                 self.renderer.pressed_buttons.remove(&b);
                 self.renderer.controls_cache.clear();
-                self.send(FromDeluge::ButtonReleased { id: link::button_to_id(b) });
+                self.send(FromDeluge::ButtonReleased {
+                    id: link::button_to_id(b),
+                });
             }
 
             SimulatorMessage::EncoderRotated { encoder, delta } => {
@@ -333,8 +358,13 @@ impl DelugeSimulator {
 
         let display = (gen_d != seen_d).then(|| panel.display_snapshot());
         let pads = (gen_p != seen_p).then(|| panel.pads_snapshot());
-        let controls = (gen_c != seen_c)
-            .then(|| (panel.leds_snapshot(), panel.knobs_snapshot(), panel.synced_led()));
+        let controls = (gen_c != seen_c).then(|| {
+            (
+                panel.leds_snapshot(),
+                panel.knobs_snapshot(),
+                panel.synced_led(),
+            )
+        });
         let cv = (gen_cv != seen_cv).then(|| panel.cv_snapshot());
         let gate = (gen_gate != seen_gate).then(|| panel.gate_snapshot());
         let (seen_min, seen_mout) = (link.seen_midi_in, link.seen_midi_out);
@@ -348,7 +378,9 @@ impl DelugeSimulator {
         if let Some(grid) = pads {
             for (col, rows) in grid.iter().enumerate() {
                 for (row, rgb) in rows.iter().enumerate() {
-                    self.renderer.grid.set(col, row, RGB::new(rgb[0], rgb[1], rgb[2]));
+                    self.renderer
+                        .grid
+                        .set(col, row, RGB::new(rgb[0], rgb[1], rgb[2]));
                 }
             }
             self.renderer.pad_cache.clear();
@@ -359,7 +391,9 @@ impl DelugeSimulator {
                     self.renderer.hardware.set_led_state(led, *on);
                 }
             }
-            self.renderer.hardware.set_led_state(HardwareLED::Synced, synced);
+            self.renderer
+                .hardware
+                .set_led_state(HardwareLED::Synced, synced);
             self.set_knob_indicator(0, knobs[0]);
             self.set_knob_indicator(1, knobs[1]);
             self.renderer.controls_cache.clear();
@@ -397,9 +431,11 @@ impl DelugeSimulator {
                 self.renderer.oled_cache.clear();
             }
             ToDeluge::SetPadRgb { col, row, rgb } => {
-                self.renderer
-                    .grid
-                    .set(col as usize, row as usize, RGB::new(rgb[0], rgb[1], rgb[2]));
+                self.renderer.grid.set(
+                    col as usize,
+                    row as usize,
+                    RGB::new(rgb[0], rgb[1], rgb[2]),
+                );
                 self.renderer.pad_cache.clear();
             }
             ToDeluge::SetAllPads(buf) => {
@@ -424,7 +460,9 @@ impl DelugeSimulator {
                 }
             }
             ToDeluge::SetSyncedLed(on) => {
-                self.renderer.hardware.set_led_state(HardwareLED::Synced, on);
+                self.renderer
+                    .hardware
+                    .set_led_state(HardwareLED::Synced, on);
                 self.renderer.controls_cache.clear();
             }
             ToDeluge::SetKnobIndicator { which, levels } => self.set_knob_indicator(which, levels),
@@ -450,9 +488,19 @@ impl DelugeSimulator {
     fn set_knob_indicator(&mut self, which: u8, levels: [u8; 4]) {
         use HardwareLED::*;
         let segs = if which == 0 {
-            [LowerGoldIndicator1, LowerGoldIndicator2, LowerGoldIndicator3, LowerGoldIndicator4]
+            [
+                LowerGoldIndicator1,
+                LowerGoldIndicator2,
+                LowerGoldIndicator3,
+                LowerGoldIndicator4,
+            ]
         } else {
-            [UpperGoldIndicator1, UpperGoldIndicator2, UpperGoldIndicator3, UpperGoldIndicator4]
+            [
+                UpperGoldIndicator1,
+                UpperGoldIndicator2,
+                UpperGoldIndicator3,
+                UpperGoldIndicator4,
+            ]
         };
         for (i, led) in segs.into_iter().enumerate() {
             self.renderer.hardware.set_led_state(led, levels[i] > 0);
@@ -491,7 +539,9 @@ impl DelugeSimulator {
     }
 
     pub fn view(&self) -> Element<'_, SimulatorMessage> {
-        let canvas = Canvas::new(&self.renderer).width(Length::Fill).height(Length::Fill);
+        let canvas = Canvas::new(&self.renderer)
+            .width(Length::Fill)
+            .height(Length::Fill);
         let content = if let Some(ref svg_handle) = self.svg_background {
             let background: Image = image(svg_handle.clone())
                 .content_fit(iced::ContentFit::Contain)
@@ -533,7 +583,10 @@ impl DelugeSimulator {
             let rack = Canvas::new(&self.rack)
                 .width(Length::Fill)
                 .height(Length::Fixed(RACK_HEIGHT));
-            column![rack, faceplate].width(Length::Fill).height(Length::Fill).into()
+            column![rack, faceplate]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         }
         #[cfg(not(feature = "rack"))]
         {

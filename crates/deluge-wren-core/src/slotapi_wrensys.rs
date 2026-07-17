@@ -23,7 +23,9 @@ unsafe fn new_foreign_in_shim<T: DwcForeign>(vm: &Vm, slot: i32, value: T) {
     vm.ensure_slots(slot + 2);
     let class_slot = slot + 1;
     vm.load_class(T::module_name(), T::class_name(), class_slot);
-    let data = unsafe { wren_sys::wrenSetSlotNewForeign(vm.0, slot, class_slot, core::mem::size_of::<T>()) };
+    let data = unsafe {
+        wren_sys::wrenSetSlotNewForeign(vm.0, slot, class_slot, core::mem::size_of::<T>())
+    };
     if !data.is_null() {
         unsafe { core::ptr::write(data as *mut T, value) };
     }

@@ -124,9 +124,9 @@ pub fn build_animation(from: Grid, to: Grid, anim_type: AnimationType) -> Box<dy
             scroll_to_black,
             300,
         )),
-        AnimationType::Zoom { magnitude, zoom_in } => {
-            Box::new(zoom::ZoomAnimation::new(from, to, zoom_in, magnitude, 9.0, 300))
-        }
+        AnimationType::Zoom { magnitude, zoom_in } => Box::new(zoom::ZoomAnimation::new(
+            from, to, zoom_in, magnitude, 9.0, 300,
+        )),
         AnimationType::ExpandCollapse { expand } => {
             let direction = if expand {
                 expand_collapse::Direction::Expand

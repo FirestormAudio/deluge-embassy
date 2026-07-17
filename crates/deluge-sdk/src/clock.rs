@@ -6,9 +6,9 @@
 //! (see [`Gate`](crate::Gate)), so the channel it claims should not also be
 //! driven through `Gate`.
 
-use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "none")]
 use core::future::poll_fn;
+use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "none")]
 use core::task::Poll;
 

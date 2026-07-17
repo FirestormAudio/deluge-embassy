@@ -29,7 +29,10 @@ pub enum OutputSrc {
     /// A bus's right row.
     BusR(BusId),
     /// A node's output port (already mono).
-    Node { node: NodeId, port: u8 },
+    Node {
+        node: NodeId,
+        port: u8,
+    },
 }
 
 #[cfg(test)]
@@ -39,7 +42,10 @@ mod tests {
     #[test]
     fn input_variants_are_copy_and_constructible() {
         let a = Input::Const(0.5);
-        let b = Input::Node { node: NodeId(3), port: 2 };
+        let b = Input::Node {
+            node: NodeId(3),
+            port: 2,
+        };
         let c = Input::Bus(BusId(1));
         // Copy check
         let _copies = (a, b, c);

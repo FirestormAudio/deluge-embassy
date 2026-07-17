@@ -24,7 +24,9 @@ pub(crate) fn init(panel: SharedPanel, audio: BrainEnds) {
 
 /// The process-wide shared panel. Panics if called before [`init`].
 pub(crate) fn panel() -> &'static SharedPanel {
-    PANEL.get().expect("host panel not initialised (run via `cargo deluge sim`)")
+    PANEL
+        .get()
+        .expect("host panel not initialised (run via `cargo deluge sim`)")
 }
 
 /// Take the app-side audio endpoints (once, by `Audio::process`).

@@ -14,14 +14,14 @@
 
 use core::cell::UnsafeCell;
 
-use deluge_dsp_kernels::poly::VOICES;
 use deluge_dsp_kernels::In;
-use deluge_dsp_kernels::limiter::MasterLimiter;
-use deluge_dsp_kernels::filter::MasterDcBlock;
 use deluge_dsp_kernels::eq::MasterEq;
+use deluge_dsp_kernels::filter::MasterDcBlock;
+use deluge_dsp_kernels::limiter::MasterLimiter;
+use deluge_dsp_kernels::poly::VOICES;
 
 use crate::arena::Arena;
-use crate::node::{Kind, OutView, MAX_BLOCK, MAX_INPUTS};
+use crate::node::{Kind, MAX_BLOCK, MAX_INPUTS, OutView};
 use crate::{BusId, Input, Node, NodeId, OutputSrc, StereoFrame, USB_CHANNELS};
 
 pub struct Engine<
@@ -171,12 +171,22 @@ impl<
                 }
             }
             Cmd::GateVoice { node, voice, on } => {
-                if let Some(n) = self.arena.node_mut(node) { n.gate_voice(voice as usize, on); }
+                if let Some(n) = self.arena.node_mut(node) {
+                    n.gate_voice(voice as usize, on);
+                }
             }
             Cmd::TriggerVoice { node, voice } => {
-                if let Some(n) = self.arena.node_mut(node) { n.trigger_voice(voice as usize); }
+                if let Some(n) = self.arena.node_mut(node) {
+                    n.trigger_voice(voice as usize);
+                }
             }
-            Cmd::StreamFill { node, voice, fill_lo, fill_hi, total } => {
+            Cmd::StreamFill {
+                node,
+                voice,
+                fill_lo,
+                fill_hi,
+                total,
+            } => {
                 let idx = node.0 as usize;
                 if idx < NODES && (voice as usize) < VOICES {
                     let sc = self.stream_state[idx]
@@ -197,14 +207,22 @@ impl<
             Cmd::BusGain { bus, gain } => self.set_bus_gain(bus, gain),
             Cmd::BusSend { from, to, gain } => self.bus_send(from, to, gain),
             Cmd::SetMasterLimit { ceiling, release } => match &mut self.master_limiter {
-                Some(lim) => { lim.set_ceiling(ceiling); lim.set_release(release); }
+                Some(lim) => {
+                    lim.set_ceiling(ceiling);
+                    lim.set_release(release);
+                }
                 None => self.master_limiter = Some(MasterLimiter::new(ceiling, release)),
             },
             Cmd::SetMasterDcBlock { cutoff_hz } => match &mut self.master_dcblock {
                 Some(dc) => dc.set_cutoff(cutoff_hz, self.dt),
                 None => self.master_dcblock = Some(MasterDcBlock::new(cutoff_hz, self.dt)),
             },
-            Cmd::SetMasterEq { freq, gain_db, q, eq_type } => match &mut self.master_eq {
+            Cmd::SetMasterEq {
+                freq,
+                gain_db,
+                q,
+                eq_type,
+            } => match &mut self.master_eq {
                 Some(eq) => eq.set_params(freq, gain_db, q, eq_type),
                 None => self.master_eq = Some(MasterEq::new(freq, gain_db, q, eq_type)),
             },
@@ -218,7 +236,9 @@ impl<
                     }
                 }
                 let idx = node.0 as usize;
-                if idx < NODES { self.stream_state[idx] = None; }
+                if idx < NODES {
+                    self.stream_state[idx] = None;
+                }
                 self.arena.free(node);
                 // Invalidate this node's bus writes so a reused id inherits no
                 // stale routing (IO-2a). Const/Bus-sourced writes are untouched.
@@ -263,7 +283,13 @@ impl<
             let id = NodeId(order[k]);
             let (base, kind, width, inputs, table_src) = {
                 let n = self.arena.node(id).expect("eval-order node exists");
-                (n.out_base as usize, n.kind, Node::out_width(n.kind), n.inputs_snapshot(), n.table_src())
+                (
+                    n.out_base as usize,
+                    n.kind,
+                    Node::out_width(n.kind),
+                    n.inputs_snapshot(),
+                    n.table_src(),
+                )
             };
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
@@ -299,18 +325,34 @@ impl<
                     // adjacent-node garbage/silence past its one live slot.
                     match inputs[j] {
                         Input::Const(v) => {
-                            for lane in &mut poly_scratch[j] { lane.fill(v); }
+                            for lane in &mut poly_scratch[j] {
+                                lane.fill(v);
+                            }
                         }
                         Input::Node { node, .. } => match self.arena.out_base_and_kind(node) {
-                            Some((sbase, src_kind)) if Node::out_width(src_kind) == 1 && sbase < OUTS => {
-                                for v in 0..VOICES { poly_scratch[j][v] = arr[sbase]; }
+                            Some((sbase, src_kind))
+                                if Node::out_width(src_kind) == 1 && sbase < OUTS =>
+                            {
+                                for v in 0..VOICES {
+                                    poly_scratch[j][v] = arr[sbase];
+                                }
                             }
                             Some((sbase, _)) if sbase + VOICES <= OUTS => {
-                                for v in 0..VOICES { poly_scratch[j][v] = arr[sbase + v]; }
+                                for v in 0..VOICES {
+                                    poly_scratch[j][v] = arr[sbase + v];
+                                }
                             }
-                            _ => { for v in 0..VOICES { poly_scratch[j][v] = [0.0; BLOCK]; } }
+                            _ => {
+                                for v in 0..VOICES {
+                                    poly_scratch[j][v] = [0.0; BLOCK];
+                                }
+                            }
                         },
-                        _ => { for v in 0..VOICES { poly_scratch[j][v] = [0.0; BLOCK]; } }
+                        _ => {
+                            for v in 0..VOICES {
+                                poly_scratch[j][v] = [0.0; BLOCK];
+                            }
+                        }
                     }
                 }
             }
@@ -335,9 +377,21 @@ impl<
                 // Poly path: voice-interleaved tile in/out, isolated dispatch.
                 let count = Node::poly_in_count(kind);
                 let poly_in: [Option<&[f32]>; 3] = [
-                    if count > 0 { Some(poly_scratch[0].as_flattened()) } else { None },
-                    if count > 1 { Some(poly_scratch[1].as_flattened()) } else { None },
-                    if count > 2 { Some(poly_scratch[2].as_flattened()) } else { None },
+                    if count > 0 {
+                        Some(poly_scratch[0].as_flattened())
+                    } else {
+                        None
+                    },
+                    if count > 1 {
+                        Some(poly_scratch[1].as_flattened())
+                    } else {
+                        None
+                    },
+                    if count > 2 {
+                        Some(poly_scratch[2].as_flattened())
+                    } else {
+                        None
+                    },
                 ];
                 let out = arr[base..base + width].as_flattened_mut(); // width*BLOCK
                 // Resolve a pooled node's region MUTABLY before the node's
@@ -351,7 +405,11 @@ impl<
                 // Stream fill cursors (a disjoint `Engine` field from `pool`/`arena`).
                 let stream = {
                     let sidx = id.0 as usize;
-                    if sidx < NODES { self.stream_state[sidx].as_ref() } else { None }
+                    if sidx < NODES {
+                        self.stream_state[sidx].as_ref()
+                    } else {
+                        None
+                    }
                 };
                 if let Some(n) = self.arena.node_mut(id) {
                     n.poly_process(&ins, poly_in, self.dt, out, pool_region, stream);
@@ -459,14 +517,24 @@ impl<
                 OutputSrc::Silent => usb[ch] = [0.0; BLOCK],
                 OutputSrc::BusL(b) => {
                     let bi = b.0 as usize;
-                    usb[ch] = if bi < BUSES { self.bus_l[bi] } else { [0.0; BLOCK] };
+                    usb[ch] = if bi < BUSES {
+                        self.bus_l[bi]
+                    } else {
+                        [0.0; BLOCK]
+                    };
                 }
                 OutputSrc::BusR(b) => {
                     let bi = b.0 as usize;
-                    usb[ch] = if bi < BUSES { self.bus_r[bi] } else { [0.0; BLOCK] };
+                    usb[ch] = if bi < BUSES {
+                        self.bus_r[bi]
+                    } else {
+                        [0.0; BLOCK]
+                    };
                 }
                 OutputSrc::Node { node, port } => match self.arena.out_base(node) {
-                    Some(base) if base + (port as usize) < OUTS => usb[ch] = arr[base + port as usize],
+                    Some(base) if base + (port as usize) < OUTS => {
+                        usb[ch] = arr[base + port as usize]
+                    }
                     _ => usb[ch] = [0.0; BLOCK],
                 },
             }
@@ -480,8 +548,14 @@ impl<
         // (including an empty slice) read as silence — no panic on any length.
         for i in 0..BLOCK {
             match input.get(i) {
-                Some(f) => { self.in_l[i] = f.l; self.in_r[i] = f.r; }
-                None => { self.in_l[i] = 0.0; self.in_r[i] = 0.0; }
+                Some(f) => {
+                    self.in_l[i] = f.l;
+                    self.in_r[i] = f.r;
+                }
+                None => {
+                    self.in_l[i] = 0.0;
+                    self.in_r[i] = 0.0;
+                }
             }
         }
         // Evaluate nodes FIRST, so an `Input::Bus` node-read sees the PREVIOUS
@@ -502,7 +576,9 @@ impl<
                     let v = match src {
                         Input::Const(c) => c,
                         Input::Node { node, port } => match self.arena.out_base(node) {
-                            Some(base) if base + (port as usize) < OUTS => arr[base + port as usize][i],
+                            Some(base) if base + (port as usize) < OUTS => {
+                                arr[base + port as usize][i]
+                            }
                             _ => 0.0, // dangling ref or out-of-range port → contributes silence
                         },
                         Input::Bus(_) => 0.0, // bus→bus not in P0
@@ -587,36 +663,90 @@ mod tests {
         let node = NodeId(0);
         let h = e.pool_alloc(VOICES * cap).expect("ring pool");
         e.create(node, Kind::StreamPlayer);
-        e.apply(Cmd::BindTable { node, src: TableSrc::Pooled(h) });
-        e.apply(Cmd::SetParam { node, param: 0, value: 60.0 }); // root note
+        e.apply(Cmd::BindTable {
+            node,
+            src: TableSrc::Pooled(h),
+        });
+        e.apply(Cmd::SetParam {
+            node,
+            param: 0,
+            value: 60.0,
+        }); // root note
         // Mock prefetch: fill voice 0's sub-ring [0..cap) so sample `a` == a.
         {
             let region = e.pool_slice_mut(h);
-            for a in 0..cap { region[a] = a as f32; }
+            for a in 0..cap {
+                region[a] = a as f32;
+            }
         }
-        e.apply(Cmd::StreamFill { node, voice: 0, fill_lo: 0, fill_hi: cap as u64, total: cap as u64 });
+        e.apply(Cmd::StreamFill {
+            node,
+            voice: 0,
+            fill_lo: 0,
+            fill_hi: cap as u64,
+            total: cap as u64,
+        });
         e.apply(Cmd::TriggerVoice { node, voice: 0 });
         // pitch == root Hz (mtof(60) ≈ 261.63) → rate ≈ 1.0.
         *e.node_input_mut(node, 0).unwrap() = Input::Const(261.625_58);
         e.render_block();
-        assert!(e.stream_read_cursor(node, 0).unwrap() > 0, "read cursor advanced on a full window");
+        assert!(
+            e.stream_read_cursor(node, 0).unwrap() > 0,
+            "read cursor advanced on a full window"
+        );
 
         // Underrun: a short window (fill_hi = 4) reads a couple samples then holds.
         let node2 = NodeId(1);
         let h2 = e.pool_alloc(VOICES * cap).expect("ring pool 2");
         e.create(node2, Kind::StreamPlayer);
-        e.apply(Cmd::BindTable { node: node2, src: TableSrc::Pooled(h2) });
-        e.apply(Cmd::SetParam { node: node2, param: 0, value: 60.0 });
-        { let r = e.pool_slice_mut(h2); for a in 0..cap { r[a] = a as f32; } }
-        e.apply(Cmd::StreamFill { node: node2, voice: 0, fill_lo: 0, fill_hi: 4, total: 1000 });
-        e.apply(Cmd::TriggerVoice { node: node2, voice: 0 });
+        e.apply(Cmd::BindTable {
+            node: node2,
+            src: TableSrc::Pooled(h2),
+        });
+        e.apply(Cmd::SetParam {
+            node: node2,
+            param: 0,
+            value: 60.0,
+        });
+        {
+            let r = e.pool_slice_mut(h2);
+            for a in 0..cap {
+                r[a] = a as f32;
+            }
+        }
+        e.apply(Cmd::StreamFill {
+            node: node2,
+            voice: 0,
+            fill_lo: 0,
+            fill_hi: 4,
+            total: 1000,
+        });
+        e.apply(Cmd::TriggerVoice {
+            node: node2,
+            voice: 0,
+        });
         *e.node_input_mut(node2, 0).unwrap() = Input::Const(261.625_58);
         e.render_block();
-        assert!(e.stream_read_cursor(node2, 0).unwrap() <= 2, "held under underrun");
+        assert!(
+            e.stream_read_cursor(node2, 0).unwrap() <= 2,
+            "held under underrun"
+        );
 
         // No panic on out-of-range node / voice.
-        e.apply(Cmd::StreamFill { node: NodeId(999), voice: 99, fill_lo: 0, fill_hi: 0, total: 0 });
-        e.apply(Cmd::StreamFill { node, voice: 99, fill_lo: 0, fill_hi: 0, total: 0 });
+        e.apply(Cmd::StreamFill {
+            node: NodeId(999),
+            voice: 99,
+            fill_lo: 0,
+            fill_hi: 0,
+            total: 0,
+        });
+        e.apply(Cmd::StreamFill {
+            node,
+            voice: 99,
+            fill_lo: 0,
+            fill_hi: 0,
+            total: 0,
+        });
         assert!(e.stream_read_cursor(NodeId(999), 0).is_none());
         assert!(e.stream_read_cursor(node, 99).is_none());
     }
@@ -671,7 +801,10 @@ mod tests {
         e.create(NodeId(0), Kind::Saw);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(4.0);
         e.create(NodeId(1), Kind::Mul);
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.5);
         e.render_block();
         let saw = e.node_output(NodeId(0), 0)[1]; // -0.5
@@ -689,8 +822,20 @@ mod tests {
         e.create(NodeId(1), Kind::Add);
         *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Const(0.4);
         *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
-        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
+        e.bus_write(
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
 
         let mut out = [StereoFrame::default(); 16];
@@ -706,7 +851,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(5.0);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -722,14 +873,23 @@ mod tests {
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.6);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
         e.create(NodeId(1), Kind::Split2);
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         // consumerA = mul(port0, 2)
         e.create(NodeId(2), Kind::Mul);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
         *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(2.0);
         // consumerB = mul(port1, 3)
         e.create(NodeId(3), Kind::Mul);
-        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(1), port: 1 };
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 1,
+        };
         *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(3.0);
 
         e.render_block();
@@ -749,8 +909,20 @@ mod tests {
         e.create(NodeId(0), Kind::Saw);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(4.0);
 
-        e.bus_write(Input::Node { node: NodeId(50), port: 0 }, BusId(0));
-        e.bus_write(Input::Node { node: NodeId(0), port: 7 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(50),
+                port: 0,
+            },
+            BusId(0),
+        );
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 7,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
 
         let mut out = [StereoFrame::default(); 16];
@@ -772,8 +944,14 @@ mod tests {
         e2.create(NodeId(0), Kind::Saw);
         *e2.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(4.0);
         e2.create(NodeId(1), Kind::Add);
-        *e2.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(50), port: 0 };
-        *e2.node_input_mut(NodeId(1), 1).unwrap() = Input::Node { node: NodeId(0), port: 7 };
+        *e2.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(50),
+            port: 0,
+        };
+        *e2.node_input_mut(NodeId(1), 1).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 7,
+        };
         e2.render_block(); // must not panic
         let consumer_out = e2.node_output(NodeId(1), 0);
         assert!(consumer_out.iter().all(|&v| v == 0.0));
@@ -798,12 +976,20 @@ mod tests {
         let mut e1 = E::new(48_000.0);
         e1.create(NodeId(0), Kind::Sine);
         *e1.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(2_000.0);
-        e1.apply(Cmd::SetParam { node: NodeId(0), param: 0, value: 0.8 });
+        e1.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.8,
+        });
         e1.render_block();
         let out_with_feedback = e1.node_output(NodeId(0), 0);
 
         // ── Assert feedback=0.8 output is finite and bounded ──
-        assert!(out_with_feedback.iter().all(|s| s.is_finite() && s.abs() <= 4.0));
+        assert!(
+            out_with_feedback
+                .iter()
+                .all(|s| s.is_finite() && s.abs() <= 4.0)
+        );
         assert!(out_with_feedback.iter().any(|&s| s != 0.0)); // feedback sine still oscillates
 
         // ── Assert the two outputs DIFFER (feedback changed the waveform) ──
@@ -835,7 +1021,10 @@ mod tests {
         let mut e = E::new(48_000.0);
         e.create(NodeId(0), Kind::Wavetable);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
-        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(0)) });
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(0)),
+        });
         e.render_block();
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
@@ -851,11 +1040,16 @@ mod tests {
         let compact_len = deluge_dsp_kernels::wavetable::COMPACT_LEN;
         let h = e.pool_alloc(compact_len).expect("pool room");
         let mut base = [0.0f32; mipgen::N];
-        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / n as f32) - 1.0; }
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / n as f32) - 1.0;
+        }
         mipgen::build_pyramid_flat_compact(&base, e.pool_slice_mut(h));
         e.create(NodeId(0), Kind::Wavetable);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
-        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(h) });
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(h),
+        });
         e.render_block();
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
@@ -879,9 +1073,15 @@ mod tests {
         let want = deluge_dsp_kernels::wavetable::COMPACT_LEN;
         let mut handles = [None; 5];
         for (i, slot) in handles.iter_mut().enumerate() {
-            *slot = Some(e.pool_alloc(want).unwrap_or_else(|| panic!("pyramid {i} should fit")));
+            *slot = Some(
+                e.pool_alloc(want)
+                    .unwrap_or_else(|| panic!("pyramid {i} should fit")),
+            );
         }
-        assert!(e.pool_alloc(want).is_none(), "6th pyramid must not fit a 5-pyramid pool");
+        assert!(
+            e.pool_alloc(want).is_none(),
+            "6th pyramid must not fit a 5-pyramid pool"
+        );
         // Pool is not corrupted by the failed alloc: existing handles still work.
         let h1 = handles[0].unwrap();
         let h2 = handles[1].unwrap();
@@ -907,10 +1107,16 @@ mod tests {
         let bad = e.pool_alloc(64).expect("small alloc fits"); // 64 != COMPACT_LEN (6208)
         e.create(NodeId(0), Kind::Wavetable);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
-        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(bad) });
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(bad),
+        });
         e.render_block(); // must not panic
         let out = e.node_output(NodeId(0), 0);
-        assert!(out.iter().all(|&s| s == 0.0), "wrong-sized pool region must render silence: {out:?}");
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "wrong-sized pool region must render silence: {out:?}"
+        );
     }
 
     #[test]
@@ -919,15 +1125,24 @@ mod tests {
         let cl = deluge_dsp_kernels::wavetable::COMPACT_LEN;
         let h = e.pool_alloc(2 * cl).expect("pool");
         // build 2 frames (saw, square) into the region
-        let mut saw = [0.0f32; mipgen::N]; let mut sq = [0.0f32; mipgen::N];
-        for i in 0..mipgen::N { saw[i]=2.0*(i as f32/mipgen::N as f32)-1.0; sq[i]=if i<mipgen::N/2 {1.0} else {-1.0}; }
-        { let r = e.pool_slice_mut(h);
-          mipgen::build_pyramid_flat_compact(&saw, &mut r[..cl]);
-          mipgen::build_pyramid_flat_compact(&sq, &mut r[cl..]); }
+        let mut saw = [0.0f32; mipgen::N];
+        let mut sq = [0.0f32; mipgen::N];
+        for i in 0..mipgen::N {
+            saw[i] = 2.0 * (i as f32 / mipgen::N as f32) - 1.0;
+            sq[i] = if i < mipgen::N / 2 { 1.0 } else { -1.0 };
+        }
+        {
+            let r = e.pool_slice_mut(h);
+            mipgen::build_pyramid_flat_compact(&saw, &mut r[..cl]);
+            mipgen::build_pyramid_flat_compact(&sq, &mut r[cl..]);
+        }
         e.create(NodeId(0), Kind::Wavetable);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0); // freq
-        *e.node_input_mut(NodeId(0), 2).unwrap() = Input::Const(0.5);   // position (port 2)
-        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(h) });
+        *e.node_input_mut(NodeId(0), 2).unwrap() = Input::Const(0.5); // position (port 2)
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(h),
+        });
         e.render_block();
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
@@ -943,7 +1158,15 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.apply(Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 1.0, gr: 0.0 });
+        e.apply(Cmd::BusWriteGains {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+            gl: 1.0,
+            gr: 0.0,
+        });
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -956,7 +1179,15 @@ mod tests {
         e2.create(NodeId(0), Kind::Add);
         *e2.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e2.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e2.apply(Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 0.0, gr: 1.0 });
+        e2.apply(Cmd::BusWriteGains {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+            gl: 0.0,
+            gr: 1.0,
+        });
         e2.set_root(BusId(0));
         let mut out2 = [StereoFrame::default(); 16];
         let sil2 = [StereoFrame::default(); 16];
@@ -969,12 +1200,30 @@ mod tests {
         let mut e = E::new(16.0);
         e.create(NodeId(0), Kind::Input);
         // route port0→L and port1→R of the input node into master, like Out.patch.
-        e.bus_write_gains(Input::Node { node: NodeId(0), port: 0 }, BusId(0), 1.0, 0.0);
-        e.bus_write_gains(Input::Node { node: NodeId(0), port: 1 }, BusId(0), 0.0, 1.0);
+        e.bus_write_gains(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+            1.0,
+            0.0,
+        );
+        e.bus_write_gains(
+            Input::Node {
+                node: NodeId(0),
+                port: 1,
+            },
+            BusId(0),
+            0.0,
+            1.0,
+        );
         e.set_root(BusId(0));
 
         let mut input = [StereoFrame::default(); 16];
-        for i in 0..16 { input[i] = StereoFrame { l: 0.25, r: -0.5 }; }
+        for i in 0..16 {
+            input[i] = StereoFrame { l: 0.25, r: -0.5 };
+        }
         let mut out = [StereoFrame::default(); 16];
         e.render(&mut out, &input);
         assert!((out[0].l - 0.25).abs() < 1e-6);
@@ -986,7 +1235,15 @@ mod tests {
     fn input_shorter_than_block_is_silent_tail_no_panic() {
         let mut e = E::new(16.0);
         e.create(NodeId(0), Kind::Input);
-        e.bus_write_gains(Input::Node { node: NodeId(0), port: 0 }, BusId(0), 1.0, 0.0);
+        e.bus_write_gains(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+            1.0,
+            0.0,
+        );
         e.set_root(BusId(0));
         let input = [StereoFrame { l: 1.0, r: 1.0 }; 4]; // shorter than BLOCK=16
         let mut out = [StereoFrame::default(); 16];
@@ -1010,8 +1267,15 @@ mod tests {
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5); // steady input
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.005); // 5 ms
         *e.node_input_mut(NodeId(0), 2).unwrap() = Input::Const(0.5); // feedback
-        e.apply(Cmd::SetParam { node: NodeId(0), param: 0, value: 0.5 }); // mix
-        e.apply(Cmd::BindTable { node: NodeId(0), src: TableSrc::Pooled(ring) });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.5,
+        }); // mix
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(ring),
+        });
         e.render_block();
         let out = e.node_output(NodeId(0), 0);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 8.0));
@@ -1029,17 +1293,30 @@ mod tests {
         let mut e = PE::new(48_000.0);
         e.create(NodeId(0), Kind::PolyCtrl);
         for v in 0..VOICES {
-            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: 440.0 });
+            e.apply(Cmd::SetParam {
+                node: NodeId(0),
+                param: v as u8,
+                value: 440.0,
+            });
         }
         e.create(NodeId(1), Kind::PolyOsc);
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         e.create(NodeId(2), Kind::VoiceSum);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
         e.render_block();
         let out = e.node_output(NodeId(2), 0);
         let peak = out.iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(out.iter().all(|s| s.is_finite()), "finite");
-        assert!(peak > 7.0 && peak <= 8.001, "8 in-phase voices sum near 8×: peak {peak}");
+        assert!(
+            peak > 7.0 && peak <= 8.001,
+            "8 in-phase voices sum near 8×: peak {peak}"
+        );
     }
 
     #[test]
@@ -1050,12 +1327,22 @@ mod tests {
         let mut e = PE::new(48_000.0);
         e.create(NodeId(0), Kind::PolyCtrl);
         for v in 0..VOICES {
-            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 300.0 });
+            e.apply(Cmd::SetParam {
+                node: NodeId(0),
+                param: v as u8,
+                value: (v as f32 + 1.0) * 300.0,
+            });
         }
         e.create(NodeId(1), Kind::PolyOsc);
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         e.create(NodeId(2), Kind::VoiceSum);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
         e.render_block();
         let out = e.node_output(NodeId(2), 0);
         let peak = out.iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -1069,10 +1356,16 @@ mod tests {
         type PE = Engine<64, 8, 32, 4, 45056, 2048>;
         let mut e = PE::new(48_000.0);
         e.create(NodeId(2), Kind::VoiceSum);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(5), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(5),
+            port: 0,
+        };
         e.render_block();
         let out = e.node_output(NodeId(2), 0);
-        assert!(out.iter().all(|&s| s == 0.0), "dangling poly edge → silence, no panic");
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "dangling poly edge → silence, no panic"
+        );
     }
 
     #[test]
@@ -1090,12 +1383,22 @@ mod tests {
         let mut e = PE::new(sr);
         e.create(NodeId(0), Kind::PolyCtrl);
         for v in 0..VOICES {
-            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: freqs[v] });
+            e.apply(Cmd::SetParam {
+                node: NodeId(0),
+                param: v as u8,
+                value: freqs[v],
+            });
         }
         e.create(NodeId(1), Kind::PolyOsc);
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         e.create(NodeId(2), Kind::VoiceSum);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
         e.render_block();
         let out = e.node_output(NodeId(2), 0);
         // Reference: per-voice phase accumulator (phase stays positive, so
@@ -1109,7 +1412,10 @@ mod tests {
                 ph[v] -= ph[v].floor();
                 want += deluge_dsp_kernels::fast_sin(ph[v]);
             }
-            assert!((got - want).abs() < 1e-3, "sample {i}: got {got}, want {want}");
+            assert!(
+                (got - want).abs() < 1e-3,
+                "sample {i}: got {got}, want {want}"
+            );
         }
     }
 
@@ -1121,18 +1427,38 @@ mod tests {
         e.create(NodeId(0), Kind::PolyCtrl);
         e.create(NodeId(1), Kind::PolyCtrl);
         for v in 0..VOICES {
-            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v + 1) as f32 }); // 1..=8
-            e.apply(Cmd::SetParam { node: NodeId(1), param: v as u8, value: 2.0 });
+            e.apply(Cmd::SetParam {
+                node: NodeId(0),
+                param: v as u8,
+                value: (v + 1) as f32,
+            }); // 1..=8
+            e.apply(Cmd::SetParam {
+                node: NodeId(1),
+                param: v as u8,
+                value: 2.0,
+            });
         }
         e.create(NodeId(2), Kind::PolyMul);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
-        *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
+        *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
         e.create(NodeId(3), Kind::VoiceSum);
-        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+            node: NodeId(2),
+            port: 0,
+        };
         e.render_block();
         let out = e.node_output(NodeId(3), 0);
         let want: f32 = (1..=VOICES).map(|x| x as f32 * 2.0).sum(); // Σ 2·(1..8) = 72
-        assert!(out.iter().all(|&s| (s - want).abs() < 1e-3), "sum of a·b == {want}");
+        assert!(
+            out.iter().all(|&s| (s - want).abs() < 1e-3),
+            "sum of a·b == {want}"
+        );
     }
 
     #[test]
@@ -1146,15 +1472,32 @@ mod tests {
         let mut e = PE::new(48_000.0);
         e.create(NodeId(0), Kind::PolyCtrl); // pitch per voice
         for v in 0..VOICES {
-            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+            e.apply(Cmd::SetParam {
+                node: NodeId(0),
+                param: v as u8,
+                value: (v as f32 + 1.0) * 110.0,
+            });
         }
         e.create(NodeId(1), Kind::PolyOsc); // poly source A
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         e.create(NodeId(2), Kind::Ctrl); // mono source B
-        e.apply(Cmd::SetParam { node: NodeId(2), param: 0, value: 0.5 });
+        e.apply(Cmd::SetParam {
+            node: NodeId(2),
+            param: 0,
+            value: 0.5,
+        });
         e.create(NodeId(3), Kind::PolyMul);
-        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
-        *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
+        *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Node {
+            node: NodeId(2),
+            port: 0,
+        };
         e.render_block();
 
         for v in 0..VOICES {
@@ -1167,7 +1510,8 @@ mod tests {
                 assert!(
                     (out[i] - want).abs() < 1e-5,
                     "voice {v} sample {i}: got {}, want {} (broadcast of mono B)",
-                    out[i], want
+                    out[i],
+                    want
                 );
             }
             if v > 0 {
@@ -1191,12 +1535,22 @@ mod tests {
         let mut e = PE::new(48_000.0);
         e.create(NodeId(0), Kind::PolyCtrl); // pitch per voice
         for v in 0..VOICES {
-            e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+            e.apply(Cmd::SetParam {
+                node: NodeId(0),
+                param: v as u8,
+                value: (v as f32 + 1.0) * 110.0,
+            });
         }
         e.create(NodeId(1), Kind::PolyOsc); // poly source A
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         e.create(NodeId(2), Kind::PolyMul);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
         *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(0.5);
         e.render_block();
 
@@ -1210,7 +1564,8 @@ mod tests {
                 assert!(
                     (out[i] - want).abs() < 1e-5,
                     "voice {v} sample {i}: got {}, want {} (broadcast of Input::Const(0.5))",
-                    out[i], want
+                    out[i],
+                    want
                 );
             }
             assert!(
@@ -1238,15 +1593,33 @@ mod tests {
             let mut e = PE::new(sr);
             e.create(NodeId(0), Kind::PolyCtrl); // pitch per voice
             for v in 0..VOICES {
-                e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: freq });
+                e.apply(Cmd::SetParam {
+                    node: NodeId(0),
+                    param: v as u8,
+                    value: freq,
+                });
             }
             e.create(NodeId(1), Kind::PolyOsc);
-            e.apply(Cmd::SetParam { node: NodeId(1), param: 0, value: 2.0 }); // Square
-            *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+            e.apply(Cmd::SetParam {
+                node: NodeId(1),
+                param: 0,
+                value: 2.0,
+            }); // Square
+            *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+                node: NodeId(0),
+                port: 0,
+            };
             if let Some(w) = width_const {
                 e.create(NodeId(2), Kind::Ctrl); // mono width source
-                e.apply(Cmd::SetParam { node: NodeId(2), param: 0, value: w });
-                *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+                e.apply(Cmd::SetParam {
+                    node: NodeId(2),
+                    param: 0,
+                    value: w,
+                });
+                *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Node {
+                    node: NodeId(2),
+                    port: 0,
+                };
             }
             // else: width port (1) stays unconnected, i.e. Input::Const(0.0).
             let mut out = [0.0f32; BLOCK * N_BLOCKS];
@@ -1261,15 +1634,24 @@ mod tests {
         let shifted_out = render(Some(0.2));
 
         for out in [&default_out, &shifted_out] {
-            assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2), "finite/bounded");
+            assert!(
+                out.iter().all(|s| s.is_finite() && s.abs() <= 1.2),
+                "finite/bounded"
+            );
             assert!(out.iter().any(|&s| s != 0.0), "non-silent");
         }
 
         let duty = |out: &[f32]| out.iter().filter(|&&s| s > 0.0).count() as f32 / out.len() as f32;
         let d_default = duty(&default_out);
         let d_shifted = duty(&shifted_out);
-        assert!((d_default - 0.5).abs() < 0.05, "unconnected width port ⇒ ~0.5 duty, got {d_default}");
-        assert!((d_shifted - 0.2).abs() < 0.05, "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}");
+        assert!(
+            (d_default - 0.5).abs() < 0.05,
+            "unconnected width port ⇒ ~0.5 duty, got {d_default}"
+        );
+        assert!(
+            (d_shifted - 0.2).abs() < 0.05,
+            "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}"
+        );
     }
 
     #[test]
@@ -1282,8 +1664,15 @@ mod tests {
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.0005); // fast attack
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.05);
         e.create(NodeId(1), Kind::VoiceSum);
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
-        e.apply(Cmd::GateVoice { node: NodeId(0), voice: 3, on: true });
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 3,
+            on: true,
+        });
         e.render_block();
         let out = e.node_output(NodeId(1), 0);
         // Exactly one voice ramping ⇒ sum rises toward ~1 (not 0, not ~8).
@@ -1302,27 +1691,50 @@ mod tests {
             // pitch source
             e.create(NodeId(0), Kind::PolyCtrl);
             for v in 0..VOICES {
-                e.apply(Cmd::SetParam { node: NodeId(0), param: v as u8, value: (v as f32 + 1.0) * 110.0 });
+                e.apply(Cmd::SetParam {
+                    node: NodeId(0),
+                    param: v as u8,
+                    value: (v as f32 + 1.0) * 110.0,
+                });
             }
             // osc → filter
             e.create(NodeId(1), Kind::PolyOsc);
-            *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+            *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+                node: NodeId(0),
+                port: 0,
+            };
             e.create(NodeId(2), Kind::PolySvf);
-            *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+            *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+                node: NodeId(1),
+                port: 0,
+            };
             *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(1200.0); // cutoff
-            *e.node_input_mut(NodeId(2), 2).unwrap() = Input::Const(0.2);    // res
+            *e.node_input_mut(NodeId(2), 2).unwrap() = Input::Const(0.2); // res
             // envelope + VCA
             e.create(NodeId(3), Kind::PolyAr);
             *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Const(0.0005); // attack
-            *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(0.05);   // release
+            *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(0.05); // release
             e.create(NodeId(4), Kind::PolyMul);
-            *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node { node: NodeId(2), port: 0 };
-            *e.node_input_mut(NodeId(4), 1).unwrap() = Input::Node { node: NodeId(3), port: 0 };
+            *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node {
+                node: NodeId(2),
+                port: 0,
+            };
+            *e.node_input_mut(NodeId(4), 1).unwrap() = Input::Node {
+                node: NodeId(3),
+                port: 0,
+            };
             // sum → out
             e.create(NodeId(5), Kind::VoiceSum);
-            *e.node_input_mut(NodeId(5), 0).unwrap() = Input::Node { node: NodeId(4), port: 0 };
+            *e.node_input_mut(NodeId(5), 0).unwrap() = Input::Node {
+                node: NodeId(4),
+                port: 0,
+            };
             for &g in gates {
-                e.apply(Cmd::GateVoice { node: NodeId(3), voice: g as u8, on: true });
+                e.apply(Cmd::GateVoice {
+                    node: NodeId(3),
+                    voice: g as u8,
+                    on: true,
+                });
             }
             e.render_block();
             let mono = e.node_output(NodeId(5), 0);
@@ -1337,7 +1749,10 @@ mod tests {
 
         // Gate voices 0 & 1 → non-silent, bounded/finite.
         let voiced = build(&[0, 1]);
-        assert!(voiced.iter().all(|&s| s.is_finite() && s.abs() <= 8.0), "bounded");
+        assert!(
+            voiced.iter().all(|&s| s.is_finite() && s.abs() <= 8.0),
+            "bounded"
+        );
         assert!(voiced.iter().any(|&s| s.abs() > 1e-4), "gated voices sound");
     }
 
@@ -1346,21 +1761,39 @@ mod tests {
         //     PolyMul(4, PolyAr(5)) → VoiceSum(6)
         e.create(NodeId(0), Kind::PolyCtrl);
         e.create(NodeId(1), Kind::PolyMtof);
-        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node { node: NodeId(0), port: 0 };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
         e.create(NodeId(2), Kind::PolyOsc);
-        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node { node: NodeId(1), port: 0 };
+        *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
         e.create(NodeId(3), Kind::PolySvf);
-        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node { node: NodeId(2), port: 0 };
+        *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+            node: NodeId(2),
+            port: 0,
+        };
         *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Const(2000.0);
         *e.node_input_mut(NodeId(3), 2).unwrap() = Input::Const(0.2);
         e.create(NodeId(5), Kind::PolyAr);
         *e.node_input_mut(NodeId(5), 0).unwrap() = Input::Const(0.001); // attack
         *e.node_input_mut(NodeId(5), 1).unwrap() = Input::Const(0.005); // release
         e.create(NodeId(4), Kind::PolyMul);
-        *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node { node: NodeId(3), port: 0 };
-        *e.node_input_mut(NodeId(4), 1).unwrap() = Input::Node { node: NodeId(5), port: 0 };
+        *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node {
+            node: NodeId(3),
+            port: 0,
+        };
+        *e.node_input_mut(NodeId(4), 1).unwrap() = Input::Node {
+            node: NodeId(5),
+            port: 0,
+        };
         e.create(NodeId(6), Kind::VoiceSum);
-        *e.node_input_mut(NodeId(6), 0).unwrap() = Input::Node { node: NodeId(4), port: 0 };
+        *e.node_input_mut(NodeId(6), 0).unwrap() = Input::Node {
+            node: NodeId(4),
+            port: 0,
+        };
     }
 
     #[test]
@@ -1371,18 +1804,36 @@ mod tests {
         let mut gates = [NodeId(0); crate::voice::MAX_GATES];
         gates[0] = NodeId(5);
         let mut alloc = crate::voice::VoiceAllocator::new(
-            NodeId(0), gates, 1, None, NodeId(99),
-            [NodeId(0); crate::voice::MAX_TRIGGERS], 0,
+            NodeId(0),
+            gates,
+            1,
+            None,
+            NodeId(99),
+            [NodeId(0); crate::voice::MAX_TRIGGERS],
+            0,
         );
 
-        { let mut emit = |c: Cmd| e.apply(c); alloc.note_on(69, 100, &mut emit); }
-        for _ in 0..8 { e.render_block(); } // let the fast envelope attack
+        {
+            let mut emit = |c: Cmd| e.apply(c);
+            alloc.note_on(69, 100, &mut emit);
+        }
+        for _ in 0..8 {
+            e.render_block();
+        } // let the fast envelope attack
         let out = e.node_output(NodeId(6), 0);
-        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 8.5), "bounded");
+        assert!(
+            out.iter().all(|s| s.is_finite() && s.abs() <= 8.5),
+            "bounded"
+        );
         assert!(out.iter().any(|&s| s.abs() > 1e-3), "note-on sounds");
 
-        { let mut emit = |c: Cmd| e.apply(c); alloc.note_off(69, &mut emit); }
-        for _ in 0..300 { e.render_block(); } // past the 5 ms release
+        {
+            let mut emit = |c: Cmd| e.apply(c);
+            alloc.note_off(69, &mut emit);
+        }
+        for _ in 0..300 {
+            e.render_block();
+        } // past the 5 ms release
         let out2 = e.node_output(NodeId(6), 0);
         assert!(out2.iter().all(|&s| s.abs() < 1e-4), "note-off silences");
     }
@@ -1395,8 +1846,13 @@ mod tests {
         let mut gates = [NodeId(0); crate::voice::MAX_GATES];
         gates[0] = NodeId(5);
         let mut alloc = crate::voice::VoiceAllocator::new(
-            NodeId(0), gates, 1, None, NodeId(99),
-            [NodeId(0); crate::voice::MAX_TRIGGERS], 0,
+            NodeId(0),
+            gates,
+            1,
+            None,
+            NodeId(99),
+            [NodeId(0); crate::voice::MAX_TRIGGERS],
+            0,
         );
         {
             let mut emit = |c: Cmd| e.apply(c);
@@ -1404,10 +1860,18 @@ mod tests {
                 alloc.note_on(60 + k, 100, &mut emit); // 9 notes → one steal
             }
         }
-        for _ in 0..8 { e.render_block(); }
+        for _ in 0..8 {
+            e.render_block();
+        }
         let out = e.node_output(NodeId(6), 0);
-        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 8.5), "bounded after steal");
-        assert!(out.iter().any(|&s| s.abs() > 1e-3), "still sounds after steal");
+        assert!(
+            out.iter().all(|s| s.is_finite() && s.abs() <= 8.5),
+            "bounded after steal"
+        );
+        assert!(
+            out.iter().any(|&s| s.abs() > 1e-3),
+            "still sounds after steal"
+        );
     }
 
     #[test]
@@ -1416,9 +1880,18 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
-        e.apply(Cmd::SetMasterLimit { ceiling: 0.5, release: 0.05 });
+        e.apply(Cmd::SetMasterLimit {
+            ceiling: 0.5,
+            release: 0.05,
+        });
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
@@ -1437,7 +1910,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.98);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1451,15 +1930,30 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
-        e.apply(Cmd::SetMasterLimit { ceiling: 0.5, release: 0.05 });
+        e.apply(Cmd::SetMasterLimit {
+            ceiling: 0.5,
+            release: 0.05,
+        });
         e.apply(Cmd::Reset);
         // After Reset the graph is torn down; rebuild the same patch, no limiter.
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1473,7 +1967,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5); // DC
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         e.apply(Cmd::SetMasterDcBlock { cutoff_hz: 20.0 });
         // Render several blocks so the HP settles.
@@ -1491,7 +1991,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1505,14 +2011,26 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         e.apply(Cmd::SetMasterDcBlock { cutoff_hz: 20.0 });
         e.apply(Cmd::Reset);
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1527,13 +2045,24 @@ mod tests {
             e.create(NodeId(0), Kind::Add);
             *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.2);
             *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-            e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+            e.bus_write(
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                BusId(0),
+            );
             e.set_root(BusId(0));
             if eq {
                 // Low-shelf (type 1) boost: a shelf below `freq` raises DC content,
                 // so a constant source measurably changes (a peak EQ would not
                 // touch DC). +12 dB → the 0.2 DC level climbs toward ~0.8.
-                e.apply(Cmd::SetMasterEq { freq: 1000.0, gain_db: 12.0, q: 0.707, eq_type: 1 });
+                e.apply(Cmd::SetMasterEq {
+                    freq: 1000.0,
+                    gain_db: 12.0,
+                    q: 0.707,
+                    eq_type: 1,
+                });
             }
             let mut out = [StereoFrame::default(); 16];
             let sil = [StereoFrame::default(); 16];
@@ -1544,7 +2073,12 @@ mod tests {
         };
         let off = build(false);
         let on = build(true);
-        assert!(on > off + 0.1, "low-shelf boost should raise the DC level (off={}, on={})", off, on);
+        assert!(
+            on > off + 0.1,
+            "low-shelf boost should raise the DC level (off={}, on={})",
+            off,
+            on
+        );
     }
 
     #[test]
@@ -1553,7 +2087,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1567,14 +2107,31 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
-        e.apply(Cmd::SetMasterEq { freq: 2000.0, gain_db: 12.0, q: 2.0, eq_type: 0 });
+        e.apply(Cmd::SetMasterEq {
+            freq: 2000.0,
+            gain_db: 12.0,
+            q: 2.0,
+            eq_type: 0,
+        });
         e.apply(Cmd::Reset);
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.5);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1588,18 +2145,34 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.25);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0)); // writes_len -> 1
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        ); // writes_len -> 1
         e.apply(Cmd::Free { node: NodeId(0) }); // nulls that write (hole at 0)
         // A new write should reuse the hole, not grow writes_len.
         e.create(NodeId(1), Kind::Add);
         *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Const(0.4);
         *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.4).abs() < 1e-6, "only node1's write is live: {}", out[0].l);
+        assert!(
+            (out[0].l - 0.4).abs() < 1e-6,
+            "only node1's write is live: {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -1608,13 +2181,26 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
-        e.apply(Cmd::BusGain { bus: BusId(0), gain: 0.5 });
+        e.apply(Cmd::BusGain {
+            bus: BusId(0),
+            gain: 0.5,
+        });
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.4).abs() < 1e-6, "0.8 * 0.5 = 0.4, got {}", out[0].l);
+        assert!(
+            (out[0].l - 0.4).abs() < 1e-6,
+            "0.8 * 0.5 = 0.4, got {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -1623,7 +2209,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.7);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1637,29 +2229,57 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
-        e.apply(Cmd::BusGain { bus: BusId(0), gain: 0.5 });
+        e.apply(Cmd::BusGain {
+            bus: BusId(0),
+            gain: 0.5,
+        });
         e.apply(Cmd::Reset);
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.8).abs() < 1e-6, "Reset → unity, got {}", out[0].l);
+        assert!(
+            (out[0].l - 0.8).abs() < 1e-6,
+            "Reset → unity, got {}",
+            out[0].l
+        );
     }
 
     #[test]
     fn bus_gain_out_of_range_is_noop() {
         let mut e = E::new(16.0);
-        e.apply(Cmd::BusGain { bus: BusId(99), gain: 0.5 }); // BUSES=4 → no-op, no panic
+        e.apply(Cmd::BusGain {
+            bus: BusId(99),
+            gain: 0.5,
+        }); // BUSES=4 → no-op, no panic
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.6);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1674,8 +2294,20 @@ mod tests {
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
         // node0 → busA(1) with L=0.8, R=0.2 (asymmetric, proves L→L/R→R).
-        e.bus_write_gains(Input::Node { node: NodeId(0), port: 0 }, BusId(1), 1.0, 0.25);
-        e.apply(Cmd::BusSend { from: BusId(1), to: BusId(0), gain: 0.5 });
+        e.bus_write_gains(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(1),
+            1.0,
+            0.25,
+        );
+        e.apply(Cmd::BusSend {
+            from: BusId(1),
+            to: BusId(0),
+            gain: 0.5,
+        });
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1692,14 +2324,32 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.4);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(2)); // node → bus2
-        e.apply(Cmd::BusSend { from: BusId(2), to: BusId(1), gain: 1.0 });
-        e.apply(Cmd::BusSend { from: BusId(1), to: BusId(0), gain: 1.0 });
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(2),
+        ); // node → bus2
+        e.apply(Cmd::BusSend {
+            from: BusId(2),
+            to: BusId(1),
+            gain: 1.0,
+        });
+        e.apply(Cmd::BusSend {
+            from: BusId(1),
+            to: BusId(0),
+            gain: 1.0,
+        });
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.4).abs() < 1e-6, "chain to master: {}", out[0].l);
+        assert!(
+            (out[0].l - 0.4).abs() < 1e-6,
+            "chain to master: {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -1708,7 +2358,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.7);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1722,14 +2378,32 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.6);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
-        e.apply(Cmd::BusSend { from: BusId(0), to: BusId(0), gain: 2.0 }); // self → no-op
-        e.apply(Cmd::BusSend { from: BusId(9), to: BusId(0), gain: 2.0 }); // oob → no-op
+        e.apply(Cmd::BusSend {
+            from: BusId(0),
+            to: BusId(0),
+            gain: 2.0,
+        }); // self → no-op
+        e.apply(Cmd::BusSend {
+            from: BusId(9),
+            to: BusId(0),
+            gain: 2.0,
+        }); // oob → no-op
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil); // must not panic
-        assert!((out[0].l - 0.6).abs() < 1e-6, "self/oob send no-op: {}", out[0].l);
+        assert!(
+            (out[0].l - 0.6).abs() < 1e-6,
+            "self/oob send no-op: {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -1741,14 +2415,31 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.8);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
-        e.apply(Cmd::BusGain { bus: BusId(1), gain: 0.5 });
-        e.apply(Cmd::BusSend { from: BusId(1), to: BusId(0), gain: 1.0 });
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(1),
+        );
+        e.apply(Cmd::BusGain {
+            bus: BusId(1),
+            gain: 0.5,
+        });
+        e.apply(Cmd::BusSend {
+            from: BusId(1),
+            to: BusId(0),
+            gain: 1.0,
+        });
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.4).abs() < 1e-6, "post-fader send should be 0.4, got {}", out[0].l);
+        assert!(
+            (out[0].l - 0.4).abs() < 1e-6,
+            "post-fader send should be 0.4, got {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -1758,24 +2449,44 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.25);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(1),
+        );
         // node1 = reads bus1 (Add(bus1, 0)), routed to master bus0. Note
         // `Input::Bus` sums L+R, so a 0.25 center write reads back as 0.5.
         e.create(NodeId(1), Kind::Add);
         *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Bus(BusId(1));
         *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
 
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         // Block 1: node1 reads bus1 = 0 (initial), so master ~0.
         e.render(&mut out, &sil);
-        assert!(out[0].l.abs() < 1e-6, "block1 bus read should be 0: {}", out[0].l);
+        assert!(
+            out[0].l.abs() < 1e-6,
+            "block1 bus read should be 0: {}",
+            out[0].l
+        );
         // Block 2: node1 reads bus1 = block1's write (0.25 center → L+R sum = 0.5)
         // → node1 = 0.5 → master = 0.5. Proves the one-block-late bus→node read.
         e.render(&mut out, &sil);
-        assert!((out[0].l - 0.5).abs() < 1e-6, "block2 one-block-late read: {}", out[0].l);
+        assert!(
+            (out[0].l - 0.5).abs() < 1e-6,
+            "block2 one-block-late read: {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -1788,8 +2499,20 @@ mod tests {
         e.create(NodeId(1), Kind::Add);
         *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Const(0.4);
         *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(0));
-        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(0),
+        );
+        e.bus_write(
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1804,7 +2527,13 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.9);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(1),
+        );
         e.set_root(BusId(1));
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
@@ -1814,10 +2543,20 @@ mod tests {
         e.create(NodeId(1), Kind::Add);
         *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Bus(BusId(1));
         *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(1), port: 0 }, BusId(0));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            BusId(0),
+        );
         e.set_root(BusId(0));
         e.render(&mut out, &sil);
-        assert!(out[0].l.abs() < 1e-6, "Reset must zero buses; got stale {}", out[0].l);
+        assert!(
+            out[0].l.abs() < 1e-6,
+            "Reset must zero buses; got stale {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -1827,18 +2566,41 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.3);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(1),
+        );
         e.set_root(BusId(0));
         // Route USB ch0 = bus1 left, ch1 = node0 output port 0.
-        e.apply(Cmd::SetUsbOut { channel: 0, src: OutputSrc::BusL(BusId(1)) });
-        e.apply(Cmd::SetUsbOut { channel: 1, src: OutputSrc::Node { node: NodeId(0), port: 0 } });
+        e.apply(Cmd::SetUsbOut {
+            channel: 0,
+            src: OutputSrc::BusL(BusId(1)),
+        });
+        e.apply(Cmd::SetUsbOut {
+            channel: 1,
+            src: OutputSrc::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+        });
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
         let mut usb = [[0.0f32; 16]; USB_CHANNELS];
         e.fill_usb(&mut usb);
-        assert!((usb[0][0] - 0.3).abs() < 1e-6, "ch0 = bus1 left: {}", usb[0][0]);
-        assert!((usb[1][0] - 0.3).abs() < 1e-6, "ch1 = node0 out: {}", usb[1][0]);
+        assert!(
+            (usb[0][0] - 0.3).abs() < 1e-6,
+            "ch0 = bus1 left: {}",
+            usb[0][0]
+        );
+        assert!(
+            (usb[1][0] - 0.3).abs() < 1e-6,
+            "ch1 = node0 out: {}",
+            usb[1][0]
+        );
         assert!(usb[2][0].abs() < 1e-6, "ch2 silent"); // default Silent
         assert!(usb[7][0].abs() < 1e-6, "ch7 silent");
     }
@@ -1846,7 +2608,10 @@ mod tests {
     #[test]
     fn set_usb_out_of_range_is_noop() {
         let mut e = E::new(16.0);
-        e.apply(Cmd::SetUsbOut { channel: 99, src: OutputSrc::BusL(BusId(0)) }); // no panic
+        e.apply(Cmd::SetUsbOut {
+            channel: 99,
+            src: OutputSrc::BusL(BusId(0)),
+        }); // no panic
         let mut usb = [[0.0f32; 16]; USB_CHANNELS];
         e.fill_usb(&mut usb); // no panic
         assert!(usb[0][0].abs() < 1e-6);
@@ -1855,7 +2620,13 @@ mod tests {
     #[test]
     fn usb_dangling_node_is_silent() {
         let mut e = E::new(16.0);
-        e.apply(Cmd::SetUsbOut { channel: 0, src: OutputSrc::Node { node: NodeId(50), port: 0 } });
+        e.apply(Cmd::SetUsbOut {
+            channel: 0,
+            src: OutputSrc::Node {
+                node: NodeId(50),
+                port: 0,
+            },
+        });
         let mut usb = [[0.0f32; 16]; USB_CHANNELS];
         e.fill_usb(&mut usb); // dangling node → silence, no panic
         assert!(usb[0][0].abs() < 1e-6);
@@ -1867,14 +2638,27 @@ mod tests {
         e.create(NodeId(0), Kind::Add);
         *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.3);
         *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.0);
-        e.bus_write(Input::Node { node: NodeId(0), port: 0 }, BusId(1));
-        e.apply(Cmd::SetUsbOut { channel: 0, src: OutputSrc::BusL(BusId(1)) });
+        e.bus_write(
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            BusId(1),
+        );
+        e.apply(Cmd::SetUsbOut {
+            channel: 0,
+            src: OutputSrc::BusL(BusId(1)),
+        });
         e.apply(Cmd::Reset);
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
         let mut usb = [[0.0f32; 16]; USB_CHANNELS];
         e.fill_usb(&mut usb);
-        assert!(usb[0][0].abs() < 1e-6, "Reset should clear the usb map, got {}", usb[0][0]);
+        assert!(
+            usb[0][0].abs() < 1e-6,
+            "Reset should clear the usb map, got {}",
+            usb[0][0]
+        );
     }
 }

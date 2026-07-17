@@ -69,8 +69,14 @@ mod tests {
 
     #[test]
     fn compare_is_the_cost_ratio() {
-        let a = CostReport { ns_per_block: 20.0, times_realtime: 2.0 };
-        let b = CostReport { ns_per_block: 10.0, times_realtime: 1.0 };
+        let a = CostReport {
+            ns_per_block: 20.0,
+            times_realtime: 2.0,
+        };
+        let b = CostReport {
+            ns_per_block: 10.0,
+            times_realtime: 1.0,
+        };
         assert!((compare(&a, &b) - 2.0).abs() < 1e-9); // a is 2× b
         assert!((compare(&b, &a) - 0.5).abs() < 1e-9); // b is half a
     }

@@ -125,7 +125,10 @@ pub(crate) unsafe extern "C" fn bind_class(
             };
         }
     }
-    WrenForeignClassMethods { allocate: None, finalize: None }
+    WrenForeignClassMethods {
+        allocate: None,
+        finalize: None,
+    }
 }
 
 // ── Slot value types ─────────────────────────────────────────────────────────
@@ -256,8 +259,7 @@ impl Vm {
     /// # Safety
     /// Must be called from the foreign-class `allocate` callback.
     pub unsafe fn alloc_foreign<T>(&self, value: T) {
-        let data =
-            unsafe { wrenSetSlotNewForeign(self.0, 0, 0, core::mem::size_of::<T>()) };
+        let data = unsafe { wrenSetSlotNewForeign(self.0, 0, 0, core::mem::size_of::<T>()) };
         if !data.is_null() {
             unsafe { core::ptr::write(data as *mut T, value) };
         }
@@ -274,9 +276,8 @@ impl Vm {
         self.ensure_slots(slot + 2);
         let class_slot = slot + 1;
         self.load_class(T::module_name(), T::class_name(), class_slot);
-        let data = unsafe {
-            wrenSetSlotNewForeign(self.0, slot, class_slot, core::mem::size_of::<T>())
-        };
+        let data =
+            unsafe { wrenSetSlotNewForeign(self.0, slot, class_slot, core::mem::size_of::<T>()) };
         if !data.is_null() {
             unsafe { core::ptr::write(data as *mut T, value) };
         }

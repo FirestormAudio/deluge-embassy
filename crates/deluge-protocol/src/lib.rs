@@ -140,7 +140,10 @@ impl<const N: usize> Default for FrameDecoder<N> {
 
 impl<const N: usize> FrameDecoder<N> {
     pub const fn new() -> Self {
-        Self { buf: [0; N], pos: 0 }
+        Self {
+            buf: [0; N],
+            pos: 0,
+        }
     }
 
     /// Append bytes. Returns the number actually stored (the rest, if any, is dropped
@@ -190,14 +193,30 @@ pub enum ToDeluge<'a> {
     /// 768-byte page-major OLED framebuffer ([`DISPLAY_FRAME_BYTES`]).
     UpdateDisplay(&'a [u8]),
     ClearDisplay,
-    SetPadRgb { col: u8, row: u8, rgb: [u8; 3] },
+    SetPadRgb {
+        col: u8,
+        row: u8,
+        rgb: [u8; 3],
+    },
     ClearAllPads,
-    SetLed { index: u8, on: bool },
-    SetCv { channel: u8, value: u16 },
-    SetGate { channel: u8, on: bool },
+    SetLed {
+        index: u8,
+        on: bool,
+    },
+    SetCv {
+        channel: u8,
+        value: u16,
+    },
+    SetGate {
+        channel: u8,
+        on: bool,
+    },
     /// 432-byte col-major RGB grid ([`ALL_PADS_BYTES`]).
     SetAllPads(&'a [u8]),
-    SetKnobIndicator { which: u8, levels: [u8; 4] },
+    SetKnobIndicator {
+        which: u8,
+        levels: [u8; 4],
+    },
     SetSyncedLed(bool),
     ClearAllLeds,
     SetBrightness(u8),
@@ -329,10 +348,14 @@ impl FromDeluge {
     /// Decode one message from its `type` byte + payload (no length header).
     pub fn decode(type_byte: u8, data: &[u8]) -> Option<Self> {
         Some(match type_byte {
-            from::PAD_PRESSED if data.len() >= 2 => Self::PadPressed { col: data[0], row: data[1] },
-            from::PAD_RELEASED if data.len() >= 2 => {
-                Self::PadReleased { col: data[0], row: data[1] }
-            }
+            from::PAD_PRESSED if data.len() >= 2 => Self::PadPressed {
+                col: data[0],
+                row: data[1],
+            },
+            from::PAD_RELEASED if data.len() >= 2 => Self::PadReleased {
+                col: data[0],
+                row: data[1],
+            },
             from::BUTTON_PRESSED if !data.is_empty() => Self::ButtonPressed { id: data[0] },
             from::BUTTON_RELEASED if !data.is_empty() => Self::ButtonReleased { id: data[0] },
             from::ENCODER_ROTATED if data.len() >= 2 => Self::EncoderRotated {
@@ -384,7 +407,11 @@ impl FromDeluge {
                 d[1] = delta as u8;
                 from::ENCODER_ROTATED
             }
-            Self::Version { major, minor, patch } => {
+            Self::Version {
+                major,
+                minor,
+                patch,
+            } => {
                 d = [major, minor, patch];
                 from::VERSION
             }
@@ -426,7 +453,10 @@ mod tests {
 
     #[test]
     fn to_deluge_decode_matches_encode() {
-        let m = ToDeluge::SetKnobIndicator { which: 1, levels: [1, 2, 3, 4] };
+        let m = ToDeluge::SetKnobIndicator {
+            which: 1,
+            levels: [1, 2, 3, 4],
+        };
         let f = m.to_frame();
         let mut dec = FrameDecoder::<64>::new();
         dec.push(&f);
@@ -437,7 +467,10 @@ mod tests {
 
     #[test]
     fn from_deluge_button_id_offset() {
-        let f = FromDeluge::ButtonPressed { id: cdc_button_id(0) }.to_frame();
+        let f = FromDeluge::ButtonPressed {
+            id: cdc_button_id(0),
+        }
+        .to_frame();
         assert_eq!(f, [2, 0, from::BUTTON_PRESSED, 144]);
     }
 

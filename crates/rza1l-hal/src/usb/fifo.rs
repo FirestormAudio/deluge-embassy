@@ -398,10 +398,16 @@ mod tests {
         // Bytes of the mock register in memory order (little-endian): index k is
         // CPU byte-address base+k.  src[0]→lane3, src[1]→lane2, src[2]→lane1.
         let bytes = word_store.to_le_bytes();
-        assert_eq!(bytes[3], 0xAA, "tail byte 0 must land on lane 3 (bits[31:24])");
+        assert_eq!(
+            bytes[3], 0xAA,
+            "tail byte 0 must land on lane 3 (bits[31:24])"
+        );
         assert_eq!(bytes[2], 0xBB, "tail byte 1 must land on lane 2");
         assert_eq!(bytes[1], 0xCC, "tail byte 2 must land on lane 1");
-        assert_eq!(bytes[0], 0x00, "lane 0 (bits[7:0]) is the prohibited lane, untouched");
+        assert_eq!(
+            bytes[0], 0x00,
+            "lane 0 (bits[7:0]) is the prohibited lane, untouched"
+        );
     }
 
     #[test]

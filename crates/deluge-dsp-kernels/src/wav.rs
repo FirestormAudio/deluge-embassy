@@ -11,7 +11,12 @@ pub struct WavInfo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum WavErr { BadMagic, Truncated, UnsupportedFormat, NoData }
+pub enum WavErr {
+    BadMagic,
+    Truncated,
+    UnsupportedFormat,
+    NoData,
+}
 
 /// Parse a WAV header. Returns the format + the `data` chunk's payload
 /// offset/len. Never panics: every read is bounds-checked.
@@ -20,7 +25,8 @@ pub fn parse(bytes: &[u8]) -> Result<WavInfo, WavErr> {
         b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
     }
     fn u32le(b: &[u8], o: usize) -> Option<u32> {
-        b.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+        b.get(o..o + 4)
+            .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
     }
 
     if bytes.len() < 12 {
@@ -60,12 +66,21 @@ pub fn parse(bytes: &[u8]) -> Result<WavInfo, WavErr> {
         // `.min(bytes.len())` is what prevents that from ever overflowing the
         // `pos + 8` check below — saturating_add alone is NOT sufficient on
         // 32-bit, since the saturated value can still be reached exactly.
-        pos = payload.saturating_add(size).saturating_add(size & 1).min(bytes.len());
+        pos = payload
+            .saturating_add(size)
+            .saturating_add(size & 1)
+            .min(bytes.len());
     }
 
     let (channels, sample_rate, bits) = fmt.ok_or(WavErr::UnsupportedFormat)?;
     let (data_offset, data_len) = data.ok_or(WavErr::NoData)?;
-    Ok(WavInfo { channels, sample_rate, bits, data_offset, data_len })
+    Ok(WavInfo {
+        channels,
+        sample_rate,
+        bits,
+        data_offset,
+        data_len,
+    })
 }
 
 /// Convert a chunk of little-endian 16-bit PCM `bytes` to `f32` in [-1, 1).
@@ -121,12 +136,12 @@ mod tests {
         v.extend_from_slice(b"WAVE");
         v.extend_from_slice(b"fmt ");
         v.extend_from_slice(&16u32.to_le_bytes());
-        v.extend_from_slice(&1u16.to_le_bytes());          // audio_format = PCM
+        v.extend_from_slice(&1u16.to_le_bytes()); // audio_format = PCM
         v.extend_from_slice(&channels.to_le_bytes());
         v.extend_from_slice(&rate.to_le_bytes());
         v.extend_from_slice(&byte_rate.to_le_bytes());
         v.extend_from_slice(&block_align.to_le_bytes());
-        v.extend_from_slice(&16u16.to_le_bytes());          // bits = 16
+        v.extend_from_slice(&16u16.to_le_bytes()); // bits = 16
         v.extend_from_slice(b"data");
         v.extend_from_slice(&(data.len() as u32).to_le_bytes());
         v.extend_from_slice(data);
@@ -141,7 +156,10 @@ mod tests {
         assert_eq!(info.sample_rate, 44100);
         assert_eq!(info.bits, 16);
         assert_eq!(info.data_len, 4);
-        assert_eq!(&w[info.data_offset..info.data_offset + info.data_len], &[1, 0, 2, 0]);
+        assert_eq!(
+            &w[info.data_offset..info.data_offset + info.data_len],
+            &[1, 0, 2, 0]
+        );
     }
 
     #[test]

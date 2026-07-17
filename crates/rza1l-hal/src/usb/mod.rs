@@ -138,7 +138,11 @@ pub unsafe fn module_clock_disable(port: u8) {
     unsafe {
         // Stop only this port's own channel.  Port 1 must NOT gate channel 0
         // (MSTP71): channel 0 hosts the shared PLL and may still serve port 0.
-        let bit: u8 = if port == 0 { STBCR7_MSTP71 } else { STBCR7_MSTP70 };
+        let bit: u8 = if port == 0 {
+            STBCR7_MSTP71
+        } else {
+            STBCR7_MSTP70
+        };
         let cur = core::ptr::read_volatile(STBCR7 as *const u8);
         core::ptr::write_volatile(STBCR7 as *mut u8, cur | bit);
         let _ = core::ptr::read_volatile(STBCR7 as *const u8);

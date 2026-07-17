@@ -2,9 +2,9 @@
 //! Hann-windowed grains from an in-RAM sample, note pitch transposing the grains.
 //! Scalar (per-grain gathers). `no_std`, no heap, no panic.
 
+use crate::In;
 use crate::poly::VOICES;
 use crate::sampler::hermite_read;
-use crate::In;
 
 const MAX_GRAINS: usize = 8;
 
@@ -30,9 +30,23 @@ fn xorshift32(s: &mut u32) -> u32 {
 }
 
 #[derive(Clone, Copy)]
-struct Grain { active: bool, pos: f32, rate: f32, phase: f32, phase_inc: f32 }
+struct Grain {
+    active: bool,
+    pos: f32,
+    rate: f32,
+    phase: f32,
+    phase_inc: f32,
+}
 impl Grain {
-    const fn new() -> Grain { Grain { active: false, pos: 0.0, rate: 1.0, phase: 0.0, phase_inc: 1.0 } }
+    const fn new() -> Grain {
+        Grain {
+            active: false,
+            pos: 0.0,
+            rate: 1.0,
+            phase: 0.0,
+            phase_inc: 1.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -43,30 +57,63 @@ struct GrainCloud {
     playing: bool,
     position: f32, // 0..1 fraction of the buffer
     size_ms: f32,
-    density: f32,  // grains/sec
-    spray: f32,    // 0..1 position-jitter fraction
-    root: f32,     // MIDI note played at grain rate 1.0
+    density: f32, // grains/sec
+    spray: f32,   // 0..1 position-jitter fraction
+    root: f32,    // MIDI note played at grain rate 1.0
 }
 impl GrainCloud {
     const fn new() -> GrainCloud {
         GrainCloud {
-            grains: [Grain::new(); MAX_GRAINS], rng: 1, spawn_accum: 0.0, playing: false,
-            position: 0.0, size_ms: 50.0, density: 20.0, spray: 0.0, root: 60.0,
+            grains: [Grain::new(); MAX_GRAINS],
+            rng: 1,
+            spawn_accum: 0.0,
+            playing: false,
+            position: 0.0,
+            size_ms: 50.0,
+            density: 20.0,
+            spray: 0.0,
+            root: 60.0,
         }
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct PolyGranular { voices: [GrainCloud; VOICES] }
+pub struct PolyGranular {
+    voices: [GrainCloud; VOICES],
+}
 
 impl PolyGranular {
-    pub fn new() -> PolyGranular { PolyGranular { voices: [GrainCloud::new(); VOICES] } }
+    pub fn new() -> PolyGranular {
+        PolyGranular {
+            voices: [GrainCloud::new(); VOICES],
+        }
+    }
 
-    pub fn set_root(&mut self, note: f32) { for c in &mut self.voices { c.root = note; } }
-    pub fn set_position(&mut self, p: f32) { for c in &mut self.voices { c.position = p; } }
-    pub fn set_size(&mut self, ms: f32) { for c in &mut self.voices { c.size_ms = ms; } }
-    pub fn set_density(&mut self, d: f32) { for c in &mut self.voices { c.density = d; } }
-    pub fn set_spray(&mut self, s: f32) { for c in &mut self.voices { c.spray = s; } }
+    pub fn set_root(&mut self, note: f32) {
+        for c in &mut self.voices {
+            c.root = note;
+        }
+    }
+    pub fn set_position(&mut self, p: f32) {
+        for c in &mut self.voices {
+            c.position = p;
+        }
+    }
+    pub fn set_size(&mut self, ms: f32) {
+        for c in &mut self.voices {
+            c.size_ms = ms;
+        }
+    }
+    pub fn set_density(&mut self, d: f32) {
+        for c in &mut self.voices {
+            c.density = d;
+        }
+    }
+    pub fn set_spray(&mut self, s: f32) {
+        for c in &mut self.voices {
+            c.spray = s;
+        }
+    }
 
     /// (Re)start voice `v`'s cloud: clear grains, reseed the (decorrelated) RNG.
     ///
@@ -88,13 +135,17 @@ impl PolyGranular {
 
     pub fn process_voice(&mut self, v: usize, pcm: &[f32], hz: In, dt: f32, out: &mut [f32]) {
         if v >= VOICES {
-            for o in out.iter_mut() { *o = 0.0; }
+            for o in out.iter_mut() {
+                *o = 0.0;
+            }
             return;
         }
         let len = pcm.len();
         let c = &mut self.voices[v];
         if !c.playing || len == 0 {
-            for o in out.iter_mut() { *o = 0.0; }
+            for o in out.iter_mut() {
+                *o = 0.0;
+            }
             return;
         }
         let flen = len as f32;
@@ -103,9 +154,21 @@ impl PolyGranular {
         // non-NaN operand), but `.clamp()` alone lets a NaN operand pass through
         // unchanged, so spray/position/size/root need an explicit finite check.
         let density = c.density.max(0.0);
-        let spray = if c.spray.is_finite() { c.spray.clamp(0.0, 1.0) } else { 0.0 };
-        let position = if c.position.is_finite() { c.position } else { 0.0 };
-        let size_ms = if c.size_ms.is_finite() { c.size_ms } else { 0.1 };
+        let spray = if c.spray.is_finite() {
+            c.spray.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let position = if c.position.is_finite() {
+            c.position
+        } else {
+            0.0
+        };
+        let size_ms = if c.size_ms.is_finite() {
+            c.size_ms
+        } else {
+            0.1
+        };
         let root = if c.root.is_finite() { c.root } else { 60.0 };
         let size_s = (size_ms.max(0.1)) / 1000.0;
         let root_hz = 440.0 * libm::exp2f((root - 69.0) / 12.0);
@@ -120,7 +183,15 @@ impl PolyGranular {
                     .clamp(0.0, (flen - 1.0).max(0.0));
                 let size_samples = (size_s / dt).max(2.0);
                 match c.grains.iter_mut().find(|g| !g.active) {
-                    Some(g) => *g = Grain { active: true, pos: start, rate, phase: 0.0, phase_inc: 1.0 / size_samples },
+                    Some(g) => {
+                        *g = Grain {
+                            active: true,
+                            pos: start,
+                            rate,
+                            phase: 0.0,
+                            phase_inc: 1.0 / size_samples,
+                        }
+                    }
                     // All MAX_GRAINS busy — no free slot can appear later in this
                     // pass (grains only free up in the mix loop below, which runs
                     // after scheduling), so further iterations are guaranteed
@@ -128,23 +199,34 @@ impl PolyGranular {
                     // times (unbounded on a bad/unclamped density value). Cap the
                     // leftover backlog so a burst of pathological density doesn't
                     // keep firing grains at max rate after density drops back down.
-                    None => { c.spawn_accum = c.spawn_accum.min(1.0); break; }
+                    None => {
+                        c.spawn_accum = c.spawn_accum.min(1.0);
+                        break;
+                    }
                 }
             }
             // mix + advance active grains
             let mut sum = 0.0f32;
             for g in c.grains.iter_mut() {
-                if !g.active { continue; }
+                if !g.active {
+                    continue;
+                }
                 sum += hann(g.phase) * hermite_read(pcm, g.pos, 0, len as isize, false);
                 g.pos += g.rate;
                 g.phase += g.phase_inc;
-                if g.phase >= 1.0 { g.active = false; }
+                if g.phase >= 1.0 {
+                    g.active = false;
+                }
             }
             *o = sum;
         }
     }
 }
-impl Default for PolyGranular { fn default() -> Self { PolyGranular::new() } }
+impl Default for PolyGranular {
+    fn default() -> Self {
+        PolyGranular::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -152,7 +234,9 @@ mod tests {
     use super::*;
     use crate::In;
 
-    fn ramp(n: usize) -> std::vec::Vec<f32> { (0..n).map(|i| i as f32).collect() }
+    fn ramp(n: usize) -> std::vec::Vec<f32> {
+        (0..n).map(|i| i as f32).collect()
+    }
 
     #[test]
     fn density_zero_is_silent() {
@@ -175,15 +259,18 @@ mod tests {
         g.trigger_voice(0);
         let mut out = [0.0f32; 256];
         g.process_voice(0, &pcm, In::K(261.6256), 1.0 / 48000.0, &mut out);
-        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 5000.0), "finite/bounded");
+        assert!(
+            out.iter().all(|s| s.is_finite() && s.abs() <= 5000.0),
+            "finite/bounded"
+        );
         assert!(out.iter().any(|&s| s != 0.0), "cloud sounds");
     }
 
     #[test]
     fn hann_window_shape() {
-        assert!((hann(0.0)).abs() < 1e-6);           // fades in from 0
-        assert!((hann(0.5) - 1.0).abs() < 1e-6);      // peak at center
-        assert!((hann(1.0)).abs() < 1e-6);            // fades to 0
+        assert!((hann(0.0)).abs() < 1e-6); // fades in from 0
+        assert!((hann(0.5) - 1.0).abs() < 1e-6); // peak at center
+        assert!((hann(1.0)).abs() < 1e-6); // fades to 0
     }
 
     #[test]
@@ -193,10 +280,13 @@ mod tests {
         let pcm = ramp(2000);
         let run = || {
             let mut g = PolyGranular::new();
-            g.set_position(0.5); g.set_size(10.0); g.set_density(200.0); g.set_spray(0.0);
+            g.set_position(0.5);
+            g.set_size(10.0);
+            g.set_density(200.0);
+            g.set_spray(0.0);
             g.trigger_voice(0);
             let mut out = [0.0f32; 128];
-            g.process_voice(0, &pcm, In::K(261.6256), 1.0/48000.0, &mut out);
+            g.process_voice(0, &pcm, In::K(261.6256), 1.0 / 48000.0, &mut out);
             out
         };
         assert_eq!(run(), run(), "spray=0 is deterministic");
@@ -209,16 +299,23 @@ mod tests {
         let pcm = ramp(4000);
         let render = |hz: f32| {
             let mut g = PolyGranular::new();
-            g.set_position(0.1); g.set_size(30.0); g.set_density(100.0);
+            g.set_position(0.1);
+            g.set_size(30.0);
+            g.set_density(100.0);
             g.trigger_voice(0);
             let mut out = [0.0f32; 128];
-            g.process_voice(0, &pcm, In::K(hz), 1.0/48000.0, &mut out);
+            g.process_voice(0, &pcm, In::K(hz), 1.0 / 48000.0, &mut out);
             out
         };
-        let root = render(261.6256);   // note 60
+        let root = render(261.6256); // note 60
         let octave = render(523.2512); // note 72 → rate 2
         assert!(octave.iter().any(|&s| s != 0.0));
-        assert!(root.iter().zip(octave.iter()).any(|(a, b)| (a - b).abs() > 1e-4), "pitch changes the cloud");
+        assert!(
+            root.iter()
+                .zip(octave.iter())
+                .any(|(a, b)| (a - b).abs() > 1e-4),
+            "pitch changes the cloud"
+        );
     }
 
     #[test]
@@ -227,10 +324,12 @@ mod tests {
         g.trigger_voice(0);
         let mut out = [0.0f32; 32];
         let empty: [f32; 0] = [];
-        g.process_voice(0, &empty, In::K(440.0), 1.0/48000.0, &mut out); // empty buffer
-        g.set_density(1e9); g.set_size(-5.0); g.set_spray(9.0);
-        g.process_voice(0, &ramp(10), In::K(440.0), 1.0/48000.0, &mut out); // absurd params, tiny buffer
-        g.process_voice(99, &ramp(10), In::K(440.0), 1.0/48000.0, &mut out); // out-of-range voice
+        g.process_voice(0, &empty, In::K(440.0), 1.0 / 48000.0, &mut out); // empty buffer
+        g.set_density(1e9);
+        g.set_size(-5.0);
+        g.set_spray(9.0);
+        g.process_voice(0, &ramp(10), In::K(440.0), 1.0 / 48000.0, &mut out); // absurd params, tiny buffer
+        g.process_voice(99, &ramp(10), In::K(440.0), 1.0 / 48000.0, &mut out); // out-of-range voice
         assert!(out.iter().all(|s| s.is_finite()));
     }
 
@@ -247,7 +346,10 @@ mod tests {
         g.trigger_voice(0);
         let mut out = [0.0f32; 64];
         g.process_voice(0, &pcm, In::K(261.6256), 1.0 / 48000.0, &mut out);
-        assert!(out.iter().all(|s| s.is_finite()), "NaN/Inf params must not taint output");
+        assert!(
+            out.iter().all(|s| s.is_finite()),
+            "NaN/Inf params must not taint output"
+        );
     }
 
     #[test]

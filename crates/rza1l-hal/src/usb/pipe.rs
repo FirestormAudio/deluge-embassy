@@ -21,13 +21,12 @@ use super::fifo::{
     fifo_select_recv, hw_to_sw_fifo, sw_to_hw_fifo,
 };
 use super::regs::{
-    FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT, PIPECFG_CNTMD,
-    PIPECFG_DBLB,
-    PIPECFG_DIR, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR,
-    PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
-    PIPECTR_PID_NAK, PIPECTR_PID_STALL10, PIPECTR_PID_STALL11, PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK,
-    PIPEPERI_IFIS,
-    PKT_BUF_BLOCKS, Rusb1Regs, pipectr_ptr, rd, wr,
+    FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT,
+    PIPECFG_CNTMD, PIPECFG_DBLB, PIPECFG_DIR, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK,
+    PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_PBUSY,
+    PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_PID_STALL10, PIPECTR_PID_STALL11,
+    PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK, PIPEPERI_IFIS, PKT_BUF_BLOCKS, Rusb1Regs, pipectr_ptr, rd,
+    wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -136,7 +135,11 @@ static mut ISO_IN_BUF: [u8; ISO_DRAIN_LEN] = [0; ISO_DRAIN_LEN];
 ///
 /// # Safety
 /// Call from task context before the pipe is enabled.  Not interrupt-safe.
-pub unsafe fn register_iso_in_hook(pipe: usize, mps: usize, cb: unsafe fn(*mut u8, usize) -> usize) {
+pub unsafe fn register_iso_in_hook(
+    pipe: usize,
+    mps: usize,
+    cb: unsafe fn(*mut u8, usize) -> usize,
+) {
     unsafe {
         core::ptr::addr_of_mut!(ISO_IN_HOOK_PIPE).write(pipe);
         core::ptr::addr_of_mut!(ISO_IN_HOOK_MPS).write(mps);
@@ -194,7 +197,9 @@ pub unsafe fn pipe_xfer_in_brdy(regs: *mut Rusb1Regs, n: usize) {
         let Some(hook) = core::ptr::addr_of!(ISO_IN_HOOK).read() else {
             return;
         };
-        let mps = core::ptr::addr_of!(ISO_IN_HOOK_MPS).read().min(ISO_DRAIN_LEN);
+        let mps = core::ptr::addr_of!(ISO_IN_HOOK_MPS)
+            .read()
+            .min(ISO_DRAIN_LEN);
         let fifo = fifo_for_pipe(regs, n);
         fifo_select_pipe(&fifo, n, true); // ISEL=1 for IN (ignored on DnFIFO)
         if !fifo_is_ready(&fifo, n) {

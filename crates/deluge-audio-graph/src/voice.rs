@@ -3,8 +3,8 @@
 //! `GateVoice` on a `PolyAr`). Oldest-LRU voice stealing. Control-plane only —
 //! no audio, no heap, no panics.
 
-use crate::cmd::Cmd;
 use crate::NodeId;
+use crate::cmd::Cmd;
 use deluge_dsp_kernels::poly::VOICES;
 
 /// MIDI note of the `PolyMtof` reference (A4 = 440 Hz). The allocator writes
@@ -23,7 +23,9 @@ pub const MAX_TRIGGERS: usize = 4;
 /// Semitone offset for unison voice `u` of `count`, spread symmetrically and
 /// evenly over ±`detune_cents`. `count <= 1` ⇒ 0.0 (no detune).
 fn unison_offset(u: usize, count: usize, detune_cents: f32) -> f32 {
-    if count <= 1 { return 0.0; }
+    if count <= 1 {
+        return 0.0;
+    }
     let t = -1.0 + 2.0 * (u as f32) / ((count - 1) as f32); // -1..+1
     t * detune_cents / 100.0
 }
@@ -32,7 +34,9 @@ fn unison_offset(u: usize, count: usize, detune_cents: f32) -> f32 {
 /// over ±`amount` of the stereo field. `count <= 1` ⇒ 0.0 (center). Result ∈
 /// [-1.0, +1.0]: -1 = hard left, 0 = center, +1 = hard right.
 fn width_offset(u: usize, count: usize, amount: f32) -> f32 {
-    if count <= 1 { return 0.0; }
+    if count <= 1 {
+        return 0.0;
+    }
     let t = -1.0 + 2.0 * (u as f32) / ((count - 1) as f32); // -1..+1
     t * amount
 }
@@ -46,10 +50,10 @@ enum LaneState {
 }
 
 pub struct VoiceAllocator {
-    pitch_node: NodeId,           // a PolyCtrl: SetParam(pitch_node, lane, note - 69)
-    gates: [NodeId; MAX_GATES],   // PolyAr/PolyAdsr nodes: GateVoice(gates[i], lane, on/off)
-    n_gates: usize,                // number of valid entries in `gates`
-    vel_node: Option<NodeId>, // a PolyCtrl carrying per-voice velocity, or None
+    pitch_node: NodeId,         // a PolyCtrl: SetParam(pitch_node, lane, note - 69)
+    gates: [NodeId; MAX_GATES], // PolyAr/PolyAdsr nodes: GateVoice(gates[i], lane, on/off)
+    n_gates: usize,             // number of valid entries in `gates`
+    vel_node: Option<NodeId>,   // a PolyCtrl carrying per-voice velocity, or None
     sum_node: NodeId, // a StereoVoiceSum: SetParam(sum_node, lane+1, pan) when width_amount != 0.0
     lane_state: [LaneState; VOICES],
     lane_age: [u32; VOICES],
@@ -59,7 +63,7 @@ pub struct VoiceAllocator {
     width_amount: f32,
     lane_ctx: [(u8, u8); VOICES], // (u-index, group size U) for each Held lane
     triggers: [NodeId; MAX_TRIGGERS], // pooled sample sources: TriggerVoice(triggers[i], lane)
-    n_triggers: usize,                // number of valid entries in `triggers`
+    n_triggers: usize,            // number of valid entries in `triggers`
 }
 
 impl VoiceAllocator {
@@ -90,7 +94,9 @@ impl VoiceAllocator {
         }
     }
 
-    pub fn set_unison(&mut self, n: usize) { self.unison = n.clamp(1, VOICES); }
+    pub fn set_unison(&mut self, n: usize) {
+        self.unison = n.clamp(1, VOICES);
+    }
 
     /// Update the detune spread. Re-emits pitch `SetParam`s for every currently
     /// `Held` lane so a sounding note's unison spread moves live (Sy-6b).
@@ -99,9 +105,13 @@ impl VoiceAllocator {
         for lane in 0..VOICES {
             if let LaneState::Held(note) = self.lane_state[lane] {
                 let (u, count) = self.lane_ctx[lane];
-                let value = note as f32 - A440_NOTE
-                    + unison_offset(u as usize, count as usize, cents);
-                emit(Cmd::SetParam { node: self.pitch_node, param: lane as u8, value });
+                let value =
+                    note as f32 - A440_NOTE + unison_offset(u as usize, count as usize, cents);
+                emit(Cmd::SetParam {
+                    node: self.pitch_node,
+                    param: lane as u8,
+                    value,
+                });
             }
         }
     }
@@ -127,14 +137,21 @@ impl VoiceAllocator {
     /// Fan a gate transition out to every configured envelope, preserving order.
     fn gate_all(&self, lane: usize, on: bool, emit: &mut impl FnMut(Cmd)) {
         for g in &self.gates[..self.n_gates] {
-            emit(Cmd::GateVoice { node: *g, voice: lane as u8, on });
+            emit(Cmd::GateVoice {
+                node: *g,
+                voice: lane as u8,
+                on,
+            });
         }
     }
 
     /// Fan a per-lane retrigger out to every configured pooled sample source.
     fn trigger_all(&self, lane: usize, emit: &mut impl FnMut(Cmd)) {
         for t in &self.triggers[..self.n_triggers] {
-            emit(Cmd::TriggerVoice { node: *t, voice: lane as u8 });
+            emit(Cmd::TriggerVoice {
+                node: *t,
+                voice: lane as u8,
+            });
         }
     }
 
@@ -180,9 +197,17 @@ impl VoiceAllocator {
             self.lane_age[lane] = self.clock;
             self.clock = self.clock.wrapping_add(1);
             let value = note as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
-            emit(Cmd::SetParam { node: self.pitch_node, param: lane as u8, value });
+            emit(Cmd::SetParam {
+                node: self.pitch_node,
+                param: lane as u8,
+                value,
+            });
             if let Some(vn) = self.vel_node {
-                emit(Cmd::SetParam { node: vn, param: lane as u8, value: vel as f32 / 127.0 });
+                emit(Cmd::SetParam {
+                    node: vn,
+                    param: lane as u8,
+                    value: vel as f32 / 127.0,
+                });
             }
             if self.width_amount != 0.0 {
                 emit(Cmd::SetParam {
@@ -241,7 +266,7 @@ pub struct MonoAllocator {
     width_amount: f32,
     mono_active_u: usize, // the sounding note's U-at-play (unison is next-note)
     triggers: [NodeId; MAX_TRIGGERS], // pooled sample sources: TriggerVoice(triggers[i], lane)
-    n_triggers: usize,                // number of valid entries in `triggers`
+    n_triggers: usize,    // number of valid entries in `triggers`
 }
 
 impl MonoAllocator {
@@ -273,9 +298,13 @@ impl MonoAllocator {
         }
     }
 
-    pub fn slew_node(&self) -> NodeId { self.slew_node }
+    pub fn slew_node(&self) -> NodeId {
+        self.slew_node
+    }
 
-    pub fn set_unison(&mut self, n: usize) { self.unison = n.clamp(1, VOICES); }
+    pub fn set_unison(&mut self, n: usize) {
+        self.unison = n.clamp(1, VOICES);
+    }
 
     pub fn set_detune(&mut self, cents: f32, emit: &mut impl FnMut(Cmd)) {
         self.detune_cents = cents;
@@ -284,7 +313,11 @@ impl MonoAllocator {
             let u_count = self.mono_active_u;
             for u in 0..u_count {
                 let value = top as f32 - A440_NOTE + unison_offset(u, u_count, cents);
-                emit(Cmd::SetParam { node: self.pitch_node, param: u as u8, value });
+                emit(Cmd::SetParam {
+                    node: self.pitch_node,
+                    param: u as u8,
+                    value,
+                });
             }
         }
     }
@@ -306,23 +339,35 @@ impl MonoAllocator {
     /// Fan a gate transition out to every configured envelope (mono lane is always 0).
     fn gate_all(&self, lane: usize, on: bool, emit: &mut impl FnMut(Cmd)) {
         for g in &self.gates[..self.n_gates] {
-            emit(Cmd::GateVoice { node: *g, voice: lane as u8, on });
+            emit(Cmd::GateVoice {
+                node: *g,
+                voice: lane as u8,
+                on,
+            });
         }
     }
 
     /// Fan a per-lane retrigger out to every configured pooled sample source.
     fn trigger_all(&self, lane: usize, emit: &mut impl FnMut(Cmd)) {
         for t in &self.triggers[..self.n_triggers] {
-            emit(Cmd::TriggerVoice { node: *t, voice: lane as u8 });
+            emit(Cmd::TriggerVoice {
+                node: *t,
+                voice: lane as u8,
+            });
         }
     }
 
     pub fn note_on(&mut self, note: u8, vel: u8, emit: &mut impl FnMut(Cmd)) {
-        if vel == 0 { self.note_off(note, emit); return; }
+        if vel == 0 {
+            self.note_off(note, emit);
+            return;
+        }
         let from_silence = self.len == 0;
         // push (drop oldest if full)
         if self.len == MONO_STACK {
-            for i in 1..MONO_STACK { self.notes[i - 1] = self.notes[i]; }
+            for i in 1..MONO_STACK {
+                self.notes[i - 1] = self.notes[i];
+            }
             self.len -= 1;
         }
         self.notes[self.len] = note;
@@ -332,9 +377,17 @@ impl MonoAllocator {
         for u in 0..u_count {
             // pitch (always) → PolySlew glides toward it (or snaps, below)
             let value = note as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
-            emit(Cmd::SetParam { node: self.pitch_node, param: u as u8, value });
+            emit(Cmd::SetParam {
+                node: self.pitch_node,
+                param: u as u8,
+                value,
+            });
             if let Some(vn) = self.vel_node {
-                emit(Cmd::SetParam { node: vn, param: u as u8, value: vel as f32 / 127.0 });
+                emit(Cmd::SetParam {
+                    node: vn,
+                    param: u as u8,
+                    value: vel as f32 / 127.0,
+                });
             }
             if self.width_amount != 0.0 {
                 emit(Cmd::SetParam {
@@ -344,8 +397,11 @@ impl MonoAllocator {
                 });
             }
             if from_silence {
-                emit(Cmd::TriggerVoice { node: self.slew_node, voice: u as u8 }); // snap the glide
-                self.gate_all(u, true, emit);                                    // attack
+                emit(Cmd::TriggerVoice {
+                    node: self.slew_node,
+                    voice: u as u8,
+                }); // snap the glide
+                self.gate_all(u, true, emit); // attack
                 self.trigger_all(u, emit); // retrigger any pooled sample sources
             }
             // legato (else): no snap, no re-gate — true legato
@@ -355,20 +411,35 @@ impl MonoAllocator {
     pub fn note_off(&mut self, note: u8, emit: &mut impl FnMut(Cmd)) {
         // find first match
         let mut idx = None;
-        for i in 0..self.len { if self.notes[i] == note { idx = Some(i); break; } }
-        let Some(i) = idx else { return; }; // unheld → no-op
+        for i in 0..self.len {
+            if self.notes[i] == note {
+                idx = Some(i);
+                break;
+            }
+        }
+        let Some(i) = idx else {
+            return;
+        }; // unheld → no-op
         let was_top = i == self.len - 1;
         // remove (shift down)
-        for j in (i + 1)..self.len { self.notes[j - 1] = self.notes[j]; }
+        for j in (i + 1)..self.len {
+            self.notes[j - 1] = self.notes[j];
+        }
         self.len -= 1;
         let u_count = self.unison.min(VOICES);
         if self.len == 0 {
-            for u in 0..u_count { self.gate_all(u, false, emit); } // release
+            for u in 0..u_count {
+                self.gate_all(u, false, emit);
+            } // release
         } else if was_top {
             let top = self.notes[self.len - 1];
             for u in 0..u_count {
                 let value = top as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
-                emit(Cmd::SetParam { node: self.pitch_node, param: u as u8, value }); // glide back
+                emit(Cmd::SetParam {
+                    node: self.pitch_node,
+                    param: u as u8,
+                    value,
+                }); // glide back
             }
         }
         // removing a non-top held note → stack-only, no sound change
@@ -377,7 +448,9 @@ impl MonoAllocator {
     pub fn all_notes_off(&mut self, emit: &mut impl FnMut(Cmd)) {
         if self.len > 0 {
             let u_count = self.unison.min(VOICES);
-            for u in 0..u_count { self.gate_all(u, false, emit); }
+            for u in 0..u_count {
+                self.gate_all(u, false, emit);
+            }
         }
         self.len = 0;
     }
@@ -399,14 +472,27 @@ mod tests {
     fn mk() -> VoiceAllocator {
         let mut g = [NodeId(0); MAX_GATES];
         g[0] = NodeId(20);
-        VoiceAllocator::new(NodeId(10), g, 1, None, NodeId(30), [NodeId(0); MAX_TRIGGERS], 0)
+        VoiceAllocator::new(
+            NodeId(10),
+            g,
+            1,
+            None,
+            NodeId(30),
+            [NodeId(0); MAX_TRIGGERS],
+            0,
+        )
     }
 
     // 1-gate VoiceAllocator for unison tests: pitch=NodeId(10), gate=NodeId(20), no vel node.
-    fn mk_poly() -> VoiceAllocator { mk() }
+    fn mk_poly() -> VoiceAllocator {
+        mk()
+    }
 
     // mk_poly, but with a registered trigger list (for source-retrigger tests).
-    fn mk_poly_with_triggers(triggers: [NodeId; MAX_TRIGGERS], n_triggers: usize) -> VoiceAllocator {
+    fn mk_poly_with_triggers(
+        triggers: [NodeId; MAX_TRIGGERS],
+        n_triggers: usize,
+    ) -> VoiceAllocator {
         let mut g = [NodeId(0); MAX_GATES];
         g[0] = NodeId(20);
         VoiceAllocator::new(NodeId(10), g, 1, None, NodeId(30), triggers, n_triggers)
@@ -416,7 +502,16 @@ mod tests {
     // sum=NodeId(40), no vel node.
     fn mk_mono() -> MonoAllocator {
         let (g, n) = one_gate(30);
-        MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(40), [NodeId(0); MAX_TRIGGERS], 0)
+        MonoAllocator::new(
+            NodeId(10),
+            NodeId(20),
+            g,
+            n,
+            None,
+            NodeId(40),
+            [NodeId(0); MAX_TRIGGERS],
+            0,
+        )
     }
 
     // Capture the Cmds emitted by one note event.
@@ -458,13 +553,26 @@ mod tests {
     #[test]
     fn poly_note_on_fans_trigger_to_registered_sources() {
         // allocator with a sample trigger node = NodeId(50).
-        let mut trig = [NodeId(0); MAX_TRIGGERS]; trig[0] = NodeId(50);
+        let mut trig = [NodeId(0); MAX_TRIGGERS];
+        trig[0] = NodeId(50);
         let mut a = mk_poly_with_triggers(trig, 1); // helper: mk_poly + triggers
         let c = on(&mut a, 69, 100);
         // one TriggerVoice to NodeId(50) on the allocated lane.
-        let trigs: std::vec::Vec<u8> = c.iter().filter_map(|cmd| match cmd {
-            Cmd::TriggerVoice { node: NodeId(50), voice } => Some(*voice), _ => None }).collect();
-        assert_eq!(trigs.len(), 1, "fans one TriggerVoice to the registered source");
+        let trigs: std::vec::Vec<u8> = c
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::TriggerVoice {
+                    node: NodeId(50),
+                    voice,
+                } => Some(*voice),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            trigs.len(),
+            1,
+            "fans one TriggerVoice to the registered source"
+        );
     }
 
     #[test]
@@ -472,12 +580,28 @@ mod tests {
         // no registered triggers → note_on emits NO TriggerVoice (unchanged Cmd stream).
         let mut a = mk_poly(); // existing helper, 0 triggers
         let c = on(&mut a, 69, 100);
-        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::TriggerVoice { .. })).count(), 0);
+        assert_eq!(
+            c.iter()
+                .filter(|cmd| matches!(cmd, Cmd::TriggerVoice { .. }))
+                .count(),
+            0
+        );
     }
 
     #[test]
     fn note_on_emits_pitch_and_gate_on_lane_0() {
-        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(20);
+            VoiceAllocator::new(
+                NodeId(10),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let c = on(&mut a, 69, 100); // A4 → semitone 0
         assert_eq!(c.len(), 2);
         match c[0] {
@@ -500,7 +624,18 @@ mod tests {
 
     #[test]
     fn eight_notes_fill_lanes_then_ninth_steals_oldest() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(1);
+            VoiceAllocator::new(
+                NodeId(0),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         for k in 0..VOICES {
             let c = on(&mut a, 60 + k as u8, 100);
             match c[0] {
@@ -517,17 +652,42 @@ mod tests {
             }
             _ => panic!(),
         }
-        assert!(matches!(c[1], Cmd::GateVoice { voice: 0, on: true, .. }));
+        assert!(matches!(
+            c[1],
+            Cmd::GateVoice {
+                voice: 0,
+                on: true,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn note_off_releases_the_right_lane_and_frees_it() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(1);
+            VoiceAllocator::new(
+                NodeId(0),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         on(&mut a, 60, 100); // lane 0
         on(&mut a, 64, 100); // lane 1
         let c = off(&mut a, 60);
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0], Cmd::GateVoice { voice: 0, on: false, .. }));
+        assert!(matches!(
+            c[0],
+            Cmd::GateVoice {
+                voice: 0,
+                on: false,
+                ..
+            }
+        ));
         // Lane 0 is Releasing (tail protected), not free → next note-on takes
         // a FREE lane (2; lanes 0 and 1 were used) instead of reusing lane 0.
         let c2 = on(&mut a, 67, 100);
@@ -541,7 +701,9 @@ mod tests {
         off(&mut a, 60); // lane 0 → Releasing (tail ringing)
         let c = on(&mut a, 64, 100); // B → should take a FREE lane (1), NOT reuse lane 0
         match c[0] {
-            Cmd::SetParam { param, .. } => assert_eq!(param, 1, "new note protects lane 0's tail → lane 1"),
+            Cmd::SetParam { param, .. } => {
+                assert_eq!(param, 1, "new note protects lane 0's tail → lane 1")
+            }
             _ => panic!("expected pitch SetParam"),
         }
     }
@@ -579,7 +741,14 @@ mod tests {
             Cmd::SetParam { param, .. } => assert_eq!(param, 0, "steal oldest held"),
             _ => panic!(),
         }
-        assert!(c.iter().any(|cmd| matches!(cmd, Cmd::GateVoice { voice: 0, on: true, .. })));
+        assert!(c.iter().any(|cmd| matches!(
+            cmd,
+            Cmd::GateVoice {
+                voice: 0,
+                on: true,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -594,7 +763,14 @@ mod tests {
         let c = on(&mut a, 90, 100); // only lane 0 is Releasing (rest Held) → reuse lane 0, re-attack
         assert!(matches!(c[0], Cmd::SetParam { param: 0, .. }));
         assert!(
-            c.iter().any(|cmd| matches!(cmd, Cmd::GateVoice { voice: 0, on: true, .. })),
+            c.iter().any(|cmd| matches!(
+                cmd,
+                Cmd::GateVoice {
+                    voice: 0,
+                    on: true,
+                    ..
+                }
+            )),
             "re-gate on reuse"
         );
     }
@@ -610,35 +786,80 @@ mod tests {
             a.all_notes_off(&mut e);
         }
         assert_eq!(c.len(), 2); // gate-off for the two held lanes
-        assert!(c.iter().all(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. })));
+        assert!(
+            c.iter()
+                .all(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. }))
+        );
         // after all-notes-off, the two lanes are Releasing (occupied), so a new note
         // still prefers the remaining Free lanes:
         let c2 = on(&mut a, 67, 100);
         match c2[0] {
-            Cmd::SetParam { param, .. } => assert!(param >= 2, "new note avoids the two releasing lanes"),
+            Cmd::SetParam { param, .. } => {
+                assert!(param >= 2, "new note avoids the two releasing lanes")
+            }
             _ => panic!(),
         }
     }
 
     #[test]
     fn note_on_velocity_zero_is_note_off() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(1);
+            VoiceAllocator::new(
+                NodeId(0),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         on(&mut a, 60, 100); // lane 0 held
         let c = on(&mut a, 60, 0); // vel 0 → note-off
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0], Cmd::GateVoice { voice: 0, on: false, .. }));
+        assert!(matches!(
+            c[0],
+            Cmd::GateVoice {
+                voice: 0,
+                on: false,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn note_off_for_unheld_note_is_noop() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(1);
+            VoiceAllocator::new(
+                NodeId(0),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let c = off(&mut a, 60);
         assert!(c.is_empty());
     }
 
     #[test]
     fn all_notes_off_releases_every_held_lane() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(1);
+            VoiceAllocator::new(
+                NodeId(0),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         on(&mut a, 60, 100);
         on(&mut a, 64, 100);
         let mut c: Vec<Cmd> = Vec::new();
@@ -647,12 +868,26 @@ mod tests {
             a.all_notes_off(&mut e);
         }
         assert_eq!(c.len(), 2);
-        assert!(c.iter().all(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. })));
+        assert!(
+            c.iter()
+                .all(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. }))
+        );
     }
 
     #[test]
     fn note_on_emits_velocity_when_vel_node_present() {
-        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, Some(NodeId(30)), NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(20);
+            VoiceAllocator::new(
+                NodeId(10),
+                g,
+                n,
+                Some(NodeId(30)),
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let c = on(&mut a, 69, 100); // A4, vel 100
         assert_eq!(c.len(), 3, "pitch + velocity + gate");
         // c[0] = pitch SetParam(node 10), c[1] = velocity SetParam(node 30), c[2] = GateVoice(node 20)
@@ -664,75 +899,220 @@ mod tests {
             }
             _ => panic!("expected velocity SetParam at index 1"),
         }
-        assert!(matches!(c[2], Cmd::GateVoice { node: NodeId(20), voice: 0, on: true }));
+        assert!(matches!(
+            c[2],
+            Cmd::GateVoice {
+                node: NodeId(20),
+                voice: 0,
+                on: true
+            }
+        ));
     }
 
     #[test]
     fn note_on_no_velocity_node_emits_two_cmds() {
-        let mut a = { let (g, n) = one_gate(20); VoiceAllocator::new(NodeId(10), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(20);
+            VoiceAllocator::new(
+                NodeId(10),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let c = on(&mut a, 69, 100);
         assert_eq!(c.len(), 2, "pitch + gate only");
-        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), .. }));
-        assert!(matches!(c[1], Cmd::GateVoice { node: NodeId(20), .. }));
+        assert!(matches!(
+            c[0],
+            Cmd::SetParam {
+                node: NodeId(10),
+                ..
+            }
+        ));
+        assert!(matches!(
+            c[1],
+            Cmd::GateVoice {
+                node: NodeId(20),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn velocity_value_is_proportional() {
-        let mut a = { let (g, n) = one_gate(1); VoiceAllocator::new(NodeId(0), g, n, Some(NodeId(2)), NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut a = {
+            let (g, n) = one_gate(1);
+            VoiceAllocator::new(
+                NodeId(0),
+                g,
+                n,
+                Some(NodeId(2)),
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let hi = on(&mut a, 60, 127);
         let lo = on(&mut a, 62, 20);
-        let vhi = match hi[1] { Cmd::SetParam { value, .. } => value, _ => panic!() };
-        let vlo = match lo[1] { Cmd::SetParam { value, .. } => value, _ => panic!() };
+        let vhi = match hi[1] {
+            Cmd::SetParam { value, .. } => value,
+            _ => panic!(),
+        };
+        let vlo = match lo[1] {
+            Cmd::SetParam { value, .. } => value,
+            _ => panic!(),
+        };
         assert!(vhi > vlo, "higher velocity → larger value: {vhi} vs {vlo}");
         assert!((vhi - 1.0).abs() < 1e-6, "127 → 1.0");
     }
 
     #[test]
     fn mono_first_note_snaps_and_gates() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut m = {
+            let (g, n) = one_gate(30);
+            MonoAllocator::new(
+                NodeId(10),
+                NodeId(20),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let c = mon(&mut m, 69, 100); // A4 from silence
         // SetParam(pitch=10, lane0, 0.0) + TriggerVoice(slew=20, 0) + GateVoice(gate=30, 0, on)
         assert_eq!(c.len(), 3);
-        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), param: 0, .. }));
-        assert!(matches!(c[1], Cmd::TriggerVoice { node: NodeId(20), voice: 0 }));
-        assert!(matches!(c[2], Cmd::GateVoice { node: NodeId(30), voice: 0, on: true }));
+        assert!(matches!(
+            c[0],
+            Cmd::SetParam {
+                node: NodeId(10),
+                param: 0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            c[1],
+            Cmd::TriggerVoice {
+                node: NodeId(20),
+                voice: 0
+            }
+        ));
+        assert!(matches!(
+            c[2],
+            Cmd::GateVoice {
+                node: NodeId(30),
+                voice: 0,
+                on: true
+            }
+        ));
     }
 
     #[test]
     fn mono_legato_note_glides_without_regate() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
-        mon(&mut m, 60, 100);       // first note (from silence)
+        let mut m = {
+            let (g, n) = one_gate(30);
+            MonoAllocator::new(
+                NodeId(10),
+                NodeId(20),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
+        mon(&mut m, 60, 100); // first note (from silence)
         let c = mon(&mut m, 64, 100); // legato (60 still held)
         // Only a pitch SetParam (glide) — NO TriggerVoice, NO GateVoice
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), param: 0, .. }));
+        assert!(matches!(
+            c[0],
+            Cmd::SetParam {
+                node: NodeId(10),
+                param: 0,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn mono_note_off_falls_back_to_held_note() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut m = {
+            let (g, n) = one_gate(30);
+            MonoAllocator::new(
+                NodeId(10),
+                NodeId(20),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         mon(&mut m, 60, 100);
         mon(&mut m, 64, 100); // 64 sounding, 60 held
         let c = moff(&mut m, 64); // release 64 → glide back to 60
         assert_eq!(c.len(), 1);
         match c[0] {
-            Cmd::SetParam { node: NodeId(10), param: 0, value } => assert!((value - (60.0 - 69.0)).abs() < 1e-6),
+            Cmd::SetParam {
+                node: NodeId(10),
+                param: 0,
+                value,
+            } => assert!((value - (60.0 - 69.0)).abs() < 1e-6),
             _ => panic!("expected glide-back SetParam to 60"),
         }
     }
 
     #[test]
     fn mono_last_note_off_releases() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut m = {
+            let (g, n) = one_gate(30);
+            MonoAllocator::new(
+                NodeId(10),
+                NodeId(20),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         mon(&mut m, 60, 100);
         let c = moff(&mut m, 60); // stack empty → release
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0], Cmd::GateVoice { node: NodeId(30), voice: 0, on: false }));
+        assert!(matches!(
+            c[0],
+            Cmd::GateVoice {
+                node: NodeId(30),
+                voice: 0,
+                on: false
+            }
+        ));
     }
 
     #[test]
     fn mono_velocity_written_when_present() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, Some(NodeId(40)), NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut m = {
+            let (g, n) = one_gate(30);
+            MonoAllocator::new(
+                NodeId(10),
+                NodeId(20),
+                g,
+                n,
+                Some(NodeId(40)),
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let c = mon(&mut m, 69, 100);
         // pitch SetParam, velocity SetParam(node 40, 100/127), TriggerVoice, GateVoice
         assert!(c.iter().any(|cmd| matches!(cmd,
@@ -741,7 +1121,19 @@ mod tests {
 
     #[test]
     fn mono_note_off_unheld_is_noop() {
-        let mut m = { let (g, n) = one_gate(30); MonoAllocator::new(NodeId(10), NodeId(20), g, n, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0) };
+        let mut m = {
+            let (g, n) = one_gate(30);
+            MonoAllocator::new(
+                NodeId(10),
+                NodeId(20),
+                g,
+                n,
+                None,
+                NodeId(99),
+                [NodeId(0); MAX_TRIGGERS],
+                0,
+            )
+        };
         let c = moff(&mut m, 60);
         assert!(c.is_empty());
     }
@@ -749,42 +1141,136 @@ mod tests {
     #[test]
     fn poly_note_on_gates_all_envelopes_in_order() {
         let mut gates = [NodeId(0); MAX_GATES];
-        gates[0] = NodeId(20); gates[1] = NodeId(21);
-        let mut a = VoiceAllocator::new(NodeId(10), gates, 2, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0);
+        gates[0] = NodeId(20);
+        gates[1] = NodeId(21);
+        let mut a = VoiceAllocator::new(
+            NodeId(10),
+            gates,
+            2,
+            None,
+            NodeId(99),
+            [NodeId(0); MAX_TRIGGERS],
+            0,
+        );
         let c = on(&mut a, 69, 100); // pitch SetParam + GateVoice(20) + GateVoice(21)
         assert_eq!(c.len(), 3);
-        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), .. }));
-        assert!(matches!(c[1], Cmd::GateVoice { node: NodeId(20), voice: 0, on: true }));
-        assert!(matches!(c[2], Cmd::GateVoice { node: NodeId(21), voice: 0, on: true }));
+        assert!(matches!(
+            c[0],
+            Cmd::SetParam {
+                node: NodeId(10),
+                ..
+            }
+        ));
+        assert!(matches!(
+            c[1],
+            Cmd::GateVoice {
+                node: NodeId(20),
+                voice: 0,
+                on: true
+            }
+        ));
+        assert!(matches!(
+            c[2],
+            Cmd::GateVoice {
+                node: NodeId(21),
+                voice: 0,
+                on: true
+            }
+        ));
     }
 
     #[test]
     fn poly_note_off_releases_all_envelopes() {
         let mut gates = [NodeId(0); MAX_GATES];
-        gates[0] = NodeId(20); gates[1] = NodeId(21);
-        let mut a = VoiceAllocator::new(NodeId(10), gates, 2, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0);
+        gates[0] = NodeId(20);
+        gates[1] = NodeId(21);
+        let mut a = VoiceAllocator::new(
+            NodeId(10),
+            gates,
+            2,
+            None,
+            NodeId(99),
+            [NodeId(0); MAX_TRIGGERS],
+            0,
+        );
         on(&mut a, 69, 100);
         let c = off(&mut a, 69);
         assert_eq!(c.len(), 2);
-        assert!(matches!(c[0], Cmd::GateVoice { node: NodeId(20), on: false, .. }));
-        assert!(matches!(c[1], Cmd::GateVoice { node: NodeId(21), on: false, .. }));
+        assert!(matches!(
+            c[0],
+            Cmd::GateVoice {
+                node: NodeId(20),
+                on: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            c[1],
+            Cmd::GateVoice {
+                node: NodeId(21),
+                on: false,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn mono_from_silence_gates_all_envelopes_legato_gates_none() {
         let mut gates = [NodeId(0); MAX_GATES];
-        gates[0] = NodeId(30); gates[1] = NodeId(31);
-        let mut m = MonoAllocator::new(NodeId(10), NodeId(20), gates, 2, None, NodeId(99), [NodeId(0); MAX_TRIGGERS], 0);
+        gates[0] = NodeId(30);
+        gates[1] = NodeId(31);
+        let mut m = MonoAllocator::new(
+            NodeId(10),
+            NodeId(20),
+            gates,
+            2,
+            None,
+            NodeId(99),
+            [NodeId(0); MAX_TRIGGERS],
+            0,
+        );
         let c = mon(&mut m, 60, 100); // pitch SetParam + TriggerVoice(slew 20) + GateVoice(30) + GateVoice(31)
         assert_eq!(c.len(), 4);
-        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), .. }));
-        assert!(matches!(c[1], Cmd::TriggerVoice { node: NodeId(20), voice: 0 }));
-        assert!(matches!(c[2], Cmd::GateVoice { node: NodeId(30), voice: 0, on: true }));
-        assert!(matches!(c[3], Cmd::GateVoice { node: NodeId(31), voice: 0, on: true }));
+        assert!(matches!(
+            c[0],
+            Cmd::SetParam {
+                node: NodeId(10),
+                ..
+            }
+        ));
+        assert!(matches!(
+            c[1],
+            Cmd::TriggerVoice {
+                node: NodeId(20),
+                voice: 0
+            }
+        ));
+        assert!(matches!(
+            c[2],
+            Cmd::GateVoice {
+                node: NodeId(30),
+                voice: 0,
+                on: true
+            }
+        ));
+        assert!(matches!(
+            c[3],
+            Cmd::GateVoice {
+                node: NodeId(31),
+                voice: 0,
+                on: true
+            }
+        ));
         // legato note: pitch SetParam ONLY, no gate to any envelope
         let c2 = mon(&mut m, 64, 100);
         assert_eq!(c2.len(), 1);
-        assert!(matches!(c2[0], Cmd::SetParam { node: NodeId(10), .. }));
+        assert!(matches!(
+            c2[0],
+            Cmd::SetParam {
+                node: NodeId(10),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -806,21 +1292,36 @@ mod tests {
         a.set_detune(10.0, &mut |_| {});
         let c = on(&mut a, 69, 100); // A4, 3 unison voices
         // 3 lanes × (SetParam pitch + GateVoice) = 6 Cmds; the 3 SetParam values are the 3 offsets around 0
-        let pitches: Vec<(u8, f32)> = c.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(10), param, value } => Some((*param, *value)),
-            _ => None,
-        }).collect();
+        let pitches: Vec<(u8, f32)> = c
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(10),
+                    param,
+                    value,
+                } => Some((*param, *value)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pitches.len(), 3, "3 distinct pitch SetParams");
         // lanes distinct
         let mut lanes: Vec<u8> = pitches.iter().map(|(p, _)| *p).collect();
-        lanes.sort(); lanes.dedup();
+        lanes.sort();
+        lanes.dedup();
         assert_eq!(lanes.len(), 3, "3 distinct lanes");
         // values are 0 (=A4 semitone) ± 0.1
         let mut vals: Vec<f32> = pitches.iter().map(|(_, v)| *v).collect();
         vals.sort_by(|x, y| x.partial_cmp(y).unwrap());
-        assert!((vals[0] - (-0.1)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 0.1).abs() < 1e-6);
+        assert!(
+            (vals[0] - (-0.1)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 0.1).abs() < 1e-6
+        );
         // and a GateVoice(on) for each of the 3 lanes
-        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::GateVoice { on: true, .. })).count(), 3);
+        assert_eq!(
+            c.iter()
+                .filter(|cmd| matches!(cmd, Cmd::GateVoice { on: true, .. }))
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -829,24 +1330,43 @@ mod tests {
         a.set_unison(3);
         on(&mut a, 69, 100);
         let c = off(&mut a, 69);
-        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. })).count(), 3, "all 3 released");
+        assert_eq!(
+            c.iter()
+                .filter(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. }))
+                .count(),
+            3,
+            "all 3 released"
+        );
     }
 
     #[test]
     fn poly_unison_second_note_grabs_more_lanes() {
         let pitch_lanes = |c: &[Cmd]| -> Vec<u8> {
-            c.iter().filter_map(|cmd| match cmd {
-                Cmd::SetParam { node: NodeId(10), param, .. } => Some(*param), _ => None }).collect()
+            c.iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::SetParam {
+                        node: NodeId(10),
+                        param,
+                        ..
+                    } => Some(*param),
+                    _ => None,
+                })
+                .collect()
         };
         let mut a = mk_poly();
         a.set_unison(3);
         let first = pitch_lanes(&on(&mut a, 60, 100)); // 3 lanes
         let c = on(&mut a, 64, 100); // 3 MORE lanes (distinct from the first 3)
         let lanes = pitch_lanes(&c);
-        let mut u = lanes.clone(); u.sort(); u.dedup();
+        let mut u = lanes.clone();
+        u.sort();
+        u.dedup();
         assert_eq!(u.len(), 3, "second note grabs 3 distinct lanes");
         // and none of the second note's lanes collide with the first note's (both notes held)
-        assert!(lanes.iter().all(|l| !first.contains(l)), "second note's lanes disjoint from first note's");
+        assert!(
+            lanes.iter().all(|l| !first.contains(l)),
+            "second note's lanes disjoint from first note's"
+        );
     }
 
     #[test]
@@ -855,8 +1375,17 @@ mod tests {
         a.set_unison(1);
         let c = on(&mut a, 69, 100); // exactly 2 Cmds: pitch SetParam(param 0, value 0.0) + GateVoice(0, on)
         assert_eq!(c.len(), 2);
-        assert!(matches!(c[0], Cmd::SetParam { node: NodeId(10), param: 0, value } if value.abs() < 1e-6));
-        assert!(matches!(c[1], Cmd::GateVoice { voice: 0, on: true, .. }));
+        assert!(
+            matches!(c[0], Cmd::SetParam { node: NodeId(10), param: 0, value } if value.abs() < 1e-6)
+        );
+        assert!(matches!(
+            c[1],
+            Cmd::GateVoice {
+                voice: 0,
+                on: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -866,22 +1395,64 @@ mod tests {
         m.set_detune(10.0, &mut |_| {});
         let c = mon(&mut m, 69, 100); // from silence, 2 unison voices
         // lanes 0 and 1: each SetParam(pitch) + TriggerVoice(slew) + GateVoice(on)
-        let pitch_lanes: Vec<u8> = c.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(10), param, .. } => Some(*param), _ => None }).collect();
+        let pitch_lanes: Vec<u8> = c
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(10),
+                    param,
+                    ..
+                } => Some(*param),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pitch_lanes, std::vec![0, 1], "lanes 0 and 1");
-        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::TriggerVoice { node: NodeId(20), .. })).count(), 2, "snap both");
-        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::GateVoice { on: true, .. })).count(), 2, "gate both");
+        assert_eq!(
+            c.iter()
+                .filter(|cmd| matches!(
+                    cmd,
+                    Cmd::TriggerVoice {
+                        node: NodeId(20),
+                        ..
+                    }
+                ))
+                .count(),
+            2,
+            "snap both"
+        );
+        assert_eq!(
+            c.iter()
+                .filter(|cmd| matches!(cmd, Cmd::GateVoice { on: true, .. }))
+                .count(),
+            2,
+            "gate both"
+        );
     }
 
     #[test]
     fn mono_unison_legato_glides_all_lanes_no_regate() {
         let mut m = mk_mono();
         m.set_unison(2);
-        mon(&mut m, 60, 100);         // from silence
+        mon(&mut m, 60, 100); // from silence
         let c = mon(&mut m, 64, 100); // legato
         // both lanes get a pitch SetParam (glide), NO gate/trigger
-        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(10), .. })).count(), 2);
-        assert!(!c.iter().any(|cmd| matches!(cmd, Cmd::GateVoice { .. } | Cmd::TriggerVoice { .. })), "true legato: no re-gate/snap");
+        assert_eq!(
+            c.iter()
+                .filter(|cmd| matches!(
+                    cmd,
+                    Cmd::SetParam {
+                        node: NodeId(10),
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+        assert!(
+            !c.iter()
+                .any(|cmd| matches!(cmd, Cmd::GateVoice { .. } | Cmd::TriggerVoice { .. })),
+            "true legato: no re-gate/snap"
+        );
     }
 
     #[test]
@@ -890,7 +1461,12 @@ mod tests {
         m.set_unison(2);
         mon(&mut m, 60, 100);
         let c = moff(&mut m, 60); // to silence
-        assert_eq!(c.iter().filter(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. })).count(), 2);
+        assert_eq!(
+            c.iter()
+                .filter(|cmd| matches!(cmd, Cmd::GateVoice { on: false, .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -901,7 +1477,14 @@ mod tests {
         assert_eq!(c.len(), 3);
         assert!(matches!(c[0], Cmd::SetParam { param: 0, .. }));
         assert!(matches!(c[1], Cmd::TriggerVoice { voice: 0, .. }));
-        assert!(matches!(c[2], Cmd::GateVoice { voice: 0, on: true, .. }));
+        assert!(matches!(
+            c[2],
+            Cmd::GateVoice {
+                voice: 0,
+                on: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -923,20 +1506,30 @@ mod tests {
         a.set_width(1.0, &mut |_| {});
         let c = on(&mut a, 69, 100);
         // 3 pan SetParams on the sum node (NodeId(30)), params lane+1, 3 symmetric values.
-        let pans: std::vec::Vec<(u8, f32)> = c.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(30), param, value } => Some((*param, *value)),
-            _ => None,
-        }).collect();
+        let pans: std::vec::Vec<(u8, f32)> = c
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(30),
+                    param,
+                    value,
+                } => Some((*param, *value)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pans.len(), 3, "3 pan SetParams on sum node");
         // params are lane+1 (>=1), distinct
         assert!(pans.iter().all(|(p, _)| *p >= 1));
         let mut params: std::vec::Vec<u8> = pans.iter().map(|(p, _)| *p).collect();
-        params.sort(); params.dedup();
+        params.sort();
+        params.dedup();
         assert_eq!(params.len(), 3, "3 distinct lane params");
         // values symmetric around 0: sorted ≈ -1, 0, +1
         let mut vals: std::vec::Vec<f32> = pans.iter().map(|(_, v)| *v).collect();
         vals.sort_by(|x, y| x.partial_cmp(y).unwrap());
-        assert!((vals[0] - (-1.0)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 1.0).abs() < 1e-6);
+        assert!(
+            (vals[0] - (-1.0)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 1.0).abs() < 1e-6
+        );
     }
 
     #[test]
@@ -946,7 +1539,15 @@ mod tests {
         // width defaults to 0.0 — no set_width call.
         let c = on(&mut a, 69, 100);
         assert_eq!(
-            c.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(30), .. })).count(),
+            c.iter()
+                .filter(|cmd| matches!(
+                    cmd,
+                    Cmd::SetParam {
+                        node: NodeId(30),
+                        ..
+                    }
+                ))
+                .count(),
             0,
             "width=0 emits no pan SetParam (byte-identical Cmd stream)"
         );
@@ -959,8 +1560,17 @@ mod tests {
         m.set_width(1.0, &mut |_| {});
         let c = mon(&mut m, 69, 100); // from silence, 2 unison voices
         // pan on lanes 0 and 1 (params 1 and 2) on the sum node (NodeId(40)).
-        let pans: std::vec::Vec<u8> = c.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(40), param, .. } => Some(*param), _ => None }).collect();
+        let pans: std::vec::Vec<u8> = c
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(40),
+                    param,
+                    ..
+                } => Some(*param),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pans, std::vec![1, 2], "pan params lane+1 for lanes 0 and 1");
     }
 
@@ -970,8 +1580,17 @@ mod tests {
         m.set_unison(2);
         let c = mon(&mut m, 69, 100);
         assert_eq!(
-            c.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(40), .. })).count(),
-            0, "width=0 emits no pan"
+            c.iter()
+                .filter(|cmd| matches!(
+                    cmd,
+                    Cmd::SetParam {
+                        node: NodeId(40),
+                        ..
+                    }
+                ))
+                .count(),
+            0,
+            "width=0 emits no pan"
         );
     }
 
@@ -991,15 +1610,24 @@ mod tests {
             a.set_detune(20.0, &mut sink);
         }
         // 3 pitch SetParams on the pitch node, one per Held lane, new spread.
-        let pitches: std::vec::Vec<(u8, f32)> = cmds.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(10), param, value } => Some((*param, *value)),
-            _ => None,
-        }).collect();
+        let pitches: std::vec::Vec<(u8, f32)> = cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(10),
+                    param,
+                    value,
+                } => Some((*param, *value)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pitches.len(), 3, "3 held lanes re-detuned");
         // values are note(69)-69=0 + unison_offset(u,3,20) for u=0,1,2 → -0.2, 0, +0.2
         let mut vals: std::vec::Vec<f32> = pitches.iter().map(|(_, v)| *v).collect();
         vals.sort_by(|x, y| x.partial_cmp(y).unwrap());
-        assert!((vals[0] - (-0.2)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 0.2).abs() < 1e-6);
+        assert!(
+            (vals[0] - (-0.2)).abs() < 1e-6 && vals[1].abs() < 1e-6 && (vals[2] - 0.2).abs() < 1e-6
+        );
     }
 
     #[test]
@@ -1009,14 +1637,40 @@ mod tests {
         on(&mut a, 69, 100);
         // re-width to 1.0
         let mut c1: std::vec::Vec<Cmd> = std::vec::Vec::new();
-        { let mut s = |c: Cmd| c1.push(c); a.set_width(1.0, &mut s); }
-        let pans1 = c1.iter().filter(|cmd| matches!(cmd, Cmd::SetParam { node: NodeId(30), .. })).count();
+        {
+            let mut s = |c: Cmd| c1.push(c);
+            a.set_width(1.0, &mut s);
+        }
+        let pans1 = c1
+            .iter()
+            .filter(|cmd| {
+                matches!(
+                    cmd,
+                    Cmd::SetParam {
+                        node: NodeId(30),
+                        ..
+                    }
+                )
+            })
+            .count();
         assert_eq!(pans1, 3, "3 held lanes re-panned");
         // re-width back to 0.0 → re-emits pan-0 (re-center), NOT skipped
         let mut c2: std::vec::Vec<Cmd> = std::vec::Vec::new();
-        { let mut s = |c: Cmd| c2.push(c); a.set_width(0.0, &mut s); }
-        let pans2: std::vec::Vec<f32> = c2.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(30), value, .. } => Some(*value), _ => None }).collect();
+        {
+            let mut s = |c: Cmd| c2.push(c);
+            a.set_width(0.0, &mut s);
+        }
+        let pans2: std::vec::Vec<f32> = c2
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(30),
+                    value,
+                    ..
+                } => Some(*value),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pans2.len(), 3, "re-center emits 3 pan SetParams");
         assert!(pans2.iter().all(|v| v.abs() < 1e-6), "all re-centered to 0");
     }
@@ -1026,7 +1680,11 @@ mod tests {
         let mut a = mk_poly();
         a.set_unison(3);
         let mut cmds: std::vec::Vec<Cmd> = std::vec::Vec::new();
-        { let mut s = |c: Cmd| cmds.push(c); a.set_detune(20.0, &mut s); a.set_width(1.0, &mut s); }
+        {
+            let mut s = |c: Cmd| cmds.push(c);
+            a.set_detune(20.0, &mut s);
+            a.set_width(1.0, &mut s);
+        }
         assert_eq!(cmds.len(), 0, "no held voice → no re-emit (non-breaking)");
     }
 
@@ -1037,9 +1695,21 @@ mod tests {
         on(&mut a, 60, 100); // note 60, 2 voices
         on(&mut a, 64, 100); // note 64, 2 voices → 4 Held lanes total
         let mut cmds: std::vec::Vec<Cmd> = std::vec::Vec::new();
-        { let mut s = |c: Cmd| cmds.push(c); a.set_detune(10.0, &mut s); }
-        let pitches: std::vec::Vec<f32> = cmds.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(10), value, .. } => Some(*value), _ => None }).collect();
+        {
+            let mut s = |c: Cmd| cmds.push(c);
+            a.set_detune(10.0, &mut s);
+        }
+        let pitches: std::vec::Vec<f32> = cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(10),
+                    value,
+                    ..
+                } => Some(*value),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pitches.len(), 4, "all 4 held lanes re-detuned");
         // note 60 → base -9 ± 0.1 ; note 64 → base -5 ± 0.1
         assert!(pitches.iter().any(|v| (v - (-9.1)).abs() < 1e-6));
@@ -1055,18 +1725,50 @@ mod tests {
         mon(&mut m, 69, 100); // from silence, lanes 0,1
         // live re-detune
         let mut cd: std::vec::Vec<Cmd> = std::vec::Vec::new();
-        { let mut s = |c: Cmd| cd.push(c); m.set_detune(10.0, &mut s); }
-        let pitches: std::vec::Vec<(u8, f32)> = cd.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(10), param, value } => Some((*param, *value)), _ => None }).collect();
+        {
+            let mut s = |c: Cmd| cd.push(c);
+            m.set_detune(10.0, &mut s);
+        }
+        let pitches: std::vec::Vec<(u8, f32)> = cd
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(10),
+                    param,
+                    value,
+                } => Some((*param, *value)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pitches.len(), 2, "2 mono lanes re-detuned");
         // note 69 → base 0 ± 0.1 on lanes 0,1
-        assert!(pitches.iter().any(|(p, v)| *p == 0 && (v - (-0.1)).abs() < 1e-6));
-        assert!(pitches.iter().any(|(p, v)| *p == 1 && (v - 0.1).abs() < 1e-6));
+        assert!(
+            pitches
+                .iter()
+                .any(|(p, v)| *p == 0 && (v - (-0.1)).abs() < 1e-6)
+        );
+        assert!(
+            pitches
+                .iter()
+                .any(|(p, v)| *p == 1 && (v - 0.1).abs() < 1e-6)
+        );
         // live re-width
         let mut cw: std::vec::Vec<Cmd> = std::vec::Vec::new();
-        { let mut s = |c: Cmd| cw.push(c); m.set_width(1.0, &mut s); }
-        let pans: std::vec::Vec<u8> = cw.iter().filter_map(|cmd| match cmd {
-            Cmd::SetParam { node: NodeId(40), param, .. } => Some(*param), _ => None }).collect();
+        {
+            let mut s = |c: Cmd| cw.push(c);
+            m.set_width(1.0, &mut s);
+        }
+        let pans: std::vec::Vec<u8> = cw
+            .iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::SetParam {
+                    node: NodeId(40),
+                    param,
+                    ..
+                } => Some(*param),
+                _ => None,
+            })
+            .collect();
         assert_eq!(pans, std::vec![1, 2], "pan on lanes 0,1 (param u+1)");
     }
 
@@ -1076,7 +1778,11 @@ mod tests {
         m.set_unison(2);
         // no note sounding
         let mut cmds: std::vec::Vec<Cmd> = std::vec::Vec::new();
-        { let mut s = |c: Cmd| cmds.push(c); m.set_detune(10.0, &mut s); m.set_width(1.0, &mut s); }
+        {
+            let mut s = |c: Cmd| cmds.push(c);
+            m.set_detune(10.0, &mut s);
+            m.set_width(1.0, &mut s);
+        }
         assert_eq!(cmds.len(), 0, "no sounding note → no re-emit");
     }
 }
