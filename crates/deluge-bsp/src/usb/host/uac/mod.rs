@@ -15,11 +15,23 @@ pub mod ring;
 pub const MAX_CHANNELS: usize = 8;
 
 use embassy_usb_driver::Direction;
-use embassy_usb_driver::host::{HostError, PipeError};
+use embassy_usb_driver::EndpointType;
+use embassy_usb_driver::host::{HostError, PipeError, SplitInfo, UsbHostAllocator, UsbPipe, pipe};
+use embassy_usb_host::class::uac::codes;
 use embassy_usb_host::class::uac::descriptors::{
     AudioInterfaceCollection, FormatTypeDescriptor, TerminalDescriptor,
 };
+use embassy_usb_host::control::{ControlType, Recipient, RequestType, SetupPacket};
 use embassy_usb_host::descriptor::{ConfigurationDescriptor, EndpointDescriptor};
+
+// `crate::audio_block` is gated to the bare-metal target (`target_os =
+// "none"`), but this module also builds under the host/QEMU test target (see
+// `usb/mod.rs`). Reuse the canonical engine sample rate on-device; mirror its
+// value locally for host tests so there is only one non-test source of truth.
+#[cfg(target_os = "none")]
+use crate::audio_block::SAMPLE_RATE_HZ;
+#[cfg(not(target_os = "none"))]
+const SAMPLE_RATE_HZ: u32 = 44_100;
 
 /// Errors from the host UAC capture driver.
 #[derive(Debug)]
@@ -110,6 +122,148 @@ pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureM
     Err(UacError::NoInputInterface)
 }
 
+/// USB standard SET_INTERFACE request code (USB 2.0 §9.4).
+const REQ_SET_INTERFACE: u8 = 11;
+
+/// Sampling-frequency SET_CUR/GET_CUR wValue: SAMPLING_FREQ_CONTROL in the high
+/// byte (the `codes` constant is pre-shifted), channel number 0 (master).
+const SAMPLING_FREQ_WVALUE: u16 = codes::control_selector::clock_source::SAMPLING_FREQ_CONTROL;
+
+/// A hosted UAC2 capture device.
+///
+/// Owns the control pipe and the isochronous IN data pipe. Generic over the
+/// allocator so it unit-tests against [`super::mock`].
+pub struct UacIn<'d, A: UsbHostAllocator<'d>> {
+    control: A::Pipe<pipe::Control, pipe::InOut>,
+    iso_in: A::Pipe<pipe::Isochronous, pipe::In>,
+    num_channels: u8,
+    max_packet: u16,
+    _p: core::marker::PhantomData<&'d ()>,
+}
+
+impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
+    /// Channels this device declared. `read`'s output length should be a
+    /// multiple of this.
+    pub fn channels(&self) -> u8 {
+        self.num_channels
+    }
+
+    /// Match, claim pipes, negotiate 44.1 kHz, and select the streaming alt.
+    pub async fn try_register(
+        alloc: &A,
+        addr: u8,
+        split: Option<SplitInfo>,
+        cfg: &ConfigurationDescriptor<'_>,
+    ) -> Result<Self, UacError> {
+        let m = find_uac_capture(cfg)?;
+
+        // Control pipe (EP0) + the iso IN data pipe.
+        let mut control = alloc
+            .alloc_pipe::<pipe::Control, pipe::InOut>(
+                addr,
+                &embassy_usb_driver::EndpointInfo {
+                    addr: 0u8.into(),
+                    ep_type: EndpointType::Control,
+                    max_packet_size: 64,
+                    interval_ms: 0,
+                },
+                split,
+            )
+            .map_err(UacError::NoPipe)?;
+        let iso_in = alloc
+            .alloc_pipe::<pipe::Isochronous, pipe::In>(addr, &m.endpoint.into(), split)
+            .map_err(UacError::NoPipe)?;
+
+        // Negotiate 44.1 kHz on the clock-source entity.
+        let cur = Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
+        if cur != SAMPLE_RATE_HZ {
+            Self::set_sampling_freq(&mut control, m.ac_interface, m.clock_source_id, SAMPLE_RATE_HZ)
+                .await?;
+            let now =
+                Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
+            if now != SAMPLE_RATE_HZ {
+                return Err(UacError::UnsupportedRate);
+            }
+        }
+
+        // Activate the stream (alt 0 is zero-bandwidth; the real stream is 1+).
+        Self::set_interface(&mut control, m.streaming_interface, m.alternate_setting).await?;
+
+        Ok(Self {
+            control,
+            iso_in,
+            num_channels: m.num_channels,
+            max_packet: m.endpoint.max_packet_size,
+            _p: core::marker::PhantomData,
+        })
+    }
+
+    async fn get_sampling_freq(
+        control: &mut A::Pipe<pipe::Control, pipe::InOut>,
+        ac_interface: u8,
+        clock_id: u8,
+    ) -> Result<u32, UacError> {
+        let setup = SetupPacket {
+            request_type: RequestType {
+                direction: Direction::In,
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+            },
+            request: codes::request_code::CUR,
+            value: SAMPLING_FREQ_WVALUE,
+            index: (clock_id as u16) << 8 | ac_interface as u16,
+            length: 4,
+        };
+        let mut buf = [0u8; 4];
+        let n = control.control_in(&setup.to_bytes(), &mut buf).await?;
+        if n < 4 {
+            return Err(UacError::Transfer(PipeError::BadResponse));
+        }
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    async fn set_sampling_freq(
+        control: &mut A::Pipe<pipe::Control, pipe::InOut>,
+        ac_interface: u8,
+        clock_id: u8,
+        freq: u32,
+    ) -> Result<(), UacError> {
+        let setup = SetupPacket {
+            request_type: RequestType {
+                direction: Direction::Out,
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+            },
+            request: codes::request_code::CUR,
+            value: SAMPLING_FREQ_WVALUE,
+            index: (clock_id as u16) << 8 | ac_interface as u16,
+            length: 4,
+        };
+        control.control_out(&setup.to_bytes(), &freq.to_le_bytes()).await?;
+        Ok(())
+    }
+
+    async fn set_interface(
+        control: &mut A::Pipe<pipe::Control, pipe::InOut>,
+        interface: u8,
+        alt: u8,
+    ) -> Result<(), UacError> {
+        let setup = SetupPacket {
+            request_type: RequestType {
+                direction: Direction::Out,
+                control_type: ControlType::Standard,
+                recipient: Recipient::Interface,
+            },
+            request: REQ_SET_INTERFACE,
+            value: alt as u16,
+            index: interface as u16,
+            length: 0,
+        };
+        control.control_out(&setup.to_bytes(), &[]).await?;
+        Ok(())
+    }
+}
+
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
@@ -179,5 +333,55 @@ mod tests {
         let raw = uac2_mic_cfg(2, 2); // 16-bit
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
         assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
+    }
+
+    // --- UacIn::try_register negotiation ---
+
+    use crate::usb::host::mock::{MockAlloc, MockState};
+    use embassy_futures::block_on;
+
+    #[test]
+    fn register_negotiates_when_rate_already_44100() {
+        let state = MockState::leak();
+        // GET_CUR returns 44100 -> no SET_CUR expected.
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+
+        let host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).expect("register");
+        assert_eq!(host.channels(), 2);
+        // Two pipes claimed: control (EP0) + iso IN (0x81).
+        assert_eq!(state.allocs.borrow().len(), 2);
+        // Exactly one SETUP: the GET_CUR (no SET_CUR), plus the SET_INTERFACE.
+        let setups = state.setups.borrow();
+        // Last setup is SET_INTERFACE (bRequest 11, standard/interface/out).
+        let last = setups.last().unwrap();
+        assert_eq!(last[1], 11, "bRequest = SET_INTERFACE");
+        assert_eq!(last[2], 1, "wValue lo = alt setting 1");
+        assert_eq!(last[4], 1, "wIndex lo = streaming interface 1");
+    }
+
+    #[test]
+    fn register_forces_rate_when_not_44100() {
+        let state = MockState::leak();
+        // GET_CUR -> 48000, then after SET_CUR the confirming GET_CUR -> 44100.
+        {
+            let mut r = state.control_reads.borrow_mut();
+            r.push(heapless::Vec::from_slice(&48_000u32.to_le_bytes()).unwrap()).unwrap();
+            r.push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap()).unwrap();
+        }
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+
+        let host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).expect("register");
+        assert_eq!(host.channels(), 1);
+        // The SET_CUR data stage carried 44100 LE.
+        assert_eq!(&state.control_out_data.borrow()[..4], &44_100u32.to_le_bytes());
     }
 }
