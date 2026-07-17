@@ -24,6 +24,9 @@ use embassy_usb_host::class::uac::descriptors::{
 use embassy_usb_host::control::{ControlType, Recipient, RequestType, SetupPacket};
 use embassy_usb_host::descriptor::{ConfigurationDescriptor, EndpointDescriptor};
 
+use self::resample::{PiController, Resampler};
+use self::ring::SampleRing;
+
 // `crate::audio_block` is gated to the bare-metal target (`target_os =
 // "none"`), but this module also builds under the host/QEMU test target (see
 // `usb/mod.rs`). Reuse the canonical engine sample rate on-device; mirror its
@@ -54,6 +57,14 @@ impl From<PipeError> for UacError {
     fn from(e: PipeError) -> Self {
         UacError::Transfer(e)
     }
+}
+
+/// Decode one signed 24-bit little-endian sample (`b.len() == 3`) to `f32` in
+/// `[-1.0, 1.0)`.
+pub fn decode_s24le(b: &[u8]) -> f32 {
+    let raw = (b[0] as i32) | ((b[1] as i32) << 8) | ((b[2] as i32) << 16);
+    let signed = (raw << 8) >> 8; // sign-extend 24 -> 32
+    signed as f32 / 8_388_608.0 // 2^23
 }
 
 /// A matched UAC2 capture interface and the facts needed to negotiate + stream.
@@ -138,6 +149,10 @@ pub struct UacIn<'d, A: UsbHostAllocator<'d>> {
     iso_in: A::Pipe<pipe::Isochronous, pipe::In>,
     num_channels: u8,
     max_packet: u16,
+    ring: SampleRing,
+    resampler: Resampler,
+    pi: PiController,
+    r: f32,
     _p: core::marker::PhantomData<&'d ()>,
 }
 
@@ -189,11 +204,20 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
         // Activate the stream (alt 0 is zero-bandwidth; the real stream is 1+).
         Self::set_interface(&mut control, m.streaming_interface, m.alternate_setting).await?;
 
+        let mut ring = SampleRing::new();
+        ring.reset(m.num_channels as usize);
+        let mut resampler = Resampler::new();
+        resampler.reset(m.num_channels as usize);
+        let setpoint = (ring.capacity_frames() / 2) as f32;
         Ok(Self {
             control,
             iso_in,
             num_channels: m.num_channels,
             max_packet: m.endpoint.max_packet_size,
+            ring,
+            resampler,
+            pi: PiController::new(setpoint),
+            r: 1.0,
             _p: core::marker::PhantomData,
         })
     }
@@ -261,6 +285,49 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
         };
         control.control_out(&setup.to_bytes(), &[]).await?;
         Ok(())
+    }
+
+    /// Do one isochronous IN transfer: decode → resample → ring, then update
+    /// the drift ratio from the new ring fill.
+    ///
+    /// Iso has no retries: a failed or empty transfer logs and returns `Ok`
+    /// (the ring absorbs the gap). Only a channel/format invariant break is an
+    /// error.
+    pub async fn pump_once(&mut self) -> Result<(), UacError> {
+        let ch = self.num_channels as usize;
+        let mut buf = [0u8; 1024]; // >= any HS iso mps
+        let cap = self.max_packet as usize;
+        let n = match self.iso_in.request_in(&mut buf[..cap]).await {
+            Ok(n) => n,
+            Err(_e) => {
+                // Lost packet: ring absorbs it. Do not tear down the stream.
+                self.r = self.pi.update(self.ring.fill_frames() as f32);
+                return Ok(());
+            }
+        };
+        let frame_bytes = ch * 3;
+        let mut frame = [0.0f32; MAX_CHANNELS];
+        for chunk in buf[..n].chunks_exact(frame_bytes) {
+            for c in 0..ch {
+                frame[c] = decode_s24le(&chunk[c * 3..c * 3 + 3]);
+            }
+            let ring = &mut self.ring;
+            self.resampler.feed(&frame[..ch], self.r, |o| ring.push_frame(o));
+        }
+        self.r = self.pi.update(self.ring.fill_frames() as f32);
+        Ok(())
+    }
+
+    /// Drain up to `out.len()` samples of captured interleaved `f32`. Short
+    /// return = underrun; never blocks. `out.len()` should be a multiple of
+    /// `channels()`.
+    pub fn read(&mut self, out: &mut [f32]) -> usize {
+        self.ring.read(out)
+    }
+
+    /// Frames currently buffered (for diagnostics / the validation firmware).
+    pub fn fill_frames(&self) -> usize {
+        self.ring.fill_frames()
     }
 }
 
@@ -383,5 +450,64 @@ mod tests {
         assert_eq!(host.channels(), 1);
         // The SET_CUR data stage carried 44100 LE.
         assert_eq!(&state.control_out_data.borrow()[..4], &44_100u32.to_le_bytes());
+    }
+
+    // --- decode_s24le ---
+
+    #[test]
+    fn decode_s24le_endpoints() {
+        assert_eq!(decode_s24le(&[0, 0, 0]), 0.0);
+        assert_eq!(decode_s24le(&[0, 0, 0x40]), 0.5); // 0x400000 / 2^23
+        assert_eq!(decode_s24le(&[0, 0, 0x80]), -1.0); // 0x800000 sign-extended
+    }
+
+    // --- pump_once / read ---
+
+    #[test]
+    fn pump_decodes_iso_packet_into_ring() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        // One iso IN packet: two mono 24-bit frames, values +0.5 and -1.0.
+        let mut pkt = heapless::Vec::<u8, 64>::new();
+        pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x80]).unwrap();
+        state.script.borrow_mut().reads.push(pkt).unwrap();
+
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+
+        block_on(host.pump_once()).expect("pump");
+        // At r≈1.0 the resampler emits ~one frame per input frame after priming;
+        // at least one decoded sample must be readable.
+        let mut out = [0.0f32; 4];
+        let got = host.read(&mut out);
+        assert!(got >= 1, "expected decoded samples in the ring, got {got}");
+        assert!(out[..got].iter().any(|&s| s < 0.0 || s > 0.0), "non-silent");
+    }
+
+    #[test]
+    fn pump_tolerates_transfer_error() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        *state.script.borrow_mut() = crate::usb::host::mock::Script {
+            reads: Default::default(),
+            read_err: Some(embassy_usb_driver::host::PipeError::Timeout),
+        };
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+
+        // A failed iso transfer must NOT error out — the stream survives.
+        block_on(host.pump_once()).expect("iso error is absorbed, not fatal");
     }
 }
