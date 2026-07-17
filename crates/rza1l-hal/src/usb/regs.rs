@@ -169,7 +169,14 @@ pub const DCPCTR_SUREQCLR: u16 = 0x0800; // bit 11: cancel pending SETUP
 pub const PIPECTR_PID_MASK: u16 = 0x0003;
 pub const PIPECTR_PID_NAK: u16 = 0b00;
 pub const PIPECTR_PID_BUF: u16 = 0b01;
-pub const PIPECTR_PID_STALL: u16 = 0b10; // 0b10 or 0b11
+// STALL has two encodings.  The controller reaches STALL(11) autonomously (on
+// babble or a control-sequence error) and firmware sets STALL from NAK→STALL(10)
+// or BUF→STALL(11); a direct STALL(11)→NAK write is ignored, so clearing must
+// step 11→10→NAK (TRM §28.3.30 PID; matches Linux `__usbhsp_pid_try_nak_if_stall`).
+pub const PIPECTR_PID_STALL10: u16 = 0b10;
+pub const PIPECTR_PID_STALL11: u16 = 0b11;
+/// Legacy alias for [`PIPECTR_PID_STALL10`] (the firmware-set STALL encoding).
+pub const PIPECTR_PID_STALL: u16 = PIPECTR_PID_STALL10;
 pub const PIPECTR_CCPL: u16 = 0x0004; // DCP only
 pub const PIPECTR_PBUSY: u16 = 0x0020;
 pub const PIPECTR_SQMON: u16 = 0x0040;
