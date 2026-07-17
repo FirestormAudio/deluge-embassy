@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicI8, Ordering};
 
 use embassy_sync::waitqueue::AtomicWaker;
+#[cfg(target_os = "none")]
 use log::info;
 
 pub const NUM_ENCODERS: usize = 6;
@@ -45,7 +46,8 @@ fn enc_irq_handler(enc_idx: usize, irq_pin: u8, companion: u8, irq_num: u8, inve
     ENCODER_WAKER.wake();
 }
 
-/// Initialise the Deluge's interrupt-driven quadrature encoder inputs.
+/// One-time encoder GPIO + GIC edge-IRQ bring-up. Device only — the host has no
+/// front-panel encoders; deltas simply never accumulate (see the host no-op).
 ///
 /// This is board-specific GPIO and GIC setup for the six front-panel encoders.
 /// The firmware task consumes [`ENCODER_DELTAS`] and [`ENCODER_WAKER`] to apply
@@ -53,6 +55,7 @@ fn enc_irq_handler(enc_idx: usize, irq_pin: u8, companion: u8, irq_num: u8, inve
 ///
 /// # Safety
 /// Must be called before `cortex_ar::interrupt::enable()`.
+#[cfg(target_os = "none")]
 pub unsafe fn irq_init() {
     unsafe {
         const SETUP: [(u8, u8, u16, u8, bool); NUM_ENCODERS] = [
@@ -90,5 +93,34 @@ pub unsafe fn irq_init() {
         }
 
         info!("encoder: interrupt-driven init complete (IRQ0/1/2/3/4/7 → GIC 32–36, 39)");
+    }
+}
+
+/// Host: no front-panel hardware. Encoders are quiescent; `ENCODER_DELTAS`
+/// stays zero and `ENCODER_WAKER` never fires, so any consumer parks cleanly.
+///
+/// # Safety
+/// No-op; trivially safe. Signature matches the device variant so callers
+/// don't need to branch on target.
+#[cfg(not(target_os = "none"))]
+pub unsafe fn irq_init() {}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod host_tests {
+    use super::*;
+    use core::sync::atomic::Ordering;
+
+    #[test]
+    fn host_irq_init_is_a_safe_noop_and_encoders_are_quiescent() {
+        // Must not touch hardware / must not panic on host.
+        unsafe { irq_init() };
+        assert_eq!(NUM_ENCODERS, 6);
+        // Deltas start (and stay) zero with no ISRs firing.
+        for d in &ENCODER_DELTAS {
+            assert_eq!(d.load(Ordering::Relaxed), 0);
+        }
+        // take_detents on a zero delta yields no detents (pure-logic sanity).
+        let mut acc = 0i8;
+        assert_eq!(take_detents(0, &mut acc), 0);
     }
 }

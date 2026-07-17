@@ -17,7 +17,6 @@ pub mod battery;
 pub mod bus;
 pub mod controls;
 pub mod cv_gate;
-#[cfg(target_os = "none")]
 pub mod encoder;
 /// Pure quadrature detent accumulation used by the bare-metal `encoder` driver;
 /// non-gated so it unit-tests on the host.
