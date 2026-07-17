@@ -58,18 +58,22 @@ use embassy_usb_driver::host::{
 use embassy_usb_driver::{EndpointInfo, EndpointType, Speed};
 
 use super::fifo::{FifoPort, fifo_bval, sw_to_hw_fifo};
+use super::pipe::BufAllocator;
 use super::regs::{
     BUSWAIT_VALUE, DCPCFG_DIR, DCPCFG_SHTNAK, DCPCTR_SUREQ, DCPCTR_SUREQCLR, DCPMAXP_DEVSEL_SHIFT,
     DCPMAXP_MXPS_MASK, DEVADD_HUBPORT_SHIFT, DEVADD_UPPHUB_SHIFT, DEVADD_USBSPD_FS,
     DEVADD_USBSPD_HS, DEVADD_USBSPD_LS, DVSTCTR0_RHST, DVSTCTR0_RHST_LS, DVSTCTR0_UACT,
-    DVSTCTR0_USBRST, FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOCTR_DTLN_MASK, FIFOCTR_FRDY,
-    FIFOSEL_CURPIPE_MASK, FIFOSEL_ISEL, INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_NRDYE,
+    DVSTCTR0_RHST_FS, DVSTCTR0_RHST_HS, DVSTCTR0_USBRST, FIFOCTR_BCLR, FIFOCTR_BVAL,
+    FIFOCTR_DTLN_MASK, FIFOCTR_FRDY,
+    FIFOSEL_CURPIPE_MASK, FIFOSEL_ISEL, FIFOSEL_MBW_SHIFT, INTENB0_BEMPE, INTENB0_BRDYE,
+    INTENB0_NRDYE, MBW_32,
     INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_SACKE, INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY,
     INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH, INTSTS1_SACK, INTSTS1_SIGN, PIPECFG_DBLB,
     PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO,
     PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK,
-    PIPECTR_SQCLR, PIPECTR_SQSET, PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK,
-    Rusb1Regs, SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE,
+    PIPEBUF_BUFNMB_MASK, PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT, PIPECTR_SQCLR, PIPECTR_SQSET,
+    PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK, PKT_BUF_BLOCK_SIZE, Rusb1Regs,
+    SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE,
     SYSCFG_USBE, SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, wr,
 };
 
@@ -181,6 +185,13 @@ struct HcdAlloc {
     ep_to_pipe: [[[u8; 15]; 2]; 5],
     /// EP0 max-packet-size per device address.
     ctl_mps: [u16; HCD_MAX_DEV],
+    /// Packet-buffer block allocator (128 × 64-byte blocks, blocks 0-6 reserved
+    /// for DCP + the hardware-fixed PIPE6-8 areas).
+    buf: BufAllocator,
+    /// Per-pipe packet-buffer reservation, for freeing on close.
+    /// `buf_start[n]` = first 64-byte block, `buf_reserved[n]` = block count.
+    buf_start: [u8; HCD_PIPE_COUNT],
+    buf_reserved: [u8; HCD_PIPE_COUNT],
 }
 
 impl HcdAlloc {
@@ -190,6 +201,9 @@ impl HcdAlloc {
             pipes_used: 0x0001, // pipe 0 is permanently allocated (DCP)
             ep_to_pipe: [[[0u8; 15]; 2]; 5],
             ctl_mps: [64u16; HCD_MAX_DEV],
+            buf: BufAllocator::new(),
+            buf_start: [0u8; HCD_PIPE_COUNT],
+            buf_reserved: [0u8; HCD_PIPE_COUNT],
         }
     }
 
@@ -214,7 +228,29 @@ impl HcdAlloc {
     fn free_pipe(&mut self, pipe: usize) {
         if pipe != 0 {
             self.pipes_used &= !(1u16 << pipe);
+            // Release the pipe's packet-buffer blocks back to the pool.
+            if self.buf_reserved[pipe] > 0 {
+                self.buf
+                    .free(self.buf_start[pipe], self.buf_reserved[pipe] as usize);
+                self.buf_start[pipe] = 0;
+                self.buf_reserved[pipe] = 0;
+            }
         }
+    }
+
+    /// Reserve packet-buffer blocks for `pipe` carrying `mps`-byte packets.
+    ///
+    /// Returns `(buf_start, blocks_per_bank)` for the PIPEBUF write, or `None`
+    /// if the packet buffer is full.  `double_buf` reserves two banks (matching
+    /// PIPECFG.DBLB).  Pipes 6-8 have hardware-fixed buffers (blocks 4/5/6) and
+    /// must NOT be passed here — their PIPEBUF is ignored by the controller.
+    fn alloc_pipe_buf(&mut self, pipe: usize, mps: u16, double_buf: bool) -> Option<(u8, u8)> {
+        let blocks_per_bank = (mps as usize).div_ceil(PKT_BUF_BLOCK_SIZE).max(1);
+        let reserve = blocks_per_bank * if double_buf { 2 } else { 1 };
+        let start = self.buf.alloc(reserve)?;
+        self.buf_start[pipe] = start;
+        self.buf_reserved[pipe] = reserve as u8;
+        Some((start, blocks_per_bank as u8))
     }
 }
 
@@ -259,17 +295,27 @@ impl Rusb1HostDriver {
             // Stop clock supply to this port first.
             rmw(core::ptr::addr_of_mut!((*regs).suspmode), SUSPMODE_SUSPM, 0);
 
-            // UPLLE lives in USB0's SYSCFG0 (C reference always writes rusb0->SYSCFG0).
+            // UPLLE lives in USB0's SYSCFG0 (C reference always writes
+            // rusb0->SYSCFG0) and may only be modified while SUSPM=0 on BOTH
+            // channels (TRM §28.3.1).  Only enable it when off: a set UPLLE means
+            // the PLL is already locked from the other port's bring-up, so we
+            // must not repeat the lock wait or disturb that port's SUSPM.  When
+            // off, the PLL is down and neither channel can be running, so
+            // clearing the other channel's SUSPM is safe.
             let regs0 = Rusb1Regs::ptr(0);
-            rmw(
-                core::ptr::addr_of_mut!((*regs0).syscfg0),
-                SYSCFG_UPLLE,
-                SYSCFG_UPLLE,
-            );
+            if rd(core::ptr::addr_of!((*regs0).syscfg0)) & SYSCFG_UPLLE == 0 {
+                let other = Rusb1Regs::ptr(if port == 0 { 1 } else { 0 });
+                rmw(core::ptr::addr_of_mut!((*other).suspmode), SUSPMODE_SUSPM, 0);
+                rmw(
+                    core::ptr::addr_of_mut!((*regs0).syscfg0),
+                    SYSCFG_UPLLE,
+                    SYSCFG_UPLLE,
+                );
 
-            // Wait >= 1 ms for PLL lock (~400 K iterations at 400 MHz).
-            for _ in 0u32..400_000 {
-                core::hint::spin_loop();
+                // Wait >= 1 ms for PLL lock (~400 K iterations at 400 MHz).
+                for _ in 0u32..400_000 {
+                    core::hint::spin_loop();
+                }
             }
 
             // CPU-bus wait cycles and clock re-enable.
@@ -286,11 +332,13 @@ impl Rusb1HostDriver {
             // USBRST — it is written in bus_reset() based on the detected device speed.
             //
             // TRM §28.3.1: DCFM may only be modified while DPRPU and DRPD are
-            // both 0, so set DCFM first (clearing DPRPU/HSE), then raise DRPD
-            // in a second write.
+            // both 0.  DRPD's reset value is 1, so the first write must clear it
+            // (along with DPRPU/HSE) *while* setting DCFM — otherwise the cold-boot
+            // DCFM 0→1 transition violates the precondition.  The second write
+            // then raises DRPD (host pull-downs).
             rmw(
                 core::ptr::addr_of_mut!((*regs).syscfg0),
-                SYSCFG_DCFM | SYSCFG_DPRPU | SYSCFG_HSE,
+                SYSCFG_DCFM | SYSCFG_DRPD | SYSCFG_DPRPU | SYSCFG_HSE,
                 SYSCFG_DCFM,
             );
             rmw(
@@ -302,6 +350,14 @@ impl Rusb1HostDriver {
             // NOTE: VBUS power is NOT module-controlled on the RZ/A1L —
             // DVSTCTR0 bits 11:9 are reserved (there is no VBUSEN bit, TRM
             // §28.3.4).  Host-port VBUS must be switched externally (GPIO).
+
+            // TRM §28.3.1 USBE: in host mode, set USBE only "after setting DRPD
+            // to 1, eliminating LNST bit chattering, and checking that the USB
+            // bus has been settled."  Give the line state a brief settle window
+            // after raising DRPD before enabling the SIE.
+            for _ in 0u32..10_000 {
+                core::hint::spin_loop();
+            }
 
             // Enable the USB module.
             rmw(
@@ -429,7 +485,24 @@ impl Rusb1HostDriver {
             // with DRPD=1): an attached FS/HS device pulls D+ → LNST = 01
             // (full-speed J); an LS device pulls D- → LNST = 10.
             let rhst_now = rd(core::ptr::addr_of!((*regs).dvstctr0)) & DVSTCTR0_RHST;
-            let lnst = rd(core::ptr::addr_of!((*regs).syssts0)) & SYSSTS0_LNST;
+            // Debounce LNST: the TRM requires reading the line state repeatedly
+            // until the same value is seen several times running (SYSSTS0
+            // chattering).  A single mid-chatter read could flip the HSE choice,
+            // running an LS device through the HS handshake (or vice-versa).
+            let mut lnst = rd(core::ptr::addr_of!((*regs).syssts0)) & SYSSTS0_LNST;
+            let mut stable = 0u8;
+            for _ in 0..64 {
+                let s = rd(core::ptr::addr_of!((*regs).syssts0)) & SYSSTS0_LNST;
+                if s == lnst {
+                    stable += 1;
+                    if stable >= 3 {
+                        break;
+                    }
+                } else {
+                    lnst = s;
+                    stable = 0;
+                }
+            }
             let is_ls = rhst_now == DVSTCTR0_RHST_LS || (rhst_now == 0 && lnst == 0b10);
             if is_ls {
                 rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_HSE, 0);
@@ -450,9 +523,9 @@ impl Rusb1HostDriver {
         // Wait for reset to propagate — async sleep instead of busy-spinning.
         Timer::after_millis(20).await;
 
+        let p = self.port as usize;
         unsafe {
             let regs = Rusb1Regs::ptr(self.port);
-            let p = self.port as usize;
             // End the reset and re-enable SOF generation in a single write:
             // TRM §28.3.4 USBRST: "Write 1 to the UACT bit simultaneously with
             // the end of the USB bus reset process (writing 0 to USBRST)."
@@ -461,6 +534,29 @@ impl Rusb1HostDriver {
                 core::ptr::addr_of_mut!((*regs).dvstctr0),
                 (cur & !DVSTCTR0_USBRST) | DVSTCTR0_UACT,
             );
+        }
+
+        // Wait for the reset handshake to complete before the caller reads the
+        // speed.  RHST only latches a determined value (001 LS / 010 FS / 011
+        // HS) once SE0 driving finishes; for HS the chirp handshake can take a
+        // few ms, during which RHST reads 0b1xx.  A prior version read RHST
+        // immediately, so the 0b100 "in progress" value fell through
+        // port_speed()'s `_ => Full` fallback and LS/HS devices were mis-detected
+        // as Full.  Poll up to ~50 ms (mirrors the reference's bounded retry).
+        for _ in 0..50 {
+            let rhst =
+                unsafe { rd(core::ptr::addr_of!((*Rusb1Regs::ptr(self.port)).dvstctr0)) }
+                    & DVSTCTR0_RHST;
+            if matches!(
+                rhst,
+                DVSTCTR0_RHST_LS | DVSTCTR0_RHST_FS | DVSTCTR0_RHST_HS
+            ) {
+                break;
+            }
+            Timer::after_millis(1).await;
+        }
+
+        unsafe {
             critical_section::with(|cs| {
                 (&mut *HCD_ALLOC[p].borrow(cs).get()).need_reset = false;
             });
@@ -526,14 +622,10 @@ impl Rusb1HostDriver {
             wr(pipectr_ptr(regs, 0), PIPECTR_PID_NAK);
             while rd(pipectr_ptr(regs, 0)) & PIPECTR_PBUSY != 0 {}
 
-            // Embed device address in DCPMAXP bits [15:12].
-            wr(
-                core::ptr::addr_of_mut!((*regs).dcpmaxp),
-                ((dev_addr as u16) << DCPMAXP_DEVSEL_SHIFT) | (mps & DCPMAXP_MXPS_MASK),
-            );
-
-            // Program DEVADDn: UPPHUB | HUBPORT | USBSPD.
-            // All three must be written together before communication starts.
+            // Program DEVADDn FIRST: UPPHUB | HUBPORT | USBSPD.  TRM §28.3
+            // DCPMAXP.DEVSEL: "these bits should be set after setting the DEVADDn
+            // register corresponding to the value to be set."  Writing DEVSEL
+            // before DEVADDn would latch stale speed/hub fields for this address.
             let usbspd = match speed {
                 Speed::Low => DEVADD_USBSPD_LS,
                 Speed::High => DEVADD_USBSPD_HS,
@@ -543,6 +635,12 @@ impl Rusb1HostDriver {
                 | ((hub_port as u16) << DEVADD_HUBPORT_SHIFT)
                 | usbspd;
             wr(devadd_ptr(regs, dev_addr), devadd_val);
+
+            // Then embed the device address (DEVSEL) in DCPMAXP bits [15:12].
+            wr(
+                core::ptr::addr_of_mut!((*regs).dcpmaxp),
+                ((dev_addr as u16) << DCPMAXP_DEVSEL_SHIFT) | (mps & DCPMAXP_MXPS_MASK),
+            );
 
             critical_section::with(|cs| {
                 (&mut *HCD_ALLOC[p].borrow(cs).get()).ctl_mps[dev_addr as usize] = mps;
@@ -726,7 +824,10 @@ impl Rusb1HostDriver {
             }) as usize;
 
             // Select CFIFO for writing (ISEL=1: host writes to device).
-            wr(core::ptr::addr_of_mut!((*regs).cfifosel), FIFOSEL_ISEL);
+            wr(
+                core::ptr::addr_of_mut!((*regs).cfifosel),
+                FIFOSEL_ISEL | (MBW_32 << FIFOSEL_MBW_SHIFT),
+            );
             for _ in 0..1000u32 {
                 if rd(core::ptr::addr_of!((*regs).cfifosel)) & FIFOSEL_ISEL != 0 {
                     break;
@@ -814,6 +915,26 @@ impl Rusb1HostDriver {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
             let pipe = alloc.alloc_pipe(ep_type).ok_or(HostError::OutOfPipes)?;
 
+            // Reserve packet-buffer blocks for programmable pipes.  Pipes 6-8
+            // have hardware-fixed buffers (blocks 4/5/6, BUFNMB writes ignored),
+            // so they are skipped; all other pipes (bulk/iso 1-5, interrupt 9)
+            // MUST have a disjoint PIPEBUF region or their FIFOs overlap at
+            // block 0 (the DCP area) and corrupt each other.  DBLB is set for
+            // bulk and iso (see PIPECFG below), so those reserve two banks.
+            let pipebuf: Option<(u8, u8)> = if (6..=8).contains(&pipe) {
+                None
+            } else {
+                let double_buf =
+                    matches!(ep_type, EndpointType::Bulk | EndpointType::Isochronous);
+                match alloc.alloc_pipe_buf(pipe, mps, double_buf) {
+                    Some(v) => Some(v),
+                    None => {
+                        alloc.free_pipe(pipe);
+                        return Err(HostError::OutOfPipes);
+                    }
+                }
+            };
+
             // Record the EP→pipe mapping.
             // dev_addr is 1-based; array index is 0-based.
             alloc.ep_to_pipe[dev_addr as usize - 1][dir_in as usize][epn - 1] = pipe as u8;
@@ -849,6 +970,19 @@ impl Rusb1HostDriver {
                     core::ptr::addr_of_mut!(e.pipecfg),
                     type_field | dir_field | (epn as u16 & PIPECFG_EPNUM_MASK),
                 );
+
+                // PIPEBUF: assign a disjoint packet-buffer region.  BUFNMB =
+                // start block, BUFSIZE = blocks-per-bank − 1 (the DBLB bit
+                // supplies the second bank).  Skipped for hardware-fixed pipes.
+                if let Some((buf_start, blocks_per_bank)) = pipebuf {
+                    let bufsize = (((blocks_per_bank as u16).saturating_sub(1))
+                        << PIPEBUF_BUFSIZE_SHIFT)
+                        & PIPEBUF_BUFSIZE_MASK;
+                    wr(
+                        core::ptr::addr_of_mut!(e.pipebuf),
+                        (buf_start as u16 & PIPEBUF_BUFNMB_MASK) | bufsize,
+                    );
+                }
 
                 // PIPEPERI: set IITV for interrupt pipes (valid for pipes 6-9).
                 // TRM §28.3.35: IITV = floor(log2(bInterval)).min(7).
@@ -952,7 +1086,7 @@ impl Rusb1HostDriver {
                 // ZLP: select D0FIFO, wait FRDY, then BCLR + BVAL (TRM
                 // §28.4.5: "to send a zero-length packet, the BCLR bit must be
                 // used to clear the buffer and then the BVAL bit is set").
-                wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16);
+                wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
                 while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
                 while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
                 wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BCLR);
@@ -961,7 +1095,7 @@ impl Rusb1HostDriver {
                 while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
             } else {
                 // Write first packet to D0FIFO (16-bit access for speed).
-                wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16);
+                wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
                 while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
                 while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
 
@@ -1144,11 +1278,10 @@ pub unsafe fn hcd_int_handler(port: u8) {
 
         // ── ATTCH: a device connected ─────────────────────────────────────────
         if is1 & INTSTS1_ATTCH != 0 {
-            rmw(
-                core::ptr::addr_of_mut!(e.dvstctr0),
-                DVSTCTR0_UACT,
-                DVSTCTR0_UACT,
-            );
+            // Do NOT enable SOF (UACT) here: the reference leaves it off until
+            // the bus reset completes.  Generating SOF to a freshly-attached,
+            // un-reset device is non-standard; `bus_reset` owns UACT (it clears
+            // it before asserting USBRST and re-enables it as the reset ends).
             critical_section::with(|cs| {
                 (&mut *HCD_ALLOC[port as usize].borrow(cs).get()).need_reset = true;
             });
@@ -1176,7 +1309,17 @@ pub unsafe fn hcd_int_handler(port: u8) {
                 core::ptr::addr_of_mut!(e.intenb1),
                 (enb & !INTENB1_DTCHE) | INTENB1_ATTCHE,
             );
-            HCD_EVENTS.fetch_or(EVT_DETACH, Ordering::Release);
+            // Fail every in-flight transfer.  The controller has idled the port
+            // (UACT=0) and will emit no further BRDY/NRDY, so any future
+            // awaiting a pipe or a SETUP completion would otherwise hang
+            // forever.  Mark all pipes failed + wake them, and post EVT_SIGN so
+            // an awaiting setup_send resolves to an error.  (Idle pipes clear
+            // their NRDY bit when the next transfer arms them.)
+            for (n, waker) in HCD_PIPE_WAKERS.iter().enumerate() {
+                HCD_PIPE_NRDY.fetch_or(1u16 << n, Ordering::Release);
+                waker.wake();
+            }
+            HCD_EVENTS.fetch_or(EVT_DETACH | EVT_SIGN, Ordering::Release);
             HCD_EVENT_WAKER.wake();
         }
 
@@ -1233,10 +1376,16 @@ unsafe fn pipe0_in_brdy(regs: *mut Rusb1Regs) {
         let rem = xfer.remaining as usize;
         let len = rem.min(mps).min(vld);
 
-        // Byte-level read from CFIFO (matches C `pipe_read_packet`).
+        // Byte-level read from CFIFO.  The FIFO port is selected at MBW=8; per
+        // TRM Table 28.9 (8-bit access, BIGEND=0) the valid received byte sits
+        // on bits[31:24] = CPU byte-address base+3, and each MBW=8 access pops
+        // one byte and advances the FIFO.  (The unvalidated TinyUSB
+        // `pipe_read_packet` this was modeled on read base+0 — the *prohibited*
+        // lane — and would return garbage on silicon.)
         if len > 0 && !xfer.buf.is_null() {
-            let cfifo_byte =
-                (regs as usize + core::mem::offset_of!(super::regs::Rusb1Regs, cfifo)) as *const u8;
+            let cfifo_byte = (regs as usize
+                + core::mem::offset_of!(super::regs::Rusb1Regs, cfifo)
+                + 3) as *const u8;
             for i in 0..len {
                 *xfer.buf.add(i) = cfifo_byte.read_volatile();
             }
@@ -1318,11 +1467,14 @@ unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
         let rem = xfer.remaining as usize;
         let len = rem.min(mps).min(vld);
 
-        // Byte-level read (matches C `pipe_read_packet`).
+        // Byte-level read from D0FIFO.  Selected at MBW=8; per TRM Table 28.9
+        // (8-bit access, BIGEND=0) the valid byte is on bits[31:24] = base+3,
+        // and each access pops one byte and advances the FIFO.  (Reading base+0,
+        // as the unvalidated TinyUSB reference did, samples the prohibited lane.)
         if len > 0 {
             let d0fifo_byte = (regs as usize
-                + core::mem::offset_of!(super::regs::Rusb1Regs, d0fifo))
-                as *const u8;
+                + core::mem::offset_of!(super::regs::Rusb1Regs, d0fifo)
+                + 3) as *const u8;
             for i in 0..len {
                 *xfer.buf.add(i) = d0fifo_byte.read_volatile();
             }
@@ -1362,7 +1514,12 @@ unsafe fn pipe_brdy_out(regs: *mut Rusb1Regs, n: usize) {
             return;
         }
 
-        wr(core::ptr::addr_of_mut!((*regs).d0fifosel), n as u16);
+        // Select at MBW=32 to match sw_to_hw_fifo's access width, so its internal
+        // MBW assertion is a same-value write (no 8→32 port-switch re-trigger).
+        wr(
+            core::ptr::addr_of_mut!((*regs).d0fifosel),
+            n as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT),
+        );
         while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != n as u16 {}
         while rd(core::ptr::addr_of!((*regs).d0fifoctr)) & FIFOCTR_FRDY == 0 {}
 
@@ -1708,5 +1865,31 @@ mod tests {
         // HCD_MAX_DEV is exclusive: ctl_mps and ep_to_pipe are sized from it.
         assert!(!dev_addr_supported(HCD_MAX_DEV as u8));
         assert!(!dev_addr_supported(127));
+    }
+
+    #[test]
+    fn host_pipe_buffers_are_disjoint_and_clear_of_the_dcp() {
+        // Regression: host-mode pipes previously never programmed PIPEBUF, so
+        // every bulk/iso pipe defaulted to block 0 (the DCP region) and
+        // overlapped.  Two 512-byte double-buffered bulk pipes must now get
+        // disjoint regions, both clear of the reserved blocks 0-6.
+        let mut a = HcdAlloc::new();
+        let p1 = a.alloc_pipe(EndpointType::Bulk).unwrap();
+        let (s1, n1) = a.alloc_pipe_buf(p1, 512, true).unwrap();
+        let p2 = a.alloc_pipe(EndpointType::Bulk).unwrap();
+        let (s2, n2) = a.alloc_pipe_buf(p2, 512, true).unwrap();
+
+        assert_eq!(n1, 8, "512 bytes = 8 blocks per bank");
+        assert_eq!(n2, 8);
+        assert!(s1 >= 7, "must not touch reserved blocks 0-6, got {s1}");
+        assert!(s2 >= 7, "must not touch reserved blocks 0-6, got {s2}");
+        // Each reserves two banks (DBLB); ranges must not intersect.
+        let (e1, e2) = (s1 as usize + 2 * n1 as usize, s2 as usize + 2 * n2 as usize);
+        let disjoint = (e1 <= s2 as usize) || (e2 <= s1 as usize);
+        assert!(disjoint, "pipe buffers overlap: [{s1},{e1}) vs [{s2},{e2})");
+
+        // Freeing the pipe returns its blocks to the pool.
+        a.free_pipe(p1);
+        assert_eq!(a.buf_reserved[p1], 0);
     }
 }

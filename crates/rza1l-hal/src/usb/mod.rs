@@ -98,20 +98,33 @@ pub const fn irq(port: u8) -> u16 {
 }
 
 // CPG Standby Control Register 7 — USB clock gates.
-// Bit 1: USB0 clock (0 = running, 1 = stopped)
-// Bit 0: USB1 clock (0 = running, 1 = stopped)
+// Bit 1: MSTP71 — channel 0 clock (0 = running, 1 = stopped)
+// Bit 0: MSTP70 — channel 1 clock (0 = running, 1 = stopped)
 const STBCR7: usize = 0xFCFE_0430;
+const STBCR7_MSTP71: u8 = 1 << 1; // channel 0
+const STBCR7_MSTP70: u8 = 1 << 0; // channel 1
 
 /// Enable the clock for USB module `port` (0 or 1) in CPG STBCR7.
+///
+/// Channel 0 hosts the USB PLL (UPLLE/UCKSEL) shared by both channels, so
+/// bringing up channel 1 (port 1) requires clocking channel 0 as well.  Per HW
+/// manual §42.2.7 procedure (2): "Set MSTP71 to 0 … Note: When channel 1 is to
+/// be used, also set the MSTP70 bit to 0."  Clearing only MSTP70 for port 1
+/// would leave channel 0 gated, so the driver's UPLLE write to channel 0's
+/// SYSCFG0 lands on an unclocked register block and the PLL never enables.
 ///
 /// # Safety
 /// Writes to memory-mapped CPG registers. Must not be called concurrently
 /// with other STBCR7 writers.
 pub unsafe fn module_clock_enable(port: u8) {
     unsafe {
-        let bit: u8 = if port == 0 { 1 << 1 } else { 1 << 0 };
+        let bits: u8 = if port == 0 {
+            STBCR7_MSTP71 // ch0 only
+        } else {
+            STBCR7_MSTP71 | STBCR7_MSTP70 // ch1 also needs ch0 (shared PLL)
+        };
         let cur = core::ptr::read_volatile(STBCR7 as *const u8);
-        core::ptr::write_volatile(STBCR7 as *mut u8, cur & !bit);
+        core::ptr::write_volatile(STBCR7 as *mut u8, cur & !bits);
         // Dummy read to flush write buffer (required by HW manual §10).
         let _ = core::ptr::read_volatile(STBCR7 as *const u8);
     }
@@ -123,7 +136,9 @@ pub unsafe fn module_clock_enable(port: u8) {
 /// Writes to memory-mapped CPG registers.
 pub unsafe fn module_clock_disable(port: u8) {
     unsafe {
-        let bit: u8 = if port == 0 { 1 << 1 } else { 1 << 0 };
+        // Stop only this port's own channel.  Port 1 must NOT gate channel 0
+        // (MSTP71): channel 0 hosts the shared PLL and may still serve port 0.
+        let bit: u8 = if port == 0 { STBCR7_MSTP71 } else { STBCR7_MSTP70 };
         let cur = core::ptr::read_volatile(STBCR7 as *const u8);
         core::ptr::write_volatile(STBCR7 as *mut u8, cur | bit);
         let _ = core::ptr::read_volatile(STBCR7 as *const u8);

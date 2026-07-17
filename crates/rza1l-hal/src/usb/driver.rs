@@ -53,8 +53,9 @@ use super::fifo::{
 use super::pipe::{
     BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_IS_IN, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig,
     XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable, pipe_brdy_enable,
-    pipe_configure, pipe_disable, pipe_enable, pipe_reset, pipe_stall, pipe_xfer_in_bemp,
-    pipe_xfer_in_start, pipe_xfer_out_brdy,
+    is_iso_in_hook_pipe, pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate,
+    pipe_reset, pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start,
+    pipe_xfer_out_brdy,
 };
 use super::regs::{
     BUSWAIT_VALUE, DCPMAXP_MXPS_MASK, DVSQ_DEFAULT, DVSQ_SUSP0, DVSTCTR0_RHST, DVSTCTR0_RHST_FS,
@@ -62,7 +63,8 @@ use super::regs::{
     INTENB0_RSME, INTENB0_VBSE, INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_CTRT, INTSTS0_CTSQ_MASK,
     INTSTS0_DVSQ_MASK, INTSTS0_DVSQ_SHIFT, INTSTS0_DVST, INTSTS0_RESM, INTSTS0_VALID,
     INTSTS0_VBINT, INTSTS0_VBSTS, PIPECTR_ACLRM, PIPECTR_CCPL, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
-    PIPECTR_PID_STALL, PIPECTR_SQCLR, PKT_BUF_BLOCK_SIZE, Rusb1Regs, SUSPMODE_SUSPM, SYSCFG_DCFM,
+    PIPECTR_PID_STALL10, PIPECTR_PID_STALL11, PIPECTR_SQCLR, PKT_BUF_BLOCK_SIZE, Rusb1Regs,
+    SUSPMODE_SUSPM, SYSCFG_DCFM,
     SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE, pipectr_ptr, rd, rmw, wr,
 };
 
@@ -260,12 +262,28 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 let ep_num = addr.index() as u8;
                 let existing_pipe = alloc.ep_to_pipe[0][ep_num as usize] as usize;
                 if existing_pipe != 0 {
-                    if let Some(ref mut cfg) = alloc.pipe_cfg[existing_pipe] {
-                        // Keep the larger MPS so the hardware buffer covers both alt settings.
-                        if max_packet_size > cfg.mps {
-                            let new_blocks = mps_to_blocks(max_packet_size);
-                            cfg.mps = max_packet_size;
-                            cfg.buf_blocks = new_blocks as u8;
+                    // Keep the larger MPS so the hardware buffer covers both alt
+                    // settings.  Growing in place is not enough: the packet
+                    // buffer was reserved for the *original* size, so the larger
+                    // PIPEBUF would overrun the next pipe's blocks.  Free the old
+                    // reservation and reserve the new (larger) one.  Read the
+                    // scalar fields out first to release the pipe_cfg borrow
+                    // before touching alloc.buf.
+                    let cur = alloc.pipe_cfg[existing_pipe]
+                        .as_ref()
+                        .map(|c| (c.mps, c.double_buf, c.buf_start, c.buf_blocks));
+                    if let Some((cur_mps, dbl, cur_start, cur_blocks)) = cur
+                        && max_packet_size > cur_mps
+                    {
+                        let mult = if dbl { 2 } else { 1 };
+                        let new_blocks = mps_to_blocks(max_packet_size);
+                        alloc.buf.free(cur_start, cur_blocks as usize * mult);
+                        let new_start =
+                            alloc.buf.alloc(new_blocks * mult).ok_or(EndpointAllocError)?;
+                        if let Some(c) = alloc.pipe_cfg[existing_pipe].as_mut() {
+                            c.mps = max_packet_size;
+                            c.buf_blocks = new_blocks as u8;
+                            c.buf_start = new_start;
                         }
                     }
                     let info = EndpointInfo {
@@ -347,12 +365,25 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 let ep_num = addr.index() as u8;
                 let existing_pipe = alloc.ep_to_pipe[1][ep_num as usize] as usize;
                 if existing_pipe != 0 {
-                    if let Some(ref mut cfg) = alloc.pipe_cfg[existing_pipe]
-                        && max_packet_size > cfg.mps
+                    // Grow the shared buffer to cover the larger alt setting by
+                    // re-reserving (see alloc_endpoint_out for the rationale — an
+                    // in-place grow would overrun the next pipe's blocks).
+                    let cur = alloc.pipe_cfg[existing_pipe]
+                        .as_ref()
+                        .map(|c| (c.mps, c.double_buf, c.buf_start, c.buf_blocks));
+                    if let Some((cur_mps, dbl, cur_start, cur_blocks)) = cur
+                        && max_packet_size > cur_mps
                     {
+                        let mult = if dbl { 2 } else { 1 };
                         let new_blocks = mps_to_blocks(max_packet_size);
-                        cfg.mps = max_packet_size;
-                        cfg.buf_blocks = new_blocks as u8;
+                        alloc.buf.free(cur_start, cur_blocks as usize * mult);
+                        let new_start =
+                            alloc.buf.alloc(new_blocks * mult).ok_or(EndpointAllocError)?;
+                        if let Some(c) = alloc.pipe_cfg[existing_pipe].as_mut() {
+                            c.mps = max_packet_size;
+                            c.buf_blocks = new_blocks as u8;
+                            c.buf_start = new_start;
+                        }
                     }
                     let info = EndpointInfo {
                         addr: EndpointAddress::from_parts(ep_num as usize, Direction::In),
@@ -468,17 +499,27 @@ impl<'d> Driver<'d> for Rusb1Driver {
             log::trace!("usb{}: SUSPMODE cleared for PLL init", self.port);
 
             // UPLLE lives in USB0's SYSCFG0 regardless of which port we are
-            // initialising (C reference: always writes to rusb0->SYSCFG0).
+            // initialising (C reference: always writes to rusb0->SYSCFG0), and
+            // may only be modified while SUSPM=0 on BOTH channels (TRM §28.3.1).
+            // Only enable it when it is currently off: a set UPLLE means the PLL
+            // is already locked from the other port's bring-up, so we must
+            // neither repeat the lock wait nor disturb the other channel's SUSPM.
+            // When it is off, the PLL is down and neither channel can be running,
+            // so clearing the other channel's SUSPM is safe.
             let regs0 = Rusb1Regs::ptr(0);
-            rmw(
-                core::ptr::addr_of_mut!((*regs0).syscfg0),
-                SYSCFG_UPLLE,
-                SYSCFG_UPLLE,
-            );
+            if rd(core::ptr::addr_of!((*regs0).syscfg0)) & SYSCFG_UPLLE == 0 {
+                let other = Rusb1Regs::ptr(if self.port == 0 { 1 } else { 0 });
+                rmw(core::ptr::addr_of_mut!((*other).suspmode), SUSPMODE_SUSPM, 0);
+                rmw(
+                    core::ptr::addr_of_mut!((*regs0).syscfg0),
+                    SYSCFG_UPLLE,
+                    SYSCFG_UPLLE,
+                );
 
-            // Wait >= 1 ms for PLL lock (at ~400 MHz ≈ 400 K spin iterations).
-            for _ in 0u32..400_000 {
-                core::hint::spin_loop();
+                // Wait >= 1 ms for PLL lock (at ~400 MHz ≈ 400 K spin iterations).
+                for _ in 0u32..400_000 {
+                    core::hint::spin_loop();
+                }
             }
 
             // CPU-bus wait cycles and clock re-enable.
@@ -747,13 +788,21 @@ impl Bus for Rusb1Bus {
                     // the wrong DATAx phase and the host ACKs but discards it as
                     // a duplicate (matches reference dcd_rusb1.c, which issues
                     // ACLRM|SQCLR on endpoint open).  pipe_reset leaves PID=NAK.
-                    pipe_reset(regs, p);
-                    pipe_enable(regs, p);
-                    if ep_addr.direction() == Direction::Out {
-                        pipe_brdy_enable(regs, p);
+                    if is_iso_in_hook_pipe(p) && ep_addr.direction() == Direction::In {
+                        // Continuous ISO IN (mic/capture): activate in IFIS mode so
+                        // the SIE flushes the IN buffer each microframe, generating
+                        // the BRDY that drives the hook refill (matches tinyusb's
+                        // dcd_edpt_iso_activate).  Does its own reset + PID=BUF.
+                        pipe_iso_in_activate(regs, p);
+                    } else {
+                        pipe_reset(regs, p); // leaves PID=NAK
+                        pipe_enable(regs, p);
+                        if ep_addr.direction() == Direction::Out {
+                            pipe_brdy_enable(regs, p);
+                        }
+                        // Other IN pipes arm their completion interrupt per-transfer
+                        // in `write()`, so nothing to enable here.
                     }
-                    // IN pipes arm their completion interrupt per-transfer in
-                    // `write()`, so nothing to enable here.
                 } else {
                     pipe_disable(regs, p);
                     pipe_bemp_disable(regs, p);
@@ -796,8 +845,10 @@ impl Bus for Rusb1Bus {
         if let Some(p) = pipe {
             unsafe {
                 let regs = Rusb1Regs::ptr(self.port);
-                let ctr = rd(pipectr_ptr(regs, p));
-                (ctr & super::regs::PIPECTR_PID_MASK) == super::regs::PIPECTR_PID_STALL
+                let pid = rd(pipectr_ptr(regs, p)) & super::regs::PIPECTR_PID_MASK;
+                // The controller may sit in either STALL encoding (10 firmware-set,
+                // 11 hardware-set on babble/sequence error); both mean "halted".
+                pid == PIPECTR_PID_STALL10 || pid == PIPECTR_PID_STALL11
             }
         } else {
             false
@@ -1044,14 +1095,11 @@ impl ControlPipe for Rusb1ControlPipe {
         log::trace!("usb{}: reject (STALL)", self.port);
         unsafe {
             let regs = Rusb1Regs::ptr(self.port);
-            // Set PID=STALL on DCP via RMW.  The previous code bare-wrote
-            // PIPECTR_PID_STALL (0x0002) overwriting the entire DCPCTR register
-            // and clobbering SQMON and other state bits (Bug #1).
-            let ctr = rd(pipectr_ptr(regs, 0));
-            wr(
-                pipectr_ptr(regs, 0),
-                (ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_STALL,
-            );
+            // State-aware STALL on the DCP (NAK→STALL10, BUF→STALL11) via RMW:
+            // a bare write clobbers SQMON etc., and a direct STALL(10) write from
+            // PID=BUF may not engage the protocol STALL.  `pipe_stall` picks the
+            // correct encoding and preserves the other DCPCTR bits.
+            pipe_stall(regs, 0);
         }
     }
 
@@ -1422,6 +1470,15 @@ pub unsafe fn dcd_int_handler(port: u8) {
             !(STICKY_FLAGS & sts) | INTSTS0_VALID,
         );
 
+        // Housekeeping: drain NRDYSTS so bits can't accumulate (matches the Linux
+        // ISR's unconditional `usbhs_write(NRDYSTS, ~nrdysts)`).  NRDY is not
+        // currently enabled, but leaving stale bits set would fire an interrupt
+        // storm the moment NRDYE is turned on.  RC-W0: write 0 to the set bits.
+        let nrdysts = rd(core::ptr::addr_of!((*regs).nrdysts));
+        if nrdysts != 0 {
+            wr(core::ptr::addr_of_mut!((*regs).nrdysts), !nrdysts);
+        }
+
         // ── VBINT (VBUS change) ──────────────────────────────────────────────
         if sts & INTSTS0_VBINT != 0 {
             if sts & INTSTS0_VBSTS != 0 {
@@ -1565,6 +1622,10 @@ pub unsafe fn dcd_int_handler(port: u8) {
                     // Signal data_out() which is waiting on PIPE0_BRDY.
                     PIPE0_BRDY[p].store(1, Ordering::Release);
                     CTRL_WAKERS[p].wake();
+                } else if is_iso_in_hook_pipe(n) {
+                    // Continuous ISO IN (mic): a transmit buffer freed up — stage
+                    // the next packet from the hook and keep the pipe armed.
+                    pipe_xfer_in_brdy(regs, n);
                 } else {
                     // Real BRDY: BRDYSTS was set, so a packet (possibly a genuine
                     // ZLP) is present — speculative = false lets a zero-byte read
@@ -1692,6 +1753,12 @@ unsafe fn process_bus_reset(port: u8) {
         // armed — disable it so a later spurious RESM can't fire. RESM is re-armed
         // by the DVST suspend path as needed.
         rmw(core::ptr::addr_of_mut!((*regs).intenb0), INTENB0_RSME, 0);
+
+        // Drop any queued-but-unpolled suspend/resume event: a reset supersedes
+        // them.  Bus::poll prioritises Reset, so a stale Suspend/Resume left in
+        // BUS_EVENTS would be delivered immediately after Event::Reset and
+        // perturb embassy-usb's enumeration state machine.
+        BUS_EVENTS[p].fetch_and(!(BUS_EVT_SUSPEND | BUS_EVT_RESUME), Ordering::AcqRel);
 
         // Clear the control FIFO.
         wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BCLR);

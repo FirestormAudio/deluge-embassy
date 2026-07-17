@@ -17,7 +17,6 @@ pub mod battery;
 pub mod bus;
 pub mod controls;
 pub mod cv_gate;
-#[cfg(target_os = "none")]
 pub mod encoder;
 /// Pure quadrature detent accumulation used by the bare-metal `encoder` driver;
 /// non-gated so it unit-tests on the host.
@@ -45,7 +44,8 @@ pub mod sample_fmt;
 pub mod scux_dvu_path;
 pub mod scux_src_path;
 pub mod scux_usb_tx_path;
-#[cfg(target_os = "none")]
+/// SD card driver: real SDHI1 hardware on the firmware target, a file-backed
+/// disk image standing in for the card on host/QEMU. See the module docs.
 pub mod sd;
 pub mod sdram;
 pub mod system;

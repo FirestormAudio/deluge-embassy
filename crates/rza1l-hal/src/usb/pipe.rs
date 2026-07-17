@@ -21,10 +21,12 @@ use super::fifo::{
     fifo_select_recv, hw_to_sw_fifo, sw_to_hw_fifo,
 };
 use super::regs::{
-    FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, PIPEBUF_BUFSIZE_SHIFT, PIPECFG_CNTMD, PIPECFG_DBLB,
+    FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT, PIPECFG_CNTMD,
+    PIPECFG_DBLB,
     PIPECFG_DIR, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR,
     PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
-    PIPECTR_PID_NAK, PIPECTR_PID_STALL, PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK, PIPEPERI_IFIS,
+    PIPECTR_PID_NAK, PIPECTR_PID_STALL10, PIPECTR_PID_STALL11, PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK,
+    PIPEPERI_IFIS,
     PKT_BUF_BLOCKS, Rusb1Regs, pipectr_ptr, rd, wr,
 };
 
@@ -102,6 +104,113 @@ pub unsafe fn register_iso_out_hook(pipe: usize, cb: unsafe fn(*const u8, usize)
     unsafe {
         core::ptr::addr_of_mut!(ISO_OUT_HOOK_PIPE).write(pipe);
         core::ptr::addr_of_mut!(ISO_OUT_HOOK).write(Some(cb));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ISO IN packet hook (symmetric to the OUT hook — continuous BRDY-driven TX)
+// ---------------------------------------------------------------------------
+
+/// Pipe number for which the ISO IN hook is registered.  [`usize::MAX`] = none.
+static mut ISO_IN_HOOK_PIPE: usize = usize::MAX;
+/// Max bytes to request from the hook per packet (the pipe's max packet size).
+static mut ISO_IN_HOOK_MPS: usize = 0;
+/// Callback that FILLS the next ISO IN packet.  `buf` is a scratch buffer of at
+/// least `max` bytes; the hook writes up to `max` bytes and returns the packet
+/// length (may be 0 for an empty microframe).
+///
+/// # Safety
+/// Called from IRQ context on single-core ARMv7-A (IRQs already disabled), and
+/// once at enable time from task context.
+static mut ISO_IN_HOOK: Option<unsafe fn(*mut u8, usize) -> usize> = None;
+/// Scratch buffer the hook fills before it is copied into the hardware FIFO.
+static mut ISO_IN_BUF: [u8; ISO_DRAIN_LEN] = [0; ISO_DRAIN_LEN];
+
+/// Register an ISO IN packet callback for `pipe` carrying `mps`-byte packets.
+///
+/// Unlike the blocking `EndpointIn::write()` path, this drives the ISO IN pipe
+/// in continuous BUF mode: the pipe stays armed and the BRDY ISR calls the hook
+/// to stage each packet, matching the proven tinyusb model (and symmetric with
+/// [`register_iso_out_hook`]).  Enable BRDY for the pipe (done by
+/// `endpoint_set_enabled` for the hook pipe) after registering.
+///
+/// # Safety
+/// Call from task context before the pipe is enabled.  Not interrupt-safe.
+pub unsafe fn register_iso_in_hook(pipe: usize, mps: usize, cb: unsafe fn(*mut u8, usize) -> usize) {
+    unsafe {
+        core::ptr::addr_of_mut!(ISO_IN_HOOK_PIPE).write(pipe);
+        core::ptr::addr_of_mut!(ISO_IN_HOOK_MPS).write(mps);
+        core::ptr::addr_of_mut!(ISO_IN_HOOK).write(Some(cb));
+    }
+}
+
+/// True if `pipe` is the registered ISO IN hook pipe.
+#[inline]
+pub unsafe fn is_iso_in_hook_pipe(pipe: usize) -> bool {
+    unsafe { pipe == core::ptr::addr_of!(ISO_IN_HOOK_PIPE).read() }
+}
+
+/// Activate an ISO IN pipe for continuous BRDY-driven streaming.
+///
+/// Sequence: reset FIFO+toggle (leaves PID=NAK), prime both double-buffer
+/// planes, clear stale BRDY, enable BRDY, then release to PID=BUF.  (IFIS —
+/// isochronous IN buffer flush — is already set for the pipe by
+/// [`pipe_configure`].)
+///
+/// # Safety
+/// `regs` valid; task context (no transfer in flight on this pipe).
+pub unsafe fn pipe_iso_in_activate(regs: *mut Rusb1Regs, n: usize) {
+    unsafe {
+        // pipe_reset quiesces (PID=NAK, deselect) and pulses ACLRM|SQCLR.
+        pipe_reset(regs, n);
+        // Prime BOTH double-buffer planes while PID is still NAK.  TRM §28.4
+        // "BRDY interrupt (a), transmitting direction" condition 4: BRDY fires
+        // when one plane empties AND the OTHER plane has been fully written — so
+        // with only one plane primed, transmitting it leaves the other plane
+        // empty and BRDY never fires, stalling the stream.  Filling both planes
+        // bootstraps the double-buffer cadence (each subsequent BRDY refills the
+        // plane the SIE just freed).  Also stages data so the first IN tokens
+        // transmit real audio.
+        pipe_xfer_in_brdy(regs, n); // plane A
+        pipe_xfer_in_brdy(regs, n); // plane B
+        // Clear any stale BRDY, arm BRDY *before* releasing to BUF.
+        wr(core::ptr::addr_of_mut!((*regs).brdysts), !(1u16 << n));
+        pipe_brdy_enable(regs, n);
+        pipe_enable(regs, n); // PID=BUF
+    }
+}
+
+/// Stage the next ISO IN packet for the hook pipe: ask the hook to fill a
+/// packet, copy it into the hardware FIFO, and commit it, leaving the pipe
+/// armed (PID stays BUF).  Called from the BRDY ISR (a buffer freed up) and once
+/// at enable time to prime the first buffer.  No-op if no hook is registered or
+/// the FIFO port is not ready.
+///
+/// # Safety
+/// `regs` must be valid; single-core IRQ or task context (never both at once —
+/// the enable-time prime runs with BRDY disabled).
+pub unsafe fn pipe_xfer_in_brdy(regs: *mut Rusb1Regs, n: usize) {
+    unsafe {
+        let Some(hook) = core::ptr::addr_of!(ISO_IN_HOOK).read() else {
+            return;
+        };
+        let mps = core::ptr::addr_of!(ISO_IN_HOOK_MPS).read().min(ISO_DRAIN_LEN);
+        let fifo = fifo_for_pipe(regs, n);
+        fifo_select_pipe(&fifo, n, true); // ISEL=1 for IN (ignored on DnFIFO)
+        if !fifo_is_ready(&fifo, n) {
+            return;
+        }
+        let scratch = core::ptr::addr_of_mut!(ISO_IN_BUF) as *mut u8;
+        let len = hook(scratch, mps).min(mps);
+        if len > 0 {
+            sw_to_hw_fifo(&fifo, scratch as *const u8, len);
+        }
+        // ISO packets are always < mps (a fraction of a full buffer), so commit
+        // every packet with BVAL — including a 0-length one (empty microframe).
+        // See fill_in_packet: a fill short of the buffer plane needs BVAL to send.
+        if len < mps {
+            fifo_bval(&fifo);
+        }
     }
 }
 
@@ -339,7 +448,11 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
         wr(core::ptr::addr_of_mut!((*regs).pipecfg), pipecfg);
 
         // PIPEBUF: BUFNMB (start block) | BUFSIZE ((blocks - 1) in 64-byte units).
-        let bufsize_field = ((cfg.buf_blocks as u16).saturating_sub(1)) << PIPEBUF_BUFSIZE_SHIFT;
+        // BUFSIZE is a 5-bit field [14:10]; mask after the shift so an oversized
+        // buf_blocks can never spill into the reserved bit 15 (matches the C
+        // reference `(0x1f & bufnmb_cnt) << 10`).
+        let bufsize_field = (((cfg.buf_blocks as u16).saturating_sub(1)) << PIPEBUF_BUFSIZE_SHIFT)
+            & PIPEBUF_BUFSIZE_MASK;
         let pipebuf = cfg.buf_start as u16 | bufsize_field;
         wr(core::ptr::addr_of_mut!((*regs).pipebuf), pipebuf);
 
@@ -690,6 +803,29 @@ pub unsafe fn pipe_xfer_in_bemp(regs: *mut Rusb1Regs, n: usize) -> bool {
 // Pipe enable / disable
 // ---------------------------------------------------------------------------
 
+/// Move a pipe out of a STALL condition back to NAK, stepping through the
+/// intermediate STALL(10) if the controller autonomously drove it to STALL(11).
+///
+/// A direct STALL(11)→NAK write is ignored by the SIE, so a hardware-set STALL
+/// (babble / control-sequence error) would otherwise never clear — leaving a
+/// `CLEAR_FEATURE(ENDPOINT_HALT)` ineffective and the endpoint wedged.  Mirrors
+/// Linux `__usbhsp_pid_try_nak_if_stall`.  No-op for NAK/BUF.
+///
+/// # Safety
+/// `ctr` must be a valid PIPEnCTR/DCPCTR pointer.
+unsafe fn pid_nak_if_stall(ctr: *mut u16) {
+    unsafe {
+        let pid = rd(ctr) & PIPECTR_PID_MASK;
+        if pid == PIPECTR_PID_STALL11 {
+            // 11 → 10 first; the SIE ignores a direct 11 → NAK transition.
+            wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_STALL10);
+        }
+        if pid == PIPECTR_PID_STALL11 || pid == PIPECTR_PID_STALL10 {
+            wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+        }
+    }
+}
+
 /// Set PID=BUF to allow data transfer on pipe `n`.
 ///
 /// # Safety
@@ -697,6 +833,8 @@ pub unsafe fn pipe_xfer_in_bemp(regs: *mut Rusb1Regs, n: usize) -> bool {
 pub unsafe fn pipe_enable(regs: *mut Rusb1Regs, n: usize) {
     unsafe {
         let ctr = pipectr_ptr(regs, n);
+        // Clear any residual STALL first (matches Linux usbhs_pipe_enable).
+        pid_nak_if_stall(ctr);
         let cur = rd(ctr);
         wr(
             ctr,
@@ -712,6 +850,8 @@ pub unsafe fn pipe_enable(regs: *mut Rusb1Regs, n: usize) {
 pub unsafe fn pipe_disable(regs: *mut Rusb1Regs, n: usize) {
     unsafe {
         let ctr = pipectr_ptr(regs, n);
+        // Step down through STALL(10) so a hardware STALL(11) actually clears.
+        pid_nak_if_stall(ctr);
         let cur = rd(ctr);
         wr(
             ctr,
@@ -720,18 +860,21 @@ pub unsafe fn pipe_disable(regs: *mut Rusb1Regs, n: usize) {
     }
 }
 
-/// Set PID=STALL on pipe `n`.
+/// Set PID=STALL on pipe `n`, choosing the encoding from the current PID as the
+/// hardware requires: NAK→STALL(10), BUF→STALL(11).  Leaves an existing STALL
+/// unchanged.  Matches Linux `usbhs_pipe_stall`.
 ///
 /// # Safety
 /// `regs` must be valid.
 pub unsafe fn pipe_stall(regs: *mut Rusb1Regs, n: usize) {
     unsafe {
         let ctr = pipectr_ptr(regs, n);
-        let cur = rd(ctr);
-        wr(
-            ctr,
-            (cur & !super::regs::PIPECTR_PID_MASK) | PIPECTR_PID_STALL,
-        );
+        let stall = match rd(ctr) & PIPECTR_PID_MASK {
+            PIPECTR_PID_NAK => PIPECTR_PID_STALL10,
+            PIPECTR_PID_BUF => PIPECTR_PID_STALL11,
+            _ => return, // already stalled — leave as-is
+        };
+        wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | stall);
     }
 }
 
@@ -763,9 +906,15 @@ pub unsafe fn pipe_reset(regs: *mut Rusb1Regs, n: usize) {
 unsafe fn pipe_quiesce(regs: *mut Rusb1Regs, n: usize) {
     unsafe {
         let ctr = pipectr_ptr(regs, n);
+        let entry_pid = rd(ctr) & PIPECTR_PID_MASK;
+        // Step a hardware STALL(11) down to NAK before touching config (a direct
+        // STALL→NAK write is ignored); then force NAK for the BUF case.
+        pid_nak_if_stall(ctr);
         let cur = rd(ctr);
         if cur & PIPECTR_PID_MASK != PIPECTR_PID_NAK {
             wr(ctr, (cur & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+        }
+        if entry_pid != PIPECTR_PID_NAK {
             // PBUSY clears once the in-flight transaction (at most one
             // max-size packet) finishes; bound the wait so a wedged bus
             // cannot hang the driver.

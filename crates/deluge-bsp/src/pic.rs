@@ -46,6 +46,7 @@
 //! | 245  | REQUEST_FIRMWARE_VERSION   | —                               |
 //! | 247  | ENABLE_OLED                | —                               |
 
+#[cfg(target_os = "none")]
 use rza1l_hal::uart;
 
 #[cfg(target_os = "none")]
@@ -280,6 +281,15 @@ pub async fn init() {
     ready_signal::signal();
 }
 
+/// Host/QEMU stand-in for [`init`]: no PIC32/UART hardware to bring up, so
+/// this just signals ready — mirroring the device's final step, "signal that
+/// init is complete" — and returns. Resolves without ever suspending.
+#[cfg(not(target_os = "none"))]
+pub async fn init() {
+    log::debug!("pic(host): init (no-op)");
+    ready_signal::signal();
+}
+
 // ── Transport serialization ───────────────────────────────────────────────────
 //
 // The PIC link is a flat byte stream with no framing (see the module docs), and
@@ -304,10 +314,34 @@ static PIC_TX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 ///
 /// All outbound helpers below funnel through here; do not call
 /// `uart::write_bytes(UART_CH, …)` directly.
+#[cfg(target_os = "none")]
 async fn tx(bytes: &[u8]) {
-    #[cfg(target_os = "none")]
     let _guard = PIC_TX.lock().await;
     uart::write_bytes(UART_CH, bytes).await;
+}
+
+/// Host/QEMU stand-in for [`tx`]: no PIC UART to drive off-target, so every
+/// outbound helper (which all funnel through here) logs and drops its bytes.
+/// Resolves without ever suspending.
+#[cfg(not(target_os = "none"))]
+async fn tx(bytes: &[u8]) {
+    log::debug!("pic(host): tx {:?} (dropped, no PIC UART)", bytes);
+}
+
+/// Await one decoded byte from the PIC co-processor's SCIF1 UART (DMA RX ring).
+/// This is the RX transport counterpart to [`tx`]: the control pump loops on it,
+/// feeding [`Parser`]. Device only — pops the DMA ring via `uart::read_byte`.
+#[cfg(target_os = "none")]
+pub async fn read_byte() -> u8 {
+    uart::read_byte(UART_CH).await
+}
+
+/// Host: no PIC co-processor, so no bytes ever arrive. Park forever — the pump
+/// task stays alive but quiescent (there is no input on the host). This is a
+/// clean idle, not a hang: nothing downstream is waiting on it to make progress.
+#[cfg(not(target_os = "none"))]
+pub async fn read_byte() -> u8 {
+    core::future::pending().await
 }
 
 // ── Outbound helpers ──────────────────────────────────────────────────────────
@@ -512,12 +546,70 @@ mod ready_signal {
     }
 }
 
+/// Host/QEMU stand-in for [`ready_signal`]: `embassy-time` isn't linked into
+/// non-test host builds (it's a dev-dependency there), so this polls via a
+/// waker (like [`crate::oled`]'s redraw signal) instead of a timer.
+/// [`init`]'s host stand-in calls [`signal`] synchronously before returning,
+/// so [`wait`] resolves immediately once `init` has run.
+///
+/// Uses [`MultiWakerRegistration`] rather than the single-slot `AtomicWaker`
+/// `crate::oled`'s redraw signal uses: unlike that one-shot, single-consumer
+/// signal, `wait_ready()` is awaited *concurrently* by multiple tasks (at
+/// minimum `pad_render` and `oled_render`, both on `deluge-bsp-rust`). An
+/// `AtomicWaker` holds only one registration at a time, so a second
+/// concurrent waiter's `register()` silently clobbers the first's — the
+/// clobbered task is never woken and parks forever. This was caught for real
+/// (not just in review) by `deluge-bsp-rust`'s M3 host boot smoke: with
+/// `pad_render` and `oled_render` both parked in `wait_ready()` before
+/// `pic_pump` signals, whichever task happened to be polled last "won" the
+/// single waker slot and the other hung past the smoke's watchdog deadline.
+#[cfg(not(target_os = "none"))]
+mod ready_signal {
+    use core::cell::RefCell;
+    use core::future::poll_fn;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::task::Poll;
+    use embassy_sync::blocking_mutex::Mutex;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::waitqueue::MultiWakerRegistration;
+
+    static READY_FLAG: AtomicBool = AtomicBool::new(false);
+    /// Up to 4 concurrent waiters (today: `pad_render` + `oled_render`, with
+    /// headroom for future tasks that gate on the PIC handshake). If ever
+    /// exceeded, `register()` mass-wakes everything registered so far rather
+    /// than losing a registration — see its doc comment.
+    static WAKERS: Mutex<CriticalSectionRawMutex, RefCell<MultiWakerRegistration<4>>> =
+        Mutex::new(RefCell::new(MultiWakerRegistration::new()));
+
+    /// Called once by the host `init()` stand-in.
+    pub fn signal() {
+        READY_FLAG.store(true, Ordering::Release);
+        WAKERS.lock(|w| w.borrow_mut().wake());
+    }
+
+    /// Suspend until `signal()` has been called. Returns immediately if it
+    /// already has (safe to call multiple times, from any number of
+    /// concurrently-awaiting tasks — unlike [`crate::oled`]'s one-shot redraw
+    /// flag, this is never consumed). Registers before checking the flag so a
+    /// `signal()` landing between the check and registration can't be missed.
+    pub async fn wait() {
+        poll_fn(|cx| {
+            WAKERS.lock(|w| w.borrow_mut().register(cx.waker()));
+            if READY_FLAG.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
 /// Suspend until [`init()`] has completed on this PIC channel.
 ///
 /// Call this at the start of any task that issues PIC UART commands, to
 /// ensure the baud-rate handshake and initial configuration have already
 /// finished.  Returns immediately if `init()` has already run.
-#[cfg(target_os = "none")]
 #[inline]
 pub async fn wait_ready() {
     ready_signal::wait().await;
@@ -596,6 +688,13 @@ pub fn notify_oled_selected() {
 pub fn notify_oled_deselected() {
     oled_signal::notify_deselected();
 }
+
+/// Host: no OLED chip-select signalling path (the display render task drives the
+/// oled sim directly), so these are no-ops.
+#[cfg(not(target_os = "none"))]
+pub fn notify_oled_selected() {}
+#[cfg(not(target_os = "none"))]
+pub fn notify_oled_deselected() {}
 
 /// Suspend until the PIC confirms OLED CS is asserted.
 ///
@@ -721,5 +820,49 @@ mod tests {
         // 4_000_000 / 200_000 - 1 = 19
         let d = (PIC_CLK_HZ / BAUD_FAST).saturating_sub(1) as u8;
         assert_eq!(d, 19);
+    }
+
+    // ---- Host stand-ins -------------------------------------------------------
+
+    /// `init()` and a couple of outbound commands (which all funnel through the
+    /// host `tx` log-and-drop stand-in) must not panic — there is no PIC UART
+    /// off-target to crash against.
+    #[test]
+    fn init_and_outbound_commands_do_not_panic_on_host() {
+        embassy_futures::block_on(init());
+        embassy_futures::block_on(led_on(0));
+        embassy_futures::block_on(led_off(0));
+        embassy_futures::block_on(oled_select());
+        embassy_futures::block_on(oled_deselect());
+        embassy_futures::block_on(set_refresh_time(23));
+    }
+
+    /// `wait_ready()` resolves once host `init()` has signalled — it must not
+    /// hang (no `embassy-time` polling loop is reachable off-target).
+    #[test]
+    fn wait_ready_resolves_after_host_init() {
+        embassy_futures::block_on(init());
+        embassy_futures::block_on(wait_ready());
+    }
+
+    #[test]
+    fn host_notify_oled_are_noops() {
+        // Must not panic / touch hardware.
+        notify_oled_selected();
+        notify_oled_deselected();
+    }
+
+    #[test]
+    fn host_read_byte_parks_and_does_not_resolve() {
+        // read_byte() must return a never-ready future on host (a clean park), not
+        // resolve to a bogus byte. Poll it once: it must be Pending.
+        use core::future::Future;
+        use core::pin::pin;
+        use core::task::{Context, Poll};
+        // A no-op waker is enough: we only assert the first poll is Pending.
+        let waker = core::task::Waker::noop();
+        let mut cx = Context::from_waker(&waker);
+        let fut = pin!(read_byte());
+        assert!(matches!(fut.poll(&mut cx), Poll::Pending));
     }
 }
