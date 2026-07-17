@@ -126,6 +126,14 @@ static INITIALISED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicB
 #[cfg(not(target_os = "none"))]
 static CAPTURED_FRAME: std::sync::Mutex<FrameBuffer> = std::sync::Mutex::new(FrameBuffer::new());
 
+/// Host observability flag: flips true the first time [`capture_frame`] runs. A
+/// fresh [`CAPTURED_FRAME`] is already all-zero (blank), so `captured_frame()`
+/// alone cannot distinguish "no frame sent yet" from "a blank frame was sent" —
+/// this flag makes that distinction available to the boot smoke.
+#[cfg(not(target_os = "none"))]
+static BOOT_FRAME_CAPTURED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 // ── Frame buffer ──────────────────────────────────────────────────────────────
 
 /// 128 × 48 monochrome frame buffer, organized as 6 pages of 128 bytes.
@@ -483,6 +491,7 @@ fn capture_frame(fb: &FrameBuffer) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *captured = fb.clone();
+    BOOT_FRAME_CAPTURED.store(true, core::sync::atomic::Ordering::Release);
 }
 
 /// Read back the frame most recently pushed via [`send_frame`]/[`draw_blocking`]
@@ -494,6 +503,15 @@ pub fn captured_frame() -> FrameBuffer {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
+}
+
+/// Host observability: true once the render task has pushed at least one frame
+/// through the sim (i.e. `oled_render` completed `init()` + its first
+/// `send_frame`). The host boot smoke waits on this to confirm the display path
+/// booted, distinguishing a sent blank frame from the sim's blank initial state.
+#[cfg(not(target_os = "none"))]
+pub fn boot_frame_captured() -> bool {
+    BOOT_FRAME_CAPTURED.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Render a frame using a fully blocking, interrupt-free path — for a panic
@@ -864,6 +882,18 @@ mod tests {
 
         let captured = captured_frame();
         assert_eq!(captured.as_bytes(), fb.as_bytes());
+    }
+
+    /// `capture_frame` (shared by `send_frame`/`draw_blocking`) must flip the
+    /// boot-capture flag once it has stored a frame.
+    #[test]
+    fn host_boot_frame_captured_flips_on_capture() {
+        // Process-global flag: it may already be true if another oled test captured
+        // a frame first — that's fine, this asserts capture SETS it, never clears it.
+        let mut fb = FrameBuffer::new();
+        fb.fill(0x00);
+        capture_frame(&fb); // the same host path send_frame/draw_blocking funnel through
+        assert!(boot_frame_captured());
     }
 
     /// `wait_redraw` resolves immediately once `notify_redraw` has fired (the
