@@ -7,14 +7,23 @@ opens the isochronous OUT pipe, and streams a synthesized 440 Hz sine to it.
 Every step is logged over RTT and mirrored to the OLED, so the host audio path
 can be validated from the log/panel **even with nothing plugged in**.
 
-> **Status:** design proposal — approved for implementation.
-> **Relationship to the production spec:** this is a *bring-up / validation*
+> **⚠️ SUPERSEDED (2026-07-17).** This spec targeted embassy-usb-host's
+> `UacHandler`, which is **output-only** and bypasses the project's own host
+> class-driver layer (`deluge_bsp::usb::host`, cf. `host::midi`). The decision
+> is to build the real custom `deluge_bsp::usb::host::uac` (capture + playback)
+> per [`2026-07-16-usb-uac-host-design.md`](2026-07-16-usb-uac-host-design.md),
+> staged capture-first. The validation **firmware** described here is retained
+> as the final phase, but re-pointed to drive *our* `UacHost` (and to add a
+> capture-record path) — not embassy's `UacHandler`. Read this only for the
+> firmware scaffold (crate layout, RTT/OLED, `is_connected`); ignore the
+> `UacHandler`/output-stream specifics.
+>
+> **Original status:** design proposal — approved for implementation.
+> **Relationship to the production spec:** this was a *bring-up / validation*
 > firmware, not the product feature. The full-duplex production design lives in
 > [`2026-07-16-usb-uac-host-design.md`](2026-07-16-usb-uac-host-design.md)
 > (capture + playback, drift correction, SCUX analysis, MIDI/audio pipe
-> contention). This firmware deliberately uses only what `embassy-usb-host`
-> 0.1.0 ships **today** — host→device output streaming — to shake out the
-> `Rusb1HostDriver` host path on real hardware.
+> contention).
 
 ---
 

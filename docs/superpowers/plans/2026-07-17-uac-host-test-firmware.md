@@ -1,5 +1,14 @@
 # UAC Host Test Firmware Implementation Plan
 
+> **⚠️ SUPERSEDED (2026-07-17).** This plan built the firmware over embassy-usb-host's
+> output-only `UacHandler`. The project is instead building its own
+> `deluge_bsp::usb::host::uac` (capture + playback) per
+> [`2026-07-16-usb-uac-host-design.md`](../specs/2026-07-16-usb-uac-host-design.md),
+> staged capture-first. See the Phase-1 (capture) plan
+> `2026-07-17-uac-host-capture.md`. Tasks 1–3 here (crate scaffold, `is_connected`
+> accessor, blink/pic/OLED bring-up) remain reusable for the eventual validation
+> firmware; Tasks 4–5 (the `UacHandler` stream) are obsolete.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a dedicated `uac-host-firmware` image that brings USB0 up in host mode, enumerates a class-compliant USB audio output device, opens the ISO OUT pipe via `embassy-usb-host`'s `UacHandler`, and streams a 440 Hz tone — with every stage logged over RTT and mirrored to the OLED so the host path is observable even with nothing plugged in.
