@@ -119,6 +119,21 @@ const FIRST_PAGE: u8 = ((64 - HEIGHT) / 8) as u8; // = 2
 #[cfg(target_os = "none")]
 static INITIALISED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Host/QEMU capture surface: holds the frame most recently pushed via
+/// [`send_frame`]/[`draw_blocking`]. There is no panel off-target, so a
+/// consuming host (e.g. a future GUI/simulator, or a test) reads it back via
+/// [`captured_frame`] instead of a real SSD1309.
+#[cfg(not(target_os = "none"))]
+static CAPTURED_FRAME: std::sync::Mutex<FrameBuffer> = std::sync::Mutex::new(FrameBuffer::new());
+
+/// Host observability flag: flips true the first time [`capture_frame`] runs. A
+/// fresh [`CAPTURED_FRAME`] is already all-zero (blank), so `captured_frame()`
+/// alone cannot distinguish "no frame sent yet" from "a blank frame was sent" —
+/// this flag makes that distinction available to the boot smoke.
+#[cfg(not(target_os = "none"))]
+static BOOT_FRAME_CAPTURED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 // ── Frame buffer ──────────────────────────────────────────────────────────────
 
 /// 128 × 48 monochrome frame buffer, organized as 6 pages of 128 bytes.
@@ -461,6 +476,44 @@ pub async fn init() {
     log::debug!("oled: ready");
 }
 
+/// Host/QEMU stand-in for [`init`]: no RSPI0/PIC/DMAC hardware to bring up, so
+/// this just returns. Resolves without ever suspending.
+#[cfg(not(target_os = "none"))]
+pub async fn init() {
+    log::debug!("oled(host): init (no-op)");
+}
+
+/// Copy `fb` into the host capture surface, standing in for actually driving
+/// the panel. Shared by the host [`send_frame`] and [`draw_blocking`].
+#[cfg(not(target_os = "none"))]
+fn capture_frame(fb: &FrameBuffer) {
+    let mut captured = CAPTURED_FRAME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *captured = fb.clone();
+    BOOT_FRAME_CAPTURED.store(true, core::sync::atomic::Ordering::Release);
+}
+
+/// Read back the frame most recently pushed via [`send_frame`]/[`draw_blocking`]
+/// on host/QEMU. There is no real panel off-target, so this is how a
+/// consumer (or a test) observes what would have been drawn.
+#[cfg(not(target_os = "none"))]
+pub fn captured_frame() -> FrameBuffer {
+    CAPTURED_FRAME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Host observability: true once the render task has pushed at least one frame
+/// through the sim (i.e. `oled_render` completed `init()` + its first
+/// `send_frame`). The host boot smoke waits on this to confirm the display path
+/// booted, distinguishing a sent blank frame from the sim's blank initial state.
+#[cfg(not(target_os = "none"))]
+pub fn boot_frame_captured() -> bool {
+    BOOT_FRAME_CAPTURED.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// Render a frame using a fully blocking, interrupt-free path — for a panic
 /// handler, where the executor and IRQs are dead so the async [`send_frame`]
 /// (DMA + PIC echo wait) cannot run.
@@ -509,6 +562,17 @@ pub unsafe fn draw_blocking(fb: &FrameBuffer) {
 
         pic::oled_deselect_blocking();
     }
+}
+
+/// Host/QEMU stand-in for [`draw_blocking`]: no panel or panic-path timing
+/// concerns off-target, so this just captures `fb` (see [`captured_frame`]).
+///
+/// # Safety
+/// No unsafe operations; `unsafe` only to keep this a drop-in match for the
+/// device signature so callers need no `#[cfg]` of their own.
+#[cfg(not(target_os = "none"))]
+pub unsafe fn draw_blocking(fb: &FrameBuffer) {
+    capture_frame(fb);
 }
 
 /// Send a full 768-byte frame to the display using DMAC channel 4.
@@ -599,12 +663,20 @@ pub async fn send_frame(fb: &FrameBuffer) {
     drop(bus);
 }
 
-// ── Redraw signal (embedded only) ────────────────────────────────────────────
+/// Host/QEMU stand-in for [`send_frame`]: no RSPI0/PIC/DMAC hardware to drive,
+/// so this just captures `fb` (see [`captured_frame`]). Resolves without ever
+/// suspending.
+#[cfg(not(target_os = "none"))]
+pub async fn send_frame(fb: &FrameBuffer) {
+    capture_frame(fb);
+}
+
+// ── Redraw signal ─────────────────────────────────────────────────────────────
 //
 // Allow the firmware's UI task to notify the OLED render task that the display
-// contents have changed without any shared-memory lock.
+// contents have changed without any shared-memory lock. Pure `embassy-sync`
+// logic (no MMIO), so this is unconditional — host and device share it.
 
-#[cfg(target_os = "none")]
 mod redraw_signal {
     use core::future::poll_fn;
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -636,7 +708,6 @@ mod redraw_signal {
 ///
 /// Call this from any task whenever the contents to be displayed have changed.
 /// [`wait_redraw()`] in the render task will unblock and push a new frame.
-#[cfg(target_os = "none")]
 #[inline]
 pub fn notify_redraw() {
     redraw_signal::notify();
@@ -652,7 +723,6 @@ pub fn notify_redraw() {
 ///     oled::send_frame(&fb).await;
 /// }
 /// ```
-#[cfg(target_os = "none")]
 #[inline]
 pub async fn wait_redraw() {
     redraw_signal::wait().await;
@@ -784,5 +854,53 @@ mod tests {
         assert!(fb.get_pixel(127, 47));
         assert_eq!(fb.pages[0][0], 0b0000_0001);
         assert_eq!(fb.pages[5][127], 0b1000_0000);
+    }
+
+    /// `send_frame` on host captures rather than drives real hardware; reading
+    /// it back must equal what was sent.
+    #[test]
+    fn send_frame_captures_readable_frame() {
+        embassy_futures::block_on(init());
+
+        let mut fb = FrameBuffer::new();
+        fb.set_pixel(3, 3, true);
+        fb.set_pixel(100, 40, true);
+
+        embassy_futures::block_on(send_frame(&fb));
+
+        let captured = captured_frame();
+        assert_eq!(captured.as_bytes(), fb.as_bytes());
+    }
+
+    /// `draw_blocking` (the panic-path host stand-in) also captures.
+    #[test]
+    fn draw_blocking_captures_readable_frame() {
+        let mut fb = FrameBuffer::new();
+        fb.fill(0xAA);
+
+        unsafe { draw_blocking(&fb) };
+
+        let captured = captured_frame();
+        assert_eq!(captured.as_bytes(), fb.as_bytes());
+    }
+
+    /// `capture_frame` (shared by `send_frame`/`draw_blocking`) must flip the
+    /// boot-capture flag once it has stored a frame.
+    #[test]
+    fn host_boot_frame_captured_flips_on_capture() {
+        // Process-global flag: it may already be true if another oled test captured
+        // a frame first — that's fine, this asserts capture SETS it, never clears it.
+        let mut fb = FrameBuffer::new();
+        fb.fill(0x00);
+        capture_frame(&fb); // the same host path send_frame/draw_blocking funnel through
+        assert!(boot_frame_captured());
+    }
+
+    /// `wait_redraw` resolves immediately once `notify_redraw` has fired (the
+    /// redraw signal starts dirty, so even a fresh call resolves).
+    #[test]
+    fn wait_redraw_resolves() {
+        notify_redraw();
+        embassy_futures::block_on(wait_redraw());
     }
 }

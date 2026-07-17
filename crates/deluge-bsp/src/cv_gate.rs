@@ -28,7 +28,9 @@
 //! | 2       | 2    | 9   |
 //! | 3       | 4    | 0   |
 
-use rza1l_hal::{gpio, ostm, rspi};
+use rza1l_hal::{gpio, rspi};
+#[cfg(target_os = "none")]
+use rza1l_hal::ostm;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +96,7 @@ fn dac_word(ch: u8, value: u16) -> u32 {
 ///
 /// # Safety
 /// Writes to memory-mapped GPIO and RSPI registers.
+#[cfg(target_os = "none")]
 pub unsafe fn init() {
     unsafe {
         log::debug!("cv_gate: init");
@@ -142,6 +145,18 @@ pub unsafe fn init() {
         }
         log::debug!("cv_gate: CV outputs zeroed");
     }
+}
+
+/// Host/QEMU stand-in for [`init`]: no RSPI0/GPIO/OSTM hardware to bring up
+/// (and no `ostm::delay_ms`, which does raw MMIO and would crash off-target),
+/// so this just logs and returns.
+///
+/// # Safety
+/// No unsafe operations; `unsafe` only to keep this a drop-in match for the
+/// device signature so callers need no `#[cfg]` of their own.
+#[cfg(not(target_os = "none"))]
+pub unsafe fn init() {
+    log::info!("cv_gate(host): init (no-op)");
 }
 
 // ── CV output ────────────────────────────────────────────────────────────────
@@ -241,5 +256,24 @@ mod tests {
     #[test]
     fn gate_channel_count() {
         assert_eq!(GATE_PINS.len(), NUM_GATE_CHANNELS);
+    }
+
+    /// Regression test for the latent SIGSEGV: `init()` used to be
+    /// unconditional and called `ostm::delay_ms` (raw MMIO), crashing on
+    /// host. The host stand-in must return without touching hardware, and
+    /// `cv_set_blocking`/`gate_set` (routed through the mmio-shadow
+    /// `gpio`/`rspi` seam) must not panic either.
+    #[test]
+    fn init_and_gate_set_do_not_panic_on_host() {
+        unsafe {
+            init();
+            for ch in 0..NUM_CV_CHANNELS as u8 {
+                cv_set_blocking(ch, 0x1234);
+            }
+            for ch in 0..NUM_GATE_CHANNELS as u8 {
+                gate_set(ch, true);
+                gate_set(ch, false);
+            }
+        }
     }
 }
