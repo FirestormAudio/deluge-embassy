@@ -121,12 +121,21 @@ pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureM
             })
             .ok_or(UacError::BadDescriptors)?;
 
+        let num_channels = asi.class_descriptor.num_channels;
+        // Reject at the source: `pump_once` uses `num_channels` to
+        // `chunks_exact(num_channels * 3)` and to index a fixed-size
+        // `[f32; MAX_CHANNELS]` frame buffer. 0 panics on `chunks_exact`;
+        // > MAX_CHANNELS panics on out-of-bounds indexing.
+        if num_channels == 0 || num_channels as usize > MAX_CHANNELS {
+            return Err(UacError::UnsupportedFormat);
+        }
+
         return Ok(UacCaptureMatch {
             ac_interface,
             streaming_interface: alt.interface_number,
             alternate_setting: alt.alternate_setting,
             endpoint: ep,
-            num_channels: asi.class_descriptor.num_channels,
+            num_channels,
             clock_source_id,
         });
     }
@@ -299,8 +308,9 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
         let cap = self.max_packet as usize;
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
-            Err(_e) => {
+            Err(e) => {
                 // Lost packet: ring absorbs it. Do not tear down the stream.
+                log::warn!("uac: iso IN transfer failed ({:?}), absorbing gap", e);
                 self.r = self.pi.update(self.ring.fill_frames() as f32);
                 return Ok(());
             }
@@ -400,6 +410,23 @@ mod tests {
         let raw = uac2_mic_cfg(2, 2); // 16-bit
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
         assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
+    }
+
+    #[test]
+    fn rejects_out_of_range_channel_counts() {
+        // > MAX_CHANNELS (8): `pump_once` would index `[f32; MAX_CHANNELS]`
+        // out of bounds if this were allowed through.
+        let raw = uac2_mic_cfg(3, 9);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
+
+        // 0 channels: `pump_once` would panic on `chunks_exact(0)` if this
+        // were allowed through. Only assert if the fixture still parses as a
+        // matched interface up to the channel check — a 0-channel descriptor
+        // failing to parse for unrelated reasons wouldn't isolate the check.
+        let raw0 = uac2_mic_cfg(3, 0);
+        let cfg0 = ConfigurationDescriptor::try_from_slice(&raw0).unwrap();
+        assert!(matches!(find_uac_capture(&cfg0), Err(UacError::UnsupportedFormat)));
     }
 
     // --- UacIn::try_register negotiation ---
@@ -509,5 +536,29 @@ mod tests {
 
         // A failed iso transfer must NOT error out — the stream survives.
         block_on(host.pump_once()).expect("iso error is absorbed, not fatal");
+    }
+
+    #[test]
+    fn pump_tolerates_torn_trailing_partial_sample() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        // Mono (channels=1) -> frame_bytes == 3. 7 bytes = two whole frames
+        // (+0.5, -1.0) plus one torn trailing byte that `chunks_exact` must
+        // silently drop rather than panic on.
+        let mut pkt = heapless::Vec::<u8, 64>::new();
+        pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x80, 0xAA]).unwrap();
+        state.script.borrow_mut().reads.push(pkt).unwrap();
+
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+
+        // Must not panic on the non-multiple-of-frame_bytes packet length.
+        block_on(host.pump_once()).expect("torn trailing sample is silently dropped, not fatal");
     }
 }
