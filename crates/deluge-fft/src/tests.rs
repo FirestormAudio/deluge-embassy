@@ -330,8 +330,15 @@ fn real_fft_inverse_nyquist_only_512() {
     RealFft::<N, 4>::process_inverse(&bins, &mut out);
     let expected_mag = 1.0 / N as f32;
     for (i, &v) in out.iter().enumerate() {
-        let expected = if i % 2 == 0 { expected_mag } else { -expected_mag };
-        assert!((v - expected).abs() < 1e-6, "out[{i}]={v} expected={expected}");
+        let expected = if i % 2 == 0 {
+            expected_mag
+        } else {
+            -expected_mag
+        };
+        assert!(
+            (v - expected).abs() < 1e-6,
+            "out[{i}]={v} expected={expected}"
+        );
     }
 }
 
@@ -345,7 +352,12 @@ fn real_fft_roundtrip_impulse_512() {
     let mut out = [0f32; N];
     RealFft::<N, 4>::process_inverse(&bins, &mut out);
     for i in 0..N {
-        assert!((input[i] - out[i]).abs() < 1e-4, "i={i} in={} out={}", input[i], out[i]);
+        assert!(
+            (input[i] - out[i]).abs() < 1e-4,
+            "i={i} in={} out={}",
+            input[i],
+            out[i]
+        );
     }
 }
 

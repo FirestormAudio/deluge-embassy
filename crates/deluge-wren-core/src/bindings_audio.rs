@@ -9,7 +9,9 @@ use deluge_audio_graph::{Input, Kind, NodeId};
 use wren_sys::{Vm, WrenVM};
 
 use crate::audio;
-use crate::slotapi::{SlotApi, WrenForeign, WrenType, checked_list_count, checked_str, checked_tagged_foreign};
+use crate::slotapi::{
+    SlotApi, WrenForeign, WrenType, checked_list_count, checked_str, checked_tagged_foreign,
+};
 
 // All audio foreign objects lead with a `tag: u8` (offset 0 under `repr(C)`) so
 // `arg_input` can discriminate a Node/Port/Bus argument by reading that byte —
@@ -314,11 +316,17 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
             match tag {
                 TAG_NODE => {
                     let n = unsafe { vm.foreign_mut::<NodeObj>(slot) };
-                    Input::Node { node: NodeId(n.id), port: 0 }
+                    Input::Node {
+                        node: NodeId(n.id),
+                        port: 0,
+                    }
                 }
                 TAG_PORT => {
                     let p = unsafe { vm.foreign_mut::<PortObj>(slot) };
-                    Input::Node { node: NodeId(p.node), port: p.port }
+                    Input::Node {
+                        node: NodeId(p.node),
+                        port: p.port,
+                    }
                 }
                 TAG_BUS => {
                     let b = unsafe { vm.foreign_mut::<BusObj>(slot) };
@@ -335,7 +343,17 @@ fn self_id<S: SlotApi>(vm: &S) -> u16 {
     unsafe { vm.foreign_mut::<NodeObj>(0) }.id
 }
 unsafe fn return_node_ex<S: SlotApi>(vm: &S, id: u16, width: u8, poly: bool) {
-    unsafe { vm.new_foreign_in(0, NodeObj { tag: TAG_NODE, width, poly: poly as u8, id }) };
+    unsafe {
+        vm.new_foreign_in(
+            0,
+            NodeObj {
+                tag: TAG_NODE,
+                width,
+                poly: poly as u8,
+                id,
+            },
+        )
+    };
 }
 unsafe fn return_node_w<S: SlotApi>(vm: &S, id: u16, width: u8) {
     unsafe { return_node_ex(vm, id, width, false) };
@@ -395,7 +413,11 @@ pub(crate) unsafe extern "C" fn node_src(raw: *mut WrenVM) {
 /// (L→(1,0), R→(0,1)) when patched, instead of routing input as mono-center.
 pub(crate) fn node_line_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Input, [Input::Const(0.0), Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Input,
+        [Input::Const(0.0), Input::Const(0.0), Input::Const(0.0)],
+    );
     unsafe { return_node_w(vm, id, 2) };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -561,7 +583,11 @@ pub(crate) unsafe extern "C" fn node_moog(raw: *mut WrenVM) {
 
 /// Wren response code → Kind (0=lp 1=hp), mirroring `svf_kind`.
 fn ms20_kind(code: u32) -> Kind {
-    if code == 1 { Kind::Ms20Hp } else { Kind::Ms20Lp }
+    if code == 1 {
+        Kind::Ms20Hp
+    } else {
+        Kind::Ms20Lp
+    }
 }
 
 pub(crate) fn node_ms20_impl<S: SlotApi>(vm: &S) {
@@ -662,7 +688,16 @@ pub(crate) fn wavetable_from_impl<S: SlotApi>(vm: &S) {
         base[i] = vm.get_f(2) as f32;
     }
     let handle = audio::upload_table(&base[..n.max(1)]);
-    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle, frames: 1 }) };
+    unsafe {
+        vm.new_foreign_in::<WtObj>(
+            0,
+            WtObj {
+                tag: TAG_WT,
+                handle,
+                frames: 1,
+            },
+        )
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn wavetable_from(raw: *mut WrenVM) {
@@ -707,7 +742,16 @@ pub(crate) fn wavetable_from2d_impl<S: SlotApi>(vm: &S) {
         }
     });
     let frames = nframes.min(u16::MAX as usize) as u16;
-    unsafe { vm.new_foreign_in::<WtObj>(0, WtObj { tag: TAG_WT, handle, frames }) };
+    unsafe {
+        vm.new_foreign_in::<WtObj>(
+            0,
+            WtObj {
+                tag: TAG_WT,
+                handle,
+                frames,
+            },
+        )
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn wavetable_from2d(raw: *mut WrenVM) {
@@ -741,7 +785,14 @@ pub(crate) fn sample_from_impl<S: SlotApi>(vm: &S) {
         }
     }
     unsafe {
-        vm.new_foreign_in::<SampleObj>(0, SampleObj { tag: TAG_SAMPLE, handle, len: count as u32 })
+        vm.new_foreign_in::<SampleObj>(
+            0,
+            SampleObj {
+                tag: TAG_SAMPLE,
+                handle,
+                len: count as u32,
+            },
+        )
     };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -868,7 +919,11 @@ pub(crate) fn keymap_from_impl<S: SlotApi>(vm: &S) {
 
         let len = if zc >= 1 {
             vm.get_list_element(2, 0, 3); // samples list -> slot 3
-            if vm.slot_type(3) == WrenType::List { vm.get_list_count(3).max(0) as usize } else { 0 }
+            if vm.slot_type(3) == WrenType::List {
+                vm.get_list_count(3).max(0) as usize
+            } else {
+                0
+            }
         } else {
             0
         };
@@ -907,7 +962,12 @@ pub(crate) fn keymap_from_impl<S: SlotApi>(vm: &S) {
     unsafe {
         vm.new_foreign_in::<KeymapObj>(
             0,
-            KeymapObj { tag: TAG_KEYMAP, handle, zones, n_zones },
+            KeymapObj {
+                tag: TAG_KEYMAP,
+                handle,
+                zones,
+                n_zones,
+            },
         )
     };
 }
@@ -1006,7 +1066,11 @@ pub(crate) fn node_wavetable_pooled_impl<S: SlotApi>(vm: &S) {
     let id = audio::alloc_node_id();
     match handle {
         Some(h) => audio::new_wavetable_pooled(id, h, freq),
-        None => audio::new_node(id, Kind::Wavetable, [freq, Input::Const(0.0), Input::Const(0.0)]),
+        None => audio::new_node(
+            id,
+            Kind::Wavetable,
+            [freq, Input::Const(0.0), Input::Const(0.0)],
+        ),
     }
     unsafe { return_node(vm, id) };
 }
@@ -1165,7 +1229,11 @@ pub(crate) fn node_drive_impl<S: SlotApi>(vm: &S) {
     let mix = vm.get_f(4) as f32;
     let shape = vm.get_f(5) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Drive, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Drive,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 3, shape);
     audio::set_param(id, 0, drive);
     audio::set_param(id, 1, tone);
@@ -1211,7 +1279,11 @@ pub(crate) fn node_comp_impl<S: SlotApi>(vm: &S) {
     let makeup = vm.get_f(7) as f32;
     let detector = vm.get_f(8) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Comp, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Comp,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, threshold);
     audio::set_param(id, 1, ratio);
     audio::set_param(id, 2, attack);
@@ -1316,7 +1388,11 @@ pub(crate) fn node_gate_kind_impl<S: SlotApi>(vm: &S) {
     let range = vm.get_f(7) as f32;
     let detector = vm.get_f(8) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Gate, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Gate,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, threshold);
     audio::set_param(id, 1, ratio);
     audio::set_param(id, 2, attack);
@@ -1408,7 +1484,11 @@ pub(crate) fn node_bitcrush_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let bits = vm.get_f(2) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Bitcrush, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Bitcrush,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, bits);
     unsafe { return_node(vm, id) };
 }
@@ -1424,7 +1504,11 @@ pub(crate) fn node_decimate_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let rate = vm.get_f(2) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Decimate, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Decimate,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, rate);
     unsafe { return_node(vm, id) };
 }
@@ -1633,7 +1717,11 @@ pub(crate) fn node_steps_impl<S: SlotApi>(vm: &S) {
     let len = count.min(deluge_dsp_kernels::modutil::MAX_STEPS);
     let clock = arg_input(vm, 2);
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Steps, [clock, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Steps,
+        [clock, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, len as f32);
     vm.ensure_slots(3); // slot 2 = per-element scratch
     for k in 0..len {
@@ -1683,7 +1771,11 @@ pub(crate) fn node_qstep_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let n = vm.get_f(2) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::QuantStep, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::QuantStep,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, n);
     unsafe { return_node(vm, id) };
 }
@@ -1700,7 +1792,11 @@ pub(crate) fn node_qpitch_impl<S: SlotApi>(vm: &S) {
     let mask = vm.get_f(2) as f32;
     let root = vm.get_f(3) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::QuantPitch, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::QuantPitch,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, mask);
     audio::set_param(id, 1, root);
     unsafe { return_node(vm, id) };
@@ -1716,7 +1812,11 @@ pub(crate) fn node_mtof_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let reference = vm.get_f(2) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Mtof, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Mtof,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, reference);
     unsafe { return_node(vm, id) };
 }
@@ -1777,7 +1877,11 @@ pub(crate) fn node_polyosc_impl<S: SlotApi>(vm: &S) {
     let pitch = arg_input(vm, 1);
     let shape = vm.get_f(2) as f32;
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::PolyOsc, [pitch, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::PolyOsc,
+        [pitch, Input::Const(0.0), Input::Const(0.0)],
+    );
     audio::set_param(id, 0, shape);
     unsafe { return_poly_node(vm, id) };
 }
@@ -1811,7 +1915,11 @@ pub(crate) fn node_polymoog_impl<S: SlotApi>(vm: &S) {
     let cutoff = arg_input(vm, 2);
     let res = arg_input(vm, 3);
     let poles = vm.get_f(4) as u32; // 4 (24 dB) or 2 (12 dB)
-    let kind = if poles == 2 { Kind::PolyMoogLp2 } else { Kind::PolyMoogLp4 };
+    let kind = if poles == 2 {
+        Kind::PolyMoogLp2
+    } else {
+        Kind::PolyMoogLp4
+    };
     let id = audio::alloc_node_id();
     audio::new_node(id, kind, [audio_in, cutoff, res]);
     unsafe { return_poly_node(vm, id) };
@@ -1830,7 +1938,11 @@ pub(crate) fn node_polyms20_impl<S: SlotApi>(vm: &S) {
     let cutoff = arg_input(vm, 2);
     let res = arg_input(vm, 3);
     let resp = vm.get_f(4) as u32; // 0=lp, 1=hp
-    let kind = if resp == 1 { Kind::PolyMs20Hp } else { Kind::PolyMs20Lp };
+    let kind = if resp == 1 {
+        Kind::PolyMs20Hp
+    } else {
+        Kind::PolyMs20Lp
+    };
     let id = audio::alloc_node_id();
     audio::new_node(id, kind, [audio_in, cutoff, res]);
     unsafe { return_poly_node(vm, id) };
@@ -2011,13 +2123,19 @@ pub(crate) unsafe extern "C" fn node_polysync(raw: *mut WrenVM) {
 /// a poly node's Kind is fixed at creation (`poly_process` dispatches on
 /// `self.kind`, not a runtime check) — see node.rs's `PolyWt` arm.
 fn static_table_frames(table_id: u16) -> usize {
-    deluge_dsp_kernels::wavetable::static_table_flat(deluge_dsp_kernels::wavetable::TableId(table_id))
-        .map(|r| r.len() / deluge_dsp_kernels::wavetable::COMPACT_LEN)
-        .unwrap_or(1)
+    deluge_dsp_kernels::wavetable::static_table_flat(deluge_dsp_kernels::wavetable::TableId(
+        table_id,
+    ))
+    .map(|r| r.len() / deluge_dsp_kernels::wavetable::COMPACT_LEN)
+    .unwrap_or(1)
 }
 /// Select `PolyWt` (single-cycle) vs `PolyWtMorph` (2D) by frame count.
 fn poly_wt_kind(frames: usize) -> Kind {
-    if frames > 1 { Kind::PolyWtMorph } else { Kind::PolyWt }
+    if frames > 1 {
+        Kind::PolyWtMorph
+    } else {
+        Kind::PolyWt
+    }
 }
 
 /// `Node.polywt_(table, freq)` — poly wavetable oscillator bound to a named
@@ -2094,29 +2212,32 @@ pub(crate) fn node_polysampleplayer_impl<S: SlotApi>(vm: &S) {
     const EMPTY_ZONES: [(u32, u32, u8, u8, u8); MAX_ZONES] = [(0, 0, 0, 0, 0); MAX_ZONES];
 
     let pitch = arg_input(vm, 1);
-    let (handle, zones, n_zones): (Option<deluge_audio_graph::PoolHandle>, [(u32, u32, u8, u8, u8); MAX_ZONES], usize) =
-        if vm.slot_type(2) == WrenType::Foreign {
-            // SAFETY: slot 2 is confirmed Foreign above; every audio foreign is
-            // >=4 bytes with `tag: u8` at offset 0 (see `arg_input`'s SAFETY
-            // note), so reading just the tag byte is sound regardless of which
-            // concrete foreign this is.
-            let tag = unsafe { *vm.foreign_mut::<u8>(2) };
-            match tag {
-                TAG_SAMPLE => {
-                    let s = unsafe { vm.foreign_mut::<SampleObj>(2) };
-                    let mut zones = EMPTY_ZONES;
-                    zones[0] = (0, s.len, 0, 127, 60); // full-range zone, root C4
-                    (s.handle, zones, 1)
-                }
-                TAG_KEYMAP => {
-                    let k = unsafe { vm.foreign_mut::<KeymapObj>(2) };
-                    (k.handle, k.zones, k.n_zones)
-                }
-                _ => (None, EMPTY_ZONES, 0),
+    let (handle, zones, n_zones): (
+        Option<deluge_audio_graph::PoolHandle>,
+        [(u32, u32, u8, u8, u8); MAX_ZONES],
+        usize,
+    ) = if vm.slot_type(2) == WrenType::Foreign {
+        // SAFETY: slot 2 is confirmed Foreign above; every audio foreign is
+        // >=4 bytes with `tag: u8` at offset 0 (see `arg_input`'s SAFETY
+        // note), so reading just the tag byte is sound regardless of which
+        // concrete foreign this is.
+        let tag = unsafe { *vm.foreign_mut::<u8>(2) };
+        match tag {
+            TAG_SAMPLE => {
+                let s = unsafe { vm.foreign_mut::<SampleObj>(2) };
+                let mut zones = EMPTY_ZONES;
+                zones[0] = (0, s.len, 0, 127, 60); // full-range zone, root C4
+                (s.handle, zones, 1)
             }
-        } else {
-            (None, EMPTY_ZONES, 0)
-        };
+            TAG_KEYMAP => {
+                let k = unsafe { vm.foreign_mut::<KeymapObj>(2) };
+                (k.handle, k.zones, k.n_zones)
+            }
+            _ => (None, EMPTY_ZONES, 0),
+        }
+    } else {
+        (None, EMPTY_ZONES, 0)
+    };
 
     let id = audio::alloc_node_id();
     audio::new_poly_sample_player(id, handle, pitch, &zones[..n_zones], false);
@@ -2257,15 +2378,41 @@ pub(crate) unsafe extern "C" fn node_set_spray(raw: *mut WrenVM) {
 pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
     let out = arg_input(vm, 1);
     let (pitch_ctrl, gates_raw, gate_count, vel_raw, trig_raw, trig_count) = audio::poly_end();
-    let vel = if vel_raw == audio::NULL_ID { None } else { Some(NodeId(vel_raw)) };
-    let gates: [NodeId; deluge_audio_graph::MAX_GATES] = core::array::from_fn(|i| NodeId(gates_raw[i]));
+    let vel = if vel_raw == audio::NULL_ID {
+        None
+    } else {
+        Some(NodeId(vel_raw))
+    };
+    let gates: [NodeId; deluge_audio_graph::MAX_GATES] =
+        core::array::from_fn(|i| NodeId(gates_raw[i]));
     let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
-    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] = core::array::from_fn(|i| NodeId(trig_raw[i]));
+    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] =
+        core::array::from_fn(|i| NodeId(trig_raw[i]));
     let n_triggers = (trig_count as usize).min(deluge_audio_graph::MAX_TRIGGERS);
     let sum = audio::alloc_node_id();
-    audio::new_node(sum, Kind::StereoVoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(NodeId(pitch_ctrl), gates, n_gates, vel, NodeId(sum), triggers, n_triggers));
-    unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
+    audio::new_node(
+        sum,
+        Kind::StereoVoiceSum,
+        [out, Input::Const(0.0), Input::Const(0.0)],
+    );
+    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(
+        NodeId(pitch_ctrl),
+        gates,
+        n_gates,
+        vel,
+        NodeId(sum),
+        triggers,
+        n_triggers,
+    ));
+    unsafe {
+        vm.new_foreign_in(
+            0,
+            SynthObj {
+                alloc,
+                out_node: sum,
+            },
+        )
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_poly_end(raw: *mut WrenVM) {
@@ -2290,15 +2437,42 @@ pub(crate) unsafe extern "C" fn node_mono_begin(raw: *mut WrenVM) {
 pub(crate) fn node_mono_end_impl<S: SlotApi>(vm: &S) {
     let out = arg_input(vm, 1);
     let (pitch, slew, gates_raw, gate_count, vel_raw, trig_raw, trig_count) = audio::mono_end();
-    let vel = if vel_raw == audio::NULL_ID { None } else { Some(NodeId(vel_raw)) };
-    let gates: [NodeId; deluge_audio_graph::MAX_GATES] = core::array::from_fn(|i| NodeId(gates_raw[i]));
+    let vel = if vel_raw == audio::NULL_ID {
+        None
+    } else {
+        Some(NodeId(vel_raw))
+    };
+    let gates: [NodeId; deluge_audio_graph::MAX_GATES] =
+        core::array::from_fn(|i| NodeId(gates_raw[i]));
     let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
-    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] = core::array::from_fn(|i| NodeId(trig_raw[i]));
+    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] =
+        core::array::from_fn(|i| NodeId(trig_raw[i]));
     let n_triggers = (trig_count as usize).min(deluge_audio_graph::MAX_TRIGGERS);
     let sum = audio::alloc_node_id();
-    audio::new_node(sum, Kind::StereoVoiceSum, [out, Input::Const(0.0), Input::Const(0.0)]);
-    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(NodeId(pitch), NodeId(slew), gates, n_gates, vel, NodeId(sum), triggers, n_triggers));
-    unsafe { vm.new_foreign_in(0, SynthObj { alloc, out_node: sum }) };
+    audio::new_node(
+        sum,
+        Kind::StereoVoiceSum,
+        [out, Input::Const(0.0), Input::Const(0.0)],
+    );
+    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(
+        NodeId(pitch),
+        NodeId(slew),
+        gates,
+        n_gates,
+        vel,
+        NodeId(sum),
+        triggers,
+        n_triggers,
+    ));
+    unsafe {
+        vm.new_foreign_in(
+            0,
+            SynthObj {
+                alloc,
+                out_node: sum,
+            },
+        )
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_mono_end(raw: *mut WrenVM) {
@@ -2313,7 +2487,9 @@ fn self_synth<S: SlotApi>(vm: &S) -> &mut SynthObj {
 pub(crate) fn synth_note_on_impl<S: SlotApi>(vm: &S) {
     let note = vm.get_f(1) as u8;
     let vel = vm.get_f(2) as u8;
-    self_synth(vm).alloc.note_on(note, vel, &mut |c| crate::host::host().audio_cmd(c));
+    self_synth(vm)
+        .alloc
+        .note_on(note, vel, &mut |c| crate::host::host().audio_cmd(c));
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_note_on(raw: *mut WrenVM) {
@@ -2323,7 +2499,9 @@ pub(crate) unsafe extern "C" fn synth_note_on(raw: *mut WrenVM) {
 
 pub(crate) fn synth_note_off_impl<S: SlotApi>(vm: &S) {
     let note = vm.get_f(1) as u8;
-    self_synth(vm).alloc.note_off(note, &mut |c| crate::host::host().audio_cmd(c));
+    self_synth(vm)
+        .alloc
+        .note_off(note, &mut |c| crate::host::host().audio_cmd(c));
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_note_off(raw: *mut WrenVM) {
@@ -2402,7 +2580,9 @@ pub(crate) unsafe extern "C" fn synth_set_unison(raw: *mut WrenVM) {
 /// allocator. Works on both `Synth.new` (poly) and `Synth.mono`.
 pub(crate) fn synth_set_detune_impl<S: SlotApi>(vm: &S) {
     let cents = vm.get_f(1) as f32;
-    self_synth(vm).alloc.set_detune(cents, &mut |c| crate::host::host().audio_cmd(c));
+    self_synth(vm)
+        .alloc
+        .set_detune(cents, &mut |c| crate::host::host().audio_cmd(c));
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
@@ -2416,7 +2596,9 @@ pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
 /// takes effect on the next note-on.
 pub(crate) fn synth_set_width_impl<S: SlotApi>(vm: &S) {
     let amount = vm.get_f(1) as f32;
-    self_synth(vm).alloc.set_width(amount, &mut |c| crate::host::host().audio_cmd(c));
+    self_synth(vm)
+        .alloc
+        .set_width(amount, &mut |c| crate::host::host().audio_cmd(c));
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn synth_set_width(raw: *mut WrenVM) {
@@ -2438,7 +2620,11 @@ pub(crate) unsafe extern "C" fn node_set_value(raw: *mut WrenVM) {
 pub(crate) fn node_split_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let id = audio::alloc_node_id();
-    audio::new_node(id, Kind::Split2, [input, Input::Const(0.0), Input::Const(0.0)]);
+    audio::new_node(
+        id,
+        Kind::Split2,
+        [input, Input::Const(0.0), Input::Const(0.0)],
+    );
     unsafe { return_node(vm, id) };
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -2477,8 +2663,24 @@ fn write_source_to_bus<S: SlotApi>(vm: &S, slot: i32, bus: u16) {
             let n = unsafe { vm.foreign_mut::<NodeObj>(slot) };
             if n.width == 2 {
                 let id = n.id;
-                audio::bus_write_gains(Input::Node { node: NodeId(id), port: 0 }, bus, 1.0, 0.0);
-                audio::bus_write_gains(Input::Node { node: NodeId(id), port: 1 }, bus, 0.0, 1.0);
+                audio::bus_write_gains(
+                    Input::Node {
+                        node: NodeId(id),
+                        port: 0,
+                    },
+                    bus,
+                    1.0,
+                    0.0,
+                );
+                audio::bus_write_gains(
+                    Input::Node {
+                        node: NodeId(id),
+                        port: 1,
+                    },
+                    bus,
+                    0.0,
+                    1.0,
+                );
                 return;
             }
         }
@@ -2544,7 +2746,8 @@ pub(crate) fn node_patch_impl<S: SlotApi>(vm: &S) {
     // Null slot must NOT be reinterpreted as an Obj pointer (UB). Non-Bus (and
     // non-Foreign) falls through to write_source_to_bus, which already tolerates
     // non-Foreign args via arg_input.
-    let is_bus = vm.slot_type(1) == WrenType::Foreign && unsafe { *vm.foreign_mut::<u8>(1) } == TAG_BUS;
+    let is_bus =
+        vm.slot_type(1) == WrenType::Foreign && unsafe { *vm.foreign_mut::<u8>(1) } == TAG_BUS;
     if is_bus {
         let bus = unsafe { vm.foreign_mut::<BusObj>(1) }.id;
         audio::set_root(bus);
@@ -2741,7 +2944,16 @@ pub(crate) unsafe extern "C" fn node_trigger(raw: *mut WrenVM) {
 pub(crate) fn node_out_impl<S: SlotApi>(vm: &S) {
     let node = self_id(vm);
     let port = vm.get_f(1) as u8;
-    unsafe { vm.new_foreign_in(0, PortObj { tag: TAG_PORT, node, port }) };
+    unsafe {
+        vm.new_foreign_in(
+            0,
+            PortObj {
+                tag: TAG_PORT,
+                node,
+                port,
+            },
+        )
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 pub(crate) unsafe extern "C" fn node_out(raw: *mut WrenVM) {
@@ -2781,50 +2993,242 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "tb303_(_,_,_)", node_tb303_impl::<S>);
     method("main", "Node", true, "patch_(_)", node_patch_impl::<S>);
     method("main", "Node", true, "reset_()", node_reset_impl::<S>);
-    method("main", "Node", true, "masterLimit_(_,_)", node_master_limit_impl::<S>);
-    method("main", "Node", true, "masterDcBlock_(_)", node_master_dcblock_impl::<S>);
-    method("main", "Node", true, "masterEq_(_,_,_,_)", node_master_eq_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "masterLimit_(_,_)",
+        node_master_limit_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "masterDcBlock_(_)",
+        node_master_dcblock_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "masterEq_(_,_,_,_)",
+        node_master_eq_impl::<S>,
+    );
     method("main", "Node", true, "split_(_)", node_split_impl::<S>);
     method("main", "Node", true, "pan_(_,_)", node_pan_impl::<S>);
-    method("main", "Node", true, "wavetable_(_,_)", node_wavetable_impl::<S>);
-    method("main", "Node", true, "wavetable_pooled_(_,_)", node_wavetable_pooled_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "wavetable_(_,_)",
+        node_wavetable_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "wavetable_pooled_(_,_)",
+        node_wavetable_pooled_impl::<S>,
+    );
     method("main", "Node", true, "player_(_)", node_player_impl::<S>);
     method("main", "Node", false, "speed=(_)", node_set_speed_impl::<S>);
-    method("main", "Node", false, "semitones=(_)", node_set_semitones_impl::<S>);
-    method("main", "Node", false, "loopStart=(_)", node_set_loop_start_impl::<S>);
-    method("main", "Node", false, "loopEnd=(_)", node_set_loop_end_impl::<S>);
-    method("main", "Node", false, "loop=(_)", node_set_loop_mode_impl::<S>);
+    method(
+        "main",
+        "Node",
+        false,
+        "semitones=(_)",
+        node_set_semitones_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "loopStart=(_)",
+        node_set_loop_start_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "loopEnd=(_)",
+        node_set_loop_end_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "loop=(_)",
+        node_set_loop_mode_impl::<S>,
+    );
     method("main", "Node", true, "delay_(_,_,_)", node_delay_impl::<S>);
     method("main", "Node", false, "mix=(_)", node_set_mix_impl::<S>);
     method("main", "Node", false, "damp=(_)", node_set_damp_impl::<S>);
-    method("main", "Node", true, "chorus_(_,_,_,_)", node_chorus_impl::<S>);
-    method("main", "Node", true, "flanger_(_,_,_,_,_)", node_flanger_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "chorus_(_,_,_,_)",
+        node_chorus_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "flanger_(_,_,_,_,_)",
+        node_flanger_impl::<S>,
+    );
     method("main", "Node", true, "room_(_,_,_,_)", node_room_impl::<S>);
     method("main", "Node", true, "hall_(_,_,_,_)", node_hall_impl::<S>);
-    method("main", "Node", true, "plate_(_,_,_,_)", node_plate_impl::<S>);
-    method("main", "Node", true, "drive_(_,_,_,_,_)", node_drive_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "plate_(_,_,_,_)",
+        node_plate_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "drive_(_,_,_,_,_)",
+        node_drive_impl::<S>,
+    );
     method("main", "Node", false, "tone=(_)", node_set_tone_impl::<S>);
     method("main", "Node", false, "wet=(_)", node_set_wet_impl::<S>);
-    method("main", "Node", true, "comp_(_,_,_,_,_,_,_,_)", node_comp_impl::<S>);
-    method("main", "Node", false, "compThreshold=(_)", comp_set_threshold_impl::<S>);
-    method("main", "Node", false, "compRatio=(_)", comp_set_ratio_impl::<S>);
-    method("main", "Node", false, "compAttack=(_)", comp_set_attack_impl::<S>);
-    method("main", "Node", false, "compRelease=(_)", comp_set_release_impl::<S>);
-    method("main", "Node", false, "compKnee=(_)", comp_set_knee_impl::<S>);
-    method("main", "Node", false, "compMakeup=(_)", comp_set_makeup_impl::<S>);
-    method("main", "Node", false, "compDetector=(_)", comp_set_detector_impl::<S>);
-    method("main", "Node", true, "gate_(_,_,_,_,_,_,_,_)", node_gate_kind_impl::<S>);
-    method("main", "Node", false, "gateThreshold=(_)", gate_set_threshold_impl::<S>);
-    method("main", "Node", false, "gateRatio=(_)", gate_set_ratio_impl::<S>);
-    method("main", "Node", false, "gateAttack=(_)", gate_set_attack_impl::<S>);
-    method("main", "Node", false, "gateRelease=(_)", gate_set_release_impl::<S>);
-    method("main", "Node", false, "gateHold=(_)", gate_set_hold_impl::<S>);
-    method("main", "Node", false, "gateRange=(_)", gate_set_range_impl::<S>);
-    method("main", "Node", false, "gateDetector=(_)", gate_set_detector_impl::<S>);
-    method("main", "Node", true, "bitcrush_(_,_)", node_bitcrush_impl::<S>);
-    method("main", "Node", true, "decimate_(_,_)", node_decimate_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "comp_(_,_,_,_,_,_,_,_)",
+        node_comp_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "compThreshold=(_)",
+        comp_set_threshold_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "compRatio=(_)",
+        comp_set_ratio_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "compAttack=(_)",
+        comp_set_attack_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "compRelease=(_)",
+        comp_set_release_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "compKnee=(_)",
+        comp_set_knee_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "compMakeup=(_)",
+        comp_set_makeup_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "compDetector=(_)",
+        comp_set_detector_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "gate_(_,_,_,_,_,_,_,_)",
+        node_gate_kind_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "gateThreshold=(_)",
+        gate_set_threshold_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "gateRatio=(_)",
+        gate_set_ratio_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "gateAttack=(_)",
+        gate_set_attack_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "gateRelease=(_)",
+        gate_set_release_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "gateHold=(_)",
+        gate_set_hold_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "gateRange=(_)",
+        gate_set_range_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "gateDetector=(_)",
+        gate_set_detector_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "bitcrush_(_,_)",
+        node_bitcrush_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "decimate_(_,_)",
+        node_decimate_impl::<S>,
+    );
     method("main", "Node", false, "bits=(_)", node_set_bits_impl::<S>);
-    method("main", "Node", false, "decimateRate=(_)", node_set_decimate_rate_impl::<S>);
+    method(
+        "main",
+        "Node",
+        false,
+        "decimateRate=(_)",
+        node_set_decimate_rate_impl::<S>,
+    );
     method("main", "Node", true, "eq_(_,_,_,_,_)", node_eq_impl::<S>);
     method("main", "Node", false, "hz=(_)", node_set_hz_impl::<S>);
     method("main", "Node", false, "gain=(_)", node_set_gain_impl::<S>);
@@ -2837,64 +3241,268 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Node", true, "curve_(_,_)", node_curve_impl::<S>);
     method("main", "Node", true, "ctrl_(_)", node_ctrl_impl::<S>);
     method("main", "Node", true, "qstep_(_,_)", node_qstep_impl::<S>);
-    method("main", "Node", true, "qpitch_(_,_,_)", node_qpitch_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "qpitch_(_,_,_)",
+        node_qpitch_impl::<S>,
+    );
     method("main", "Node", true, "mtof_(_,_)", node_mtof_impl::<S>);
     method("main", "Node", true, "polyMode_", node_poly_mode_impl::<S>);
-    method("main", "Node", true, "polyGateCount_", node_poly_gate_count_impl::<S>);
-    method("main", "Node", true, "polyBegin_()", node_poly_begin_impl::<S>);
-    method("main", "Node", true, "polyVelBegin_()", node_poly_vel_begin_impl::<S>);
-    method("main", "Node", true, "polyosc_(_,_)", node_polyosc_impl::<S>);
-    method("main", "Node", true, "polysvf_(_,_,_)", node_polysvf_impl::<S>);
-    method("main", "Node", true, "polymoog_(_,_,_,_)", node_polymoog_impl::<S>);
-    method("main", "Node", true, "polyms20_(_,_,_,_)", node_polyms20_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "polyGateCount_",
+        node_poly_gate_count_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polyBegin_()",
+        node_poly_begin_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polyVelBegin_()",
+        node_poly_vel_begin_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polyosc_(_,_)",
+        node_polyosc_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polysvf_(_,_,_)",
+        node_polysvf_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polymoog_(_,_,_,_)",
+        node_polymoog_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polyms20_(_,_,_,_)",
+        node_polyms20_impl::<S>,
+    );
     method("main", "Node", true, "polyar_(_,_)", node_polyar_impl::<S>);
-    method("main", "Node", true, "polyadsr_(_,_,_,_)", node_polyadsr_impl::<S>);
-    method("main", "Node", true, "polymul_(_,_)", node_polymul_impl::<S>);
-    method("main", "Node", true, "polyadd_(_,_)", node_polyadd_impl::<S>);
-    method("main", "Node", true, "polynoise_()", node_polynoise_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "polyadsr_(_,_,_,_)",
+        node_polyadsr_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polymul_(_,_)",
+        node_polymul_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polyadd_(_,_)",
+        node_polyadd_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polynoise_()",
+        node_polynoise_impl::<S>,
+    );
     method("main", "Node", false, "isPoly_", node_is_poly_impl::<S>);
     method("main", "Node", true, "polypink_()", node_polypink_impl::<S>);
-    method("main", "Node", true, "polybrown_()", node_polybrown_impl::<S>);
-    method("main", "Node", true, "polysync_(_,_,_)", node_polysync_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "polybrown_()",
+        node_polybrown_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polysync_(_,_,_)",
+        node_polysync_impl::<S>,
+    );
     method("main", "Node", true, "polywt_(_,_)", node_polywt_impl::<S>);
-    method("main", "Node", true, "polywt_pooled_(_,_)", node_polywt_pooled_impl::<S>);
-    method("main", "Node", true, "polysampleplayer_(_,_)", node_polysampleplayer_impl::<S>);
-    method("main", "Node", true, "granular_(_,_)", node_granular_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "polywt_pooled_(_,_)",
+        node_polywt_pooled_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "polysampleplayer_(_,_)",
+        node_polysampleplayer_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "granular_(_,_)",
+        node_granular_impl::<S>,
+    );
     method("main", "Node", true, "stream_(_,_)", node_stream_impl::<S>);
     method("main", "Node", false, "root=(_)", node_set_root_impl::<S>);
-    method("main", "Node", false, "grainPosition=(_)", node_set_grain_position_impl::<S>);
-    method("main", "Node", false, "density=(_)", node_set_density_impl::<S>);
+    method(
+        "main",
+        "Node",
+        false,
+        "grainPosition=(_)",
+        node_set_grain_position_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "density=(_)",
+        node_set_density_impl::<S>,
+    );
     method("main", "Node", false, "spray=(_)", node_set_spray_impl::<S>);
     method("main", "Node", true, "polyEnd_(_)", node_poly_end_impl::<S>);
-    method("main", "Node", true, "monoBegin_()", node_mono_begin_impl::<S>);
+    method(
+        "main",
+        "Node",
+        true,
+        "monoBegin_()",
+        node_mono_begin_impl::<S>,
+    );
     method("main", "Node", true, "monoEnd_(_)", node_mono_end_impl::<S>);
-    method("main", "Synth", false, "noteOn(_,_)", synth_note_on_impl::<S>);
-    method("main", "Synth", false, "noteOff(_)", synth_note_off_impl::<S>);
+    method(
+        "main",
+        "Synth",
+        false,
+        "noteOn(_,_)",
+        synth_note_on_impl::<S>,
+    );
+    method(
+        "main",
+        "Synth",
+        false,
+        "noteOff(_)",
+        synth_note_off_impl::<S>,
+    );
     method("main", "Synth", false, "out", synth_out_impl::<S>);
     method("main", "Synth", false, "isMono_", synth_is_mono_impl::<S>);
-    method("main", "Synth", false, "setGlide_(_)", synth_set_glide_impl::<S>);
-    method("main", "Synth", false, "unison=(_)", synth_set_unison_impl::<S>);
-    method("main", "Synth", false, "detune=(_)", synth_set_detune_impl::<S>);
-    method("main", "Synth", false, "width=(_)", synth_set_width_impl::<S>);
+    method(
+        "main",
+        "Synth",
+        false,
+        "setGlide_(_)",
+        synth_set_glide_impl::<S>,
+    );
+    method(
+        "main",
+        "Synth",
+        false,
+        "unison=(_)",
+        synth_set_unison_impl::<S>,
+    );
+    method(
+        "main",
+        "Synth",
+        false,
+        "detune=(_)",
+        synth_set_detune_impl::<S>,
+    );
+    method(
+        "main",
+        "Synth",
+        false,
+        "width=(_)",
+        synth_set_width_impl::<S>,
+    );
     method("main", "Node", false, "value=(_)", node_set_value_impl::<S>);
     method("main", "Node", false, "size=(_)", node_set_size_impl::<S>);
-    method("main", "Node", false, "spread=(_)", node_set_spread_impl::<S>);
+    method(
+        "main",
+        "Node",
+        false,
+        "spread=(_)",
+        node_set_spread_impl::<S>,
+    );
     method("main", "Node", false, "rate=(_)", node_set_rate_impl::<S>);
     method("main", "Node", false, "depth=(_)", node_set_depth_impl::<S>);
     method("main", "Node", false, "regen=(_)", node_set_regen_impl::<S>);
     method("main", "Node", false, "freq=(_)", node_set_freq_impl::<S>);
-    method("main", "Node", false, "cutoff=(_)", node_set_cutoff_impl::<S>);
+    method(
+        "main",
+        "Node",
+        false,
+        "cutoff=(_)",
+        node_set_cutoff_impl::<S>,
+    );
     method("main", "Node", false, "res=(_)", node_set_res_impl::<S>);
     // Resonator freq/damping aliases (ports 1/2) — see bindings.rs note.
-    method("main", "Node", false, "pitch=(_)", node_set_cutoff_impl::<S>);
+    method(
+        "main",
+        "Node",
+        false,
+        "pitch=(_)",
+        node_set_cutoff_impl::<S>,
+    );
     method("main", "Node", false, "damping=(_)", node_set_res_impl::<S>);
     method("main", "Node", false, "pm=(_)", node_set_pm_impl::<S>);
     method("main", "Node", false, "width=(_)", node_set_width_impl::<S>);
-    method("main", "Node", false, "position=(_)", node_set_position_impl::<S>);
-    method("main", "Node", false, "feedback=(_)", node_set_feedback_impl::<S>);
-    method("main", "Node", false, "structure=(_)", node_set_structure_impl::<S>);
-    method("main", "Node", false, "brightness=(_)", node_set_brightness_impl::<S>);
-    method("main", "Node", false, "strike=(_)", node_set_strike_impl::<S>);
+    method(
+        "main",
+        "Node",
+        false,
+        "position=(_)",
+        node_set_position_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "feedback=(_)",
+        node_set_feedback_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "structure=(_)",
+        node_set_structure_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "brightness=(_)",
+        node_set_brightness_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        false,
+        "strike=(_)",
+        node_set_strike_impl::<S>,
+    );
     method("main", "Node", false, "gate(_)", node_gate_impl::<S>);
     method("main", "Node", false, "trigger()", node_trigger_impl::<S>);
     method("main", "Node", false, "out(_)", node_out_impl::<S>);
@@ -2903,8 +3511,26 @@ pub(crate) fn register_audio<S: SlotApi>(
     method("main", "Bus", false, "write_(_)", bus_write_impl::<S>);
     method("main", "Bus", false, "gain=(_)", bus_set_gain_impl::<S>);
     method("main", "Bus", false, "send_(_,_)", bus_send_impl::<S>);
-    method("main", "Wavetable", true, "from(_)", wavetable_from_impl::<S>);
-    method("main", "Wavetable", true, "from2d(_)", wavetable_from2d_impl::<S>);
-    method("main", "SampleBuffer", true, "from(_)", sample_from_impl::<S>);
+    method(
+        "main",
+        "Wavetable",
+        true,
+        "from(_)",
+        wavetable_from_impl::<S>,
+    );
+    method(
+        "main",
+        "Wavetable",
+        true,
+        "from2d(_)",
+        wavetable_from2d_impl::<S>,
+    );
+    method(
+        "main",
+        "SampleBuffer",
+        true,
+        "from(_)",
+        sample_from_impl::<S>,
+    );
     method("main", "Keymap", true, "from(_)", keymap_from_impl::<S>);
 }

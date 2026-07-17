@@ -293,10 +293,7 @@ fn key_color(note: u8, pressed: bool) -> Color {
 /// Assign `note` to a free voice (stealing voice 0 if all are busy) and gate it
 /// on.
 fn voice_on(note_of: &mut [Option<u8>; VOICES], note: u8) {
-    let idx = note_of
-        .iter()
-        .position(Option::is_none)
-        .unwrap_or(0);
+    let idx = note_of.iter().position(Option::is_none).unwrap_or(0);
     note_of[idx] = Some(note);
     SYNTH.freq[idx].store(midi_to_freq(note).to_bits(), Ordering::Relaxed);
     SYNTH.gate[idx].store(true, Ordering::Relaxed);

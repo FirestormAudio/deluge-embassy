@@ -23,7 +23,10 @@ pub fn assert_no_denormals(buf: &[f32]) {
 /// Largest absolute difference between two equal-length buffers.
 pub fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "buffers differ in length");
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f32::max)
 }
 
 /// Assert two buffers agree within `tol` (a null test).

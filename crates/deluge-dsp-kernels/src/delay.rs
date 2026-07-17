@@ -77,11 +77,7 @@ impl Default for DelayLine {
 #[inline]
 fn floorf(x: f32) -> f32 {
     let i = x as i64 as f32;
-    if x < i {
-        i - 1.0
-    } else {
-        i
-    }
+    if x < i { i - 1.0 } else { i }
 }
 
 use crate::In;
@@ -94,14 +90,19 @@ use crate::math::pan_gains;
 #[derive(Clone, Copy)]
 pub struct Delay {
     line: DelayLine,
-    damp_z: f32, // one-pole LP state in the feedback path
-    mix: f32,    // dry/wet, [0,1]
+    damp_z: f32,  // one-pole LP state in the feedback path
+    mix: f32,     // dry/wet, [0,1]
     damping: f32, // feedback-path LP amount, [0,1] (0 = bright, 1 = frozen/dark)
 }
 
 impl Delay {
     pub fn new() -> Delay {
-        Delay { line: DelayLine::new(), damp_z: 0.0, mix: 0.35, damping: 0.0 }
+        Delay {
+            line: DelayLine::new(),
+            damp_z: 0.0,
+            mix: 0.35,
+            damping: 0.0,
+        }
     }
 
     pub fn set_mix(&mut self, v: f32) {
@@ -160,17 +161,38 @@ pub struct ModDelay<const VOICES: usize> {
 
 impl<const VOICES: usize> ModDelay<VOICES> {
     pub fn new(base_s: f32) -> ModDelay<VOICES> {
-        ModDelay { line: DelayLine::new(), lfo_phase: 0.0, base: base_s,
-                   rate: 0.5, depth: 0.25, mix: 0.5, feedback: 0.0 }
+        ModDelay {
+            line: DelayLine::new(),
+            lfo_phase: 0.0,
+            base: base_s,
+            rate: 0.5,
+            depth: 0.25,
+            mix: 0.5,
+            feedback: 0.0,
+        }
     }
-    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
-    pub fn set_rate(&mut self, v: f32) { self.rate = v.max(0.0); }
-    pub fn set_depth(&mut self, v: f32) { self.depth = v.clamp(0.0, 0.99); }
-    pub fn set_feedback(&mut self, v: f32) { self.feedback = v.clamp(0.0, 0.9); }
+    pub fn set_mix(&mut self, v: f32) {
+        self.mix = v.clamp(0.0, 1.0);
+    }
+    pub fn set_rate(&mut self, v: f32) {
+        self.rate = v.max(0.0);
+    }
+    pub fn set_depth(&mut self, v: f32) {
+        self.depth = v.clamp(0.0, 0.99);
+    }
+    pub fn set_feedback(&mut self, v: f32) {
+        self.feedback = v.clamp(0.0, 0.9);
+    }
 
     /// One block. `input` = mono; `buf` = pooled ring; writes the stereo pair.
-    pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32],
-                   out_l: &mut [f32], out_r: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        input: In,
+        dt: f32,
+        buf: &mut [f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
         let norm = 1.0 / VOICES as f32;
         for i in 0..out_l.len() {
             let x = input.at(i);
@@ -297,9 +319,11 @@ mod tests {
         let out = render_delay(&mut buf, &mut d, &input, time_s, 0.0, dt);
         // Peak is near sample 100; almost nothing in [1, 90].
         let (peak_i, peak_v) =
-            out.iter().enumerate().fold((0usize, 0.0f32), |(bi, bv), (i, &v)| {
-                if v.abs() > bv { (i, v.abs()) } else { (bi, bv) }
-            });
+            out.iter()
+                .enumerate()
+                .fold((0usize, 0.0f32), |(bi, bv), (i, &v)| {
+                    if v.abs() > bv { (i, v.abs()) } else { (bi, bv) }
+                });
         assert!((peak_i as i32 - 100).abs() <= 1, "peak at {peak_i}");
         assert!(peak_v > 0.5, "delayed impulse too small: {peak_v}");
         let early: f32 = out[1..90].iter().map(|v| v.abs()).sum();
@@ -317,7 +341,11 @@ mod tests {
         input[0] = 1.0;
         let out = render_delay(&mut buf, &mut d, &input, time_s, 0.6, dt);
         // Repeats near 50, 100, 150 with geometric decay.
-        let tap = |n: usize| out[n - 1..=n + 1].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let tap = |n: usize| {
+            out[n - 1..=n + 1]
+                .iter()
+                .fold(0.0f32, |m, v| m.max(v.abs()))
+        };
         let (a, b, c) = (tap(50), tap(100), tap(150));
         assert!(a > b && b > c, "repeats not decaying: {a} {b} {c}");
         assert!(c > 0.05, "third repeat vanished: {c}");
@@ -334,13 +362,21 @@ mod tests {
         let mut d0 = Delay::new();
         d0.set_mix(0.0);
         let dry = render_delay(&mut b0, &mut d0, &input, time_s, 0.0, dt);
-        assert!((dry[0] - 0.5).abs() < 1e-4, "mix=0 should pass dry: {}", dry[0]);
+        assert!(
+            (dry[0] - 0.5).abs() < 1e-4,
+            "mix=0 should pass dry: {}",
+            dry[0]
+        );
         // mix = 1 → output at sample 0 is pure (not-yet-arrived) wet ≈ 0.
         let mut b1 = [0.0f32; 2048];
         let mut d1 = Delay::new();
         d1.set_mix(1.0);
         let wet = render_delay(&mut b1, &mut d1, &input, time_s, 0.0, dt);
-        assert!(wet[0].abs() < 1e-4, "mix=1 sample0 should be silent wet: {}", wet[0]);
+        assert!(
+            wet[0].abs() < 1e-4,
+            "mix=1 sample0 should be silent wet: {}",
+            wet[0]
+        );
     }
 
     #[test]
@@ -442,8 +478,7 @@ mod tests {
         md.set_rate(2.0);
         md.set_depth(0.5);
         // A steady tone so only the effect creates L/R and time variation.
-        let input: std::vec::Vec<f32> =
-            (0..2000).map(|i| (i as f32 * 0.02).sin()).collect();
+        let input: std::vec::Vec<f32> = (0..2000).map(|i| (i as f32 * 0.02).sin()).collect();
         let (l, r) = render_mod(&mut md, &mut buf, &input, dt);
         assert!(l.iter().all(|v| v.is_finite()) && r.iter().all(|v| v.is_finite()));
         // Voices panned → the two channels are not identical.
@@ -476,7 +511,10 @@ mod tests {
         let low = energy(0.0);
         let high = energy(0.9);
         assert!(high.is_finite() && low.is_finite() && low > 0.0);
-        assert!(high > low * 2.0, "feedback should build resonance: {low} → {high}");
+        assert!(
+            high > low * 2.0,
+            "feedback should build resonance: {low} → {high}"
+        );
     }
 
     #[test]

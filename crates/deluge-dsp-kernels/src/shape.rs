@@ -50,7 +50,9 @@ mod tests {
     use crate::In;
 
     fn ramp(n: usize) -> std::vec::Vec<f32> {
-        (0..n).map(|i| i as f32 / (n - 1) as f32 * 2.0 - 1.0).collect() // -1..=1
+        (0..n)
+            .map(|i| i as f32 / (n - 1) as f32 * 2.0 - 1.0)
+            .collect() // -1..=1
     }
 
     #[test]
@@ -59,7 +61,12 @@ mod tests {
         let mut out = std::vec![0.0f32; 21];
         curve(In::A(&x), In::K(0.0), &mut out);
         for i in 0..21 {
-            assert!((out[i] - x[i]).abs() < 1e-6, "k=0 is identity at {i}: {} vs {}", out[i], x[i]);
+            assert!(
+                (out[i] - x[i]).abs() < 1e-6,
+                "k=0 is identity at {i}: {} vs {}",
+                out[i],
+                x[i]
+            );
         }
     }
 
@@ -75,7 +82,11 @@ mod tests {
         assert!((m[0] - 0.8).abs() < 1e-4, "k=0.6 boosts 0.5→0.8: {}", m[0]);
         // b = 0.2; bias(0.5,0.2) = 0.2.
         curve(In::A(&[0.5]), In::K(-0.6), &mut m);
-        assert!((m[0] - 0.2).abs() < 1e-4, "k=-0.6 attenuates 0.5→0.2: {}", m[0]);
+        assert!(
+            (m[0] - 0.2).abs() < 1e-4,
+            "k=-0.6 attenuates 0.5→0.2: {}",
+            m[0]
+        );
     }
 
     #[test]
@@ -85,7 +96,10 @@ mod tests {
         curve(In::A(&x), In::K(0.7), &mut out);
         // odd symmetry: out[mid-j] == -out[mid+j]
         for j in 0..=20 {
-            assert!((out[20 - j] + out[20 + j]).abs() < 1e-5, "odd symmetry at {j}");
+            assert!(
+                (out[20 - j] + out[20 + j]).abs() < 1e-5,
+                "odd symmetry at {j}"
+            );
         }
         // monotonic non-decreasing, bounded [-1,1]
         for i in 1..41 {
@@ -102,7 +116,11 @@ mod tests {
         assert_eq!(out, std::vec![0.0, 0.0, 0.0, 0.0], "new Ctrl outputs 0");
         c.set_value(3.5);
         c.process(&mut out);
-        assert_eq!(out, std::vec![3.5, 3.5, 3.5, 3.5], "set_value changes output");
+        assert_eq!(
+            out,
+            std::vec![3.5, 3.5, 3.5, 3.5],
+            "set_value changes output"
+        );
     }
 
     use proptest::prelude::*;

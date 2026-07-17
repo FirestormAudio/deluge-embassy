@@ -1,7 +1,7 @@
 //! Low-frequency modulation source: a phase accumulator driving raw (non-band-
 //! limited) shapes, bipolar [−1,1]. Per-sample, mono, no buffer, deterministic.
 
-use crate::{fast_sin, floorf, In};
+use crate::{In, fast_sin, floorf};
 
 #[derive(Clone, Copy)]
 pub enum LfoShape {
@@ -124,7 +124,10 @@ mod tests {
     fn all_shapes_bounded_bipolar() {
         for s in 0u8..6 {
             let out = render(s, 3.0, 48_000);
-            assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0001), "shape {s} out of range");
+            assert!(
+                out.iter().all(|v| v.is_finite() && v.abs() <= 1.0001),
+                "shape {s} out of range"
+            );
         }
     }
 
@@ -132,9 +135,17 @@ mod tests {
     fn saw_ramps_up() {
         // One period of a 1 Hz saw: rises monotonically until the wrap.
         let out = render(2 /* Saw */, 1.0, 48_000);
-        assert!((out[0] - (-1.0)).abs() < 0.01, "saw starts near −1: {}", out[0]);
+        assert!(
+            (out[0] - (-1.0)).abs() < 0.01,
+            "saw starts near −1: {}",
+            out[0]
+        );
         assert!(out[24_000] > out[100], "saw rising"); // quarter → later
-        assert!(out[47_000] > 0.9, "saw near +1 before wrap: {}", out[47_000]);
+        assert!(
+            out[47_000] > 0.9,
+            "saw near +1 before wrap: {}",
+            out[47_000]
+        );
     }
 
     #[test]
@@ -172,7 +183,11 @@ mod tests {
         let mut one = [0.0f32; 1];
         l.process(In::A(&[5.0f32][..]), 1.0 / FS, &mut one);
         // After retrigger (phase_offset=0) the saw is ≈ −1 + one increment.
-        assert!(one[0] < -0.99, "retrigger resets phase to ~start: {}", one[0]);
+        assert!(
+            one[0] < -0.99,
+            "retrigger resets phase to ~start: {}",
+            one[0]
+        );
     }
 
     use proptest::prelude::*;

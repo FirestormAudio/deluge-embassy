@@ -26,7 +26,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
-use deluge_protocol::{FromDeluge, FrameDecoder};
+use deluge_protocol::{FrameDecoder, FromDeluge};
 
 use crate::hardware::{HardwareButton, HardwareEncoder, HardwareLED};
 
@@ -107,7 +107,10 @@ fn as_tcp_addr(s: &str) -> Option<String> {
         return Some(normalize(rest));
     }
     if let Some(port) = s.strip_prefix(':') {
-        return port.parse::<u16>().is_ok().then(|| format!("127.0.0.1:{port}"));
+        return port
+            .parse::<u16>()
+            .is_ok()
+            .then(|| format!("127.0.0.1:{port}"));
     }
     // `host:port` — only when the trailing component is a real port number, so Unix paths
     // (and Windows drive paths like `C:\…`) aren't mistaken for TCP endpoints.
@@ -117,7 +120,10 @@ fn as_tcp_addr(s: &str) -> Option<String> {
 
 /// Wire up the channels and spawn the reader/writer threads over an already-connected
 /// stream split into read/write halves.
-fn spawn_io<R, W>(reader: R, writer: W) -> std::io::Result<(Receiver<(u8, Vec<u8>)>, Sender<FromDeluge>)>
+fn spawn_io<R, W>(
+    reader: R,
+    writer: W,
+) -> std::io::Result<(Receiver<(u8, Vec<u8>)>, Sender<FromDeluge>)>
 where
     R: Read + Send + 'static,
     W: Write + Send + 'static,

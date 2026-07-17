@@ -2,7 +2,7 @@
 //! (`QuantStep`), snap a semitone signal to a musical scale (`QuantPitch`), and
 //! convert semitones to Hz (`Mtof`). Per-sample mono kernels — no heap.
 
-use crate::{floorf, In};
+use crate::{In, floorf};
 
 /// Snap a bipolar `[-1,1]` signal to `N` evenly-spaced levels (endpoints
 /// inclusive). Port 0 = input; `param 0 = N` (clamp ≥ 2).
@@ -42,7 +42,10 @@ pub struct QuantPitch {
 }
 impl QuantPitch {
     pub fn new() -> QuantPitch {
-        QuantPitch { mask: 0xFFF, root: 0 }
+        QuantPitch {
+            mask: 0xFFF,
+            root: 0,
+        }
     }
     pub fn set_mask(&mut self, m: u16) {
         self.mask = m & 0xFFF;

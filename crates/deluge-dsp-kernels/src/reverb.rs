@@ -60,7 +60,15 @@ impl Comb {
     pub fn new() -> Comb {
         Comb { c: 0, damp_z: 0.0 }
     }
-    pub fn tick(&mut self, buf: &mut [f32], off: usize, len: usize, x: f32, feedback: f32, damp: f32) -> f32 {
+    pub fn tick(
+        &mut self,
+        buf: &mut [f32],
+        off: usize,
+        len: usize,
+        x: f32,
+        feedback: f32,
+        damp: f32,
+    ) -> f32 {
         let out = buf[off + self.c];
         self.damp_z = out * (1.0 - damp) + self.damp_z * damp;
         buf[off + self.c] = x + self.damp_z * feedback;
@@ -119,12 +127,27 @@ impl Freeverb {
             mix: 0.5,
         }
     }
-    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
-    pub fn set_damp(&mut self, v: f32) { self.damp = v.clamp(0.0, 1.0); }
-    pub fn set_roomsize(&mut self, v: f32) { self.roomsize = v.clamp(0.0, 1.0); }
-    pub fn set_width(&mut self, v: f32) { self.width = v.clamp(0.0, 1.0); }
+    pub fn set_mix(&mut self, v: f32) {
+        self.mix = v.clamp(0.0, 1.0);
+    }
+    pub fn set_damp(&mut self, v: f32) {
+        self.damp = v.clamp(0.0, 1.0);
+    }
+    pub fn set_roomsize(&mut self, v: f32) {
+        self.roomsize = v.clamp(0.0, 1.0);
+    }
+    pub fn set_width(&mut self, v: f32) {
+        self.width = v.clamp(0.0, 1.0);
+    }
 
-    pub fn process(&mut self, input: In, _dt: f32, buf: &mut [f32], out_l: &mut [f32], out_r: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        input: In,
+        _dt: f32,
+        buf: &mut [f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
         // Real-time safety: a too-small region → dry passthrough, never panic.
         if buf.len() < REVERB_BUF_SAMPLES {
             for i in 0..out_l.len() {
@@ -212,12 +235,27 @@ impl Fdn8 {
             mix: 0.5,
         }
     }
-    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
-    pub fn set_damp(&mut self, v: f32) { self.damp = v.clamp(0.0, 1.0); }
-    pub fn set_size(&mut self, v: f32) { self.size = v.clamp(0.0, 1.0); }
-    pub fn set_width(&mut self, v: f32) { self.width = v.clamp(0.0, 1.0); }
+    pub fn set_mix(&mut self, v: f32) {
+        self.mix = v.clamp(0.0, 1.0);
+    }
+    pub fn set_damp(&mut self, v: f32) {
+        self.damp = v.clamp(0.0, 1.0);
+    }
+    pub fn set_size(&mut self, v: f32) {
+        self.size = v.clamp(0.0, 1.0);
+    }
+    pub fn set_width(&mut self, v: f32) {
+        self.width = v.clamp(0.0, 1.0);
+    }
 
-    pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32], out_l: &mut [f32], out_r: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        input: In,
+        dt: f32,
+        buf: &mut [f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
         if buf.len() < HALL_BUF_SAMPLES {
             for i in 0..out_l.len() {
                 let x = input.at(i);
@@ -276,7 +314,9 @@ impl Default for Fdn8 {
 }
 
 /// Dattorro element lengths, order [idf0,idf1,idf2,idf3, ad1L,ad1R, daL,daR, ad2L,ad2R, dbL,dbR].
-const PLATE_LEN: [usize; 12] = [142, 107, 379, 277, 672, 908, 4453, 4217, 1800, 2656, 3720, 3163];
+const PLATE_LEN: [usize; 12] = [
+    142, 107, 379, 277, 672, 908, 4453, 4217, 1800, 2656, 3720, 3163,
+];
 pub const PLATE_BUF_SAMPLES: usize = 22_494;
 const PLATE_BANDWIDTH: f32 = 0.9995;
 const PLATE_DDIFF1: f32 = 0.7;
@@ -345,14 +385,38 @@ pub struct Dattorro {
 }
 impl Dattorro {
     pub fn new() -> Dattorro {
-        Dattorro { c: [0; 12], damp_z: [0.0; 2], bw: 0.0, lfo_phase: 0.0, size: 0.5, damp: 0.5, width: 1.0, mix: 0.5 }
+        Dattorro {
+            c: [0; 12],
+            damp_z: [0.0; 2],
+            bw: 0.0,
+            lfo_phase: 0.0,
+            size: 0.5,
+            damp: 0.5,
+            width: 1.0,
+            mix: 0.5,
+        }
     }
-    pub fn set_mix(&mut self, v: f32) { self.mix = v.clamp(0.0, 1.0); }
-    pub fn set_damp(&mut self, v: f32) { self.damp = v.clamp(0.0, 1.0); }
-    pub fn set_size(&mut self, v: f32) { self.size = v.clamp(0.0, 1.0); }
-    pub fn set_width(&mut self, v: f32) { self.width = v.clamp(0.0, 1.0); }
+    pub fn set_mix(&mut self, v: f32) {
+        self.mix = v.clamp(0.0, 1.0);
+    }
+    pub fn set_damp(&mut self, v: f32) {
+        self.damp = v.clamp(0.0, 1.0);
+    }
+    pub fn set_size(&mut self, v: f32) {
+        self.size = v.clamp(0.0, 1.0);
+    }
+    pub fn set_width(&mut self, v: f32) {
+        self.width = v.clamp(0.0, 1.0);
+    }
 
-    pub fn process(&mut self, input: In, dt: f32, buf: &mut [f32], out_l: &mut [f32], out_r: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        input: In,
+        dt: f32,
+        buf: &mut [f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
         if buf.len() < PLATE_BUF_SAMPLES {
             for i in 0..out_l.len() {
                 let x = input.at(i);
@@ -415,11 +479,18 @@ impl Dattorro {
             u = plate_ap(el!(9), &mut self.c[9], u, PLATE_DDIFF2);
             plate_delay(el!(11), &mut self.c[11], u);
             // Output taps (read-only, after all writes/advances).
-            let ta = |k: usize, o: usize| plate_tap(&buf[off[k]..off[k] + PLATE_LEN[k]], self.c[k], o);
+            let ta =
+                |k: usize, o: usize| plate_tap(&buf[off[k]..off[k] + PLATE_LEN[k]], self.c[k], o);
             let yl = PLATE_OUT_SCALE
-                * (ta(7, 266) + ta(7, 2974) - ta(9, 1913) + ta(11, 1996) - ta(6, 1990) - ta(8, 187) - ta(10, 1066));
+                * (ta(7, 266) + ta(7, 2974) - ta(9, 1913) + ta(11, 1996)
+                    - ta(6, 1990)
+                    - ta(8, 187)
+                    - ta(10, 1066));
             let yr = PLATE_OUT_SCALE
-                * (ta(6, 353) + ta(6, 3627) - ta(8, 1228) + ta(10, 2673) - ta(7, 2111) - ta(9, 335) - ta(11, 121));
+                * (ta(6, 353) + ta(6, 3627) - ta(8, 1228) + ta(10, 2673)
+                    - ta(7, 2111)
+                    - ta(9, 335)
+                    - ta(11, 121));
             out_l[i] = x * dry + yl * wet1 + yr * wet2;
             out_r[i] = x * dry + yr * wet1 + yl * wet2;
         }
@@ -437,7 +508,11 @@ mod tests {
     use super::*;
     use crate::In;
 
-    fn render(fv: &mut Freeverb, buf: &mut [f32], input: &[f32]) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
+    fn render(
+        fv: &mut Freeverb,
+        buf: &mut [f32],
+        input: &[f32],
+    ) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
         let mut l = std::vec![0.0f32; input.len()];
         let mut r = std::vec![0.0f32; input.len()];
         fv.process(In::A(input), 1.0 / 44_100.0, buf, &mut l, &mut r);
@@ -446,7 +521,8 @@ mod tests {
 
     #[test]
     fn layout_sums_to_reverb_buf_samples() {
-        let combs: usize = COMB.iter().sum::<usize>() + COMB.iter().map(|c| c + SPREAD).sum::<usize>();
+        let combs: usize =
+            COMB.iter().sum::<usize>() + COMB.iter().map(|c| c + SPREAD).sum::<usize>();
         let aps: usize = AP.iter().sum::<usize>() + AP.iter().map(|a| a + SPREAD).sum::<usize>();
         assert_eq!(combs + aps, REVERB_BUF_SAMPLES);
     }
@@ -496,7 +572,10 @@ mod tests {
             let mut input = std::vec![0.0f32; 20_000];
             input[0] = 1.0;
             let (l, _r) = render(&mut fv, &mut buf, &input);
-            l[8_000..12_000].windows(2).map(|w| (w[1] - w[0]).powi(2)).sum()
+            l[8_000..12_000]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).powi(2))
+                .sum()
         };
         assert!(hf(0.9) < hf(0.05), "more damping → less HF in the tail");
     }
@@ -529,10 +608,16 @@ mod tests {
         fv.set_mix(1.0);
         let input = std::vec![0.3f32; 32];
         let (l, r) = render(&mut fv, &mut buf, &input);
-        assert!(l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6));
+        assert!(
+            l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6)
+        );
     }
 
-    fn render_hall(fdn: &mut Fdn8, buf: &mut [f32], input: &[f32]) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
+    fn render_hall(
+        fdn: &mut Fdn8,
+        buf: &mut [f32],
+        input: &[f32],
+    ) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
         let mut l = std::vec![0.0f32; input.len()];
         let mut r = std::vec![0.0f32; input.len()];
         fdn.process(In::A(input), 1.0 / 44_100.0, buf, &mut l, &mut r);
@@ -552,7 +637,10 @@ mod tests {
         let e_in: f32 = v.iter().map(|x| x * x).sum();
         fwht8(&mut v);
         let e_out: f32 = v.iter().map(|x| x * x).sum();
-        assert!((e_in - e_out).abs() < 1e-4, "not energy-preserving: {e_in} vs {e_out}");
+        assert!(
+            (e_in - e_out).abs() < 1e-4,
+            "not energy-preserving: {e_in} vs {e_out}"
+        );
         // All-ones → only bin 0 = √8, rest 0.
         let mut ones = [1.0f32; 8];
         fwht8(&mut ones);
@@ -603,7 +691,10 @@ mod tests {
             let mut input = std::vec![0.0f32; 30_000];
             input[0] = 1.0;
             let (l, _r) = render_hall(&mut fdn, &mut buf, &input);
-            l[15_000..19_000].windows(2).map(|w| (w[1] - w[0]).powi(2)).sum()
+            l[15_000..19_000]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).powi(2))
+                .sum()
         };
         assert!(hf(0.9) < hf(0.05), "more damping → less HF in the tail");
     }
@@ -636,7 +727,9 @@ mod tests {
         fdn.set_mix(1.0);
         let input = std::vec![0.3f32; 32];
         let (l, r) = render_hall(&mut fdn, &mut buf, &input);
-        assert!(l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6));
+        assert!(
+            l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6)
+        );
     }
 
     use proptest::prelude::*;
@@ -684,7 +777,11 @@ mod tests {
         }
     }
 
-    fn render_plate(d: &mut Dattorro, buf: &mut [f32], input: &[f32]) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
+    fn render_plate(
+        d: &mut Dattorro,
+        buf: &mut [f32],
+        input: &[f32],
+    ) -> (std::vec::Vec<f32>, std::vec::Vec<f32>) {
         let mut l = std::vec![0.0f32; input.len()];
         let mut r = std::vec![0.0f32; input.len()];
         d.process(In::A(input), 1.0 / 44_100.0, buf, &mut l, &mut r);
@@ -740,7 +837,10 @@ mod tests {
             let mut input = std::vec![0.0f32; 25_000];
             input[0] = 1.0;
             let (l, _r) = render_plate(&mut d, &mut buf, &input);
-            l[12_000..16_000].windows(2).map(|w| (w[1] - w[0]).powi(2)).sum()
+            l[12_000..16_000]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).powi(2))
+                .sum()
         };
         assert!(hf(0.9) < hf(0.05), "more damping → less HF in the tail");
     }
@@ -773,7 +873,9 @@ mod tests {
         d.set_mix(1.0);
         let input = std::vec![0.3f32; 32];
         let (l, r) = render_plate(&mut d, &mut buf, &input);
-        assert!(l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6));
+        assert!(
+            l.iter().all(|&v| (v - 0.3).abs() < 1e-6) && r.iter().all(|&v| (v - 0.3).abs() < 1e-6)
+        );
     }
 
     proptest! {

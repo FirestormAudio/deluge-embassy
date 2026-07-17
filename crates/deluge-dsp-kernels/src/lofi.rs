@@ -11,8 +11,14 @@ pub struct Bitcrush {
 }
 
 impl Bitcrush {
-    pub fn new(bits: f32) -> Bitcrush { Bitcrush { bits: bits.clamp(1.0, 24.0) } }
-    pub fn set_bits(&mut self, b: f32) { self.bits = b.clamp(1.0, 24.0); }
+    pub fn new(bits: f32) -> Bitcrush {
+        Bitcrush {
+            bits: bits.clamp(1.0, 24.0),
+        }
+    }
+    pub fn set_bits(&mut self, b: f32) {
+        self.bits = b.clamp(1.0, 24.0);
+    }
 
     pub fn process(&mut self, input: In, _dt: f32, out: &mut [f32]) {
         let step = 1.0 / libm::powf(2.0, self.bits - 1.0); // 1 / 2^(bits-1)
@@ -32,8 +38,16 @@ pub struct Decimate {
 }
 
 impl Decimate {
-    pub fn new(rate_hz: f32) -> Decimate { Decimate { rate_hz: rate_hz.max(1.0), held: 0.0, phase: 1.0 } }
-    pub fn set_rate(&mut self, hz: f32) { self.rate_hz = hz.max(1.0); }
+    pub fn new(rate_hz: f32) -> Decimate {
+        Decimate {
+            rate_hz: rate_hz.max(1.0),
+            held: 0.0,
+            phase: 1.0,
+        }
+    }
+    pub fn set_rate(&mut self, hz: f32) {
+        self.rate_hz = hz.max(1.0);
+    }
 
     pub fn process(&mut self, input: In, dt: f32, out: &mut [f32]) {
         let inc = (self.rate_hz * dt).min(1.0); // rate/sr, capped (rate>=sr ⇒ passthrough)
@@ -73,7 +87,11 @@ mod tests {
         let step = 1.0 / libm::powf(2.0, 8.0 - 1.0);
         for (o, x) in out.iter().zip(inp.iter()) {
             let q = o / step;
-            assert!((q - libm::roundf(q)).abs() < 1e-3, "output on the {}-step grid", step);
+            assert!(
+                (q - libm::roundf(q)).abs() < 1e-3,
+                "output on the {}-step grid",
+                step
+            );
             assert!((o - x).abs() <= step, "within one step of input");
         }
     }
@@ -92,10 +110,17 @@ mod tests {
         assert_eq!(out[1], out[0], "held");
         assert_eq!(out[2], out[0], "held");
         // it does change (a later latch grabs a new sample) …
-        assert!(out.iter().any(|&v| v != out[0]), "decimator latches new samples");
+        assert!(
+            out.iter().any(|&v| v != out[0]),
+            "decimator latches new samples"
+        );
         // … and is heavily piecewise-constant (most consecutive pairs equal).
         let repeats = out.windows(2).filter(|w| w[0] == w[1]).count();
-        assert!(repeats >= out.len() / 2, "piecewise-constant (held), got {} repeats", repeats);
+        assert!(
+            repeats >= out.len() / 2,
+            "piecewise-constant (held), got {} repeats",
+            repeats
+        );
 
         // rate >= sr → inc capped at 1 → latches every sample → passthrough.
         let mut d2 = Decimate::new(sr);

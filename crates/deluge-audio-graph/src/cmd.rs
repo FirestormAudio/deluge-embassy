@@ -2,47 +2,112 @@
 //! web direct) ships `Cmd`s to the engine's `apply`. Mirrors the prototype's
 //! `Cmd`/`audio_cmd`, generalized to the P0 model.
 
-use crate::{BusId, Input, NodeId, OutputSrc};
 use crate::node::Kind;
+use crate::{BusId, Input, NodeId, OutputSrc};
 
 pub const MAX_ARGS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cmd {
     Nop,
-    NewNode { node: NodeId, kind: Kind, args: [Input; MAX_ARGS] },
-    SetInput { node: NodeId, port: u8, src: Input },
-    SetParam { node: NodeId, param: u8, value: f32 },
-    BindTable { node: NodeId, src: crate::node::TableSrc },
-    Gate { node: NodeId, on: bool },
-    Trigger { node: NodeId },
-    GateVoice { node: NodeId, voice: u8, on: bool },
-    TriggerVoice { node: NodeId, voice: u8 },
+    NewNode {
+        node: NodeId,
+        kind: Kind,
+        args: [Input; MAX_ARGS],
+    },
+    SetInput {
+        node: NodeId,
+        port: u8,
+        src: Input,
+    },
+    SetParam {
+        node: NodeId,
+        param: u8,
+        value: f32,
+    },
+    BindTable {
+        node: NodeId,
+        src: crate::node::TableSrc,
+    },
+    Gate {
+        node: NodeId,
+        on: bool,
+    },
+    Trigger {
+        node: NodeId,
+    },
+    GateVoice {
+        node: NodeId,
+        voice: u8,
+        on: bool,
+    },
+    TriggerVoice {
+        node: NodeId,
+        voice: u8,
+    },
     /// Prefetch → engine: update a `StreamPlayer` voice's resident ring window
     /// `[fill_lo, fill_hi)` (and the stream's `total`, carried idempotently).
-    StreamFill { node: NodeId, voice: u8, fill_lo: u64, fill_hi: u64, total: u64 },
-    BusWrite { src: Input, bus: BusId },
-    BusWriteGains { src: Input, bus: BusId, gl: f32, gr: f32 },
-    SetRoot { bus: BusId },
+    StreamFill {
+        node: NodeId,
+        voice: u8,
+        fill_lo: u64,
+        fill_hi: u64,
+        total: u64,
+    },
+    BusWrite {
+        src: Input,
+        bus: BusId,
+    },
+    BusWriteGains {
+        src: Input,
+        bus: BusId,
+        gl: f32,
+        gr: f32,
+    },
+    SetRoot {
+        bus: BusId,
+    },
     /// Route USB output channel `channel` (0..USB_CHANNELS) from a mono source
     /// (a bus side or a node port). Read by `Engine::fill_usb`.
-    SetUsbOut { channel: u8, src: OutputSrc },
+    SetUsbOut {
+        channel: u8,
+        src: OutputSrc,
+    },
     /// Set a bus's mono gain (channel fader). Applied to the bus's L/R rows after
     /// the write loop, before the master chain. Default 1.0 (unity).
-    BusGain { bus: BusId, gain: f32 },
+    BusGain {
+        bus: BusId,
+        gain: f32,
+    },
     /// Fold a source bus into a target bus at `gain` (stereo-preserving). Applied
     /// after the node writes, before per-bus gain, descending `from` (rule from > to).
-    BusSend { from: BusId, to: BusId, gain: f32 },
+    BusSend {
+        from: BusId,
+        to: BusId,
+        gain: f32,
+    },
     /// Enable/configure the master limiter on the root bus. Creates it if absent,
     /// else updates params in place (preserving the running gain envelope).
-    SetMasterLimit { ceiling: f32, release: f32 },
+    SetMasterLimit {
+        ceiling: f32,
+        release: f32,
+    },
     /// Enable/configure the master DC-blocker on the root bus (before the limiter).
     /// Creates it if absent, else updates the corner in place.
-    SetMasterDcBlock { cutoff_hz: f32 },
+    SetMasterDcBlock {
+        cutoff_hz: f32,
+    },
     /// Enable/configure the master EQ on the root bus (between DC-block and limiter).
     /// Creates it if absent, else updates the band params in place.
-    SetMasterEq { freq: f32, gain_db: f32, q: f32, eq_type: u8 },
-    Free { node: NodeId },
+    SetMasterEq {
+        freq: f32,
+        gain_db: f32,
+        q: f32,
+        eq_type: u8,
+    },
+    Free {
+        node: NodeId,
+    },
     Reset,
 }
 
@@ -67,7 +132,13 @@ mod tests {
             kind: Kind::Saw,
             args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)],
         });
-        e.apply(Cmd::BusWrite { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0) });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
         e.apply(Cmd::SetRoot { bus: BusId(0) });
     }
 
@@ -92,7 +163,13 @@ mod tests {
             kind: Kind::Add,
             args: [Input::Const(0.25), Input::Const(0.0), Input::Const(0.0)],
         });
-        e.apply(Cmd::BusWrite { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0) });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
         e.apply(Cmd::SetRoot { bus: BusId(0) });
         // IO-2a: `Cmd::Free` invalidates `saw_patch`'s pre-free write (keyed by
         // source node), so it no longer re-binds to the recreated `NodeId(0)`.
@@ -121,7 +198,11 @@ mod tests {
         let mut out = [StereoFrame::default(); 16];
         let sil = [StereoFrame::default(); 16];
         e.render(&mut out, &sil);
-        assert!(out[0].l.abs() < 1e-6, "recreated node inherits no write: {}", out[0].l);
+        assert!(
+            out[0].l.abs() < 1e-6,
+            "recreated node inherits no write: {}",
+            out[0].l
+        );
     }
 
     #[test]
@@ -133,16 +214,54 @@ mod tests {
         // the 10ms attack and 800Hz cutoff time constants are actually resolved
         // across samples instead of both saturating within a single sample.
         let mut e = E::new(48_000.0);
-        e.apply(Cmd::NewNode { node: NodeId(0), kind: Kind::Saw,
-            args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)] });
-        e.apply(Cmd::NewNode { node: NodeId(1), kind: Kind::Lpf,
-            args: [Input::Node { node: NodeId(0), port: 0 }, Input::Const(800.0), Input::Const(0.0)] });
-        e.apply(Cmd::NewNode { node: NodeId(2), kind: Kind::Env,
-            args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)] });
-        e.apply(Cmd::Gate { node: NodeId(2), on: true });
-        e.apply(Cmd::NewNode { node: NodeId(3), kind: Kind::Mul,
-            args: [Input::Node { node: NodeId(1), port: 0 }, Input::Node { node: NodeId(2), port: 0 }, Input::Const(0.0)] });
-        e.apply(Cmd::BusWrite { src: Input::Node { node: NodeId(3), port: 0 }, bus: BusId(0) });
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Lpf,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(800.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(2),
+            kind: Kind::Env,
+            args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)],
+        });
+        e.apply(Cmd::Gate {
+            node: NodeId(2),
+            on: true,
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(3),
+            kind: Kind::Mul,
+            args: [
+                Input::Node {
+                    node: NodeId(1),
+                    port: 0,
+                },
+                Input::Node {
+                    node: NodeId(2),
+                    port: 0,
+                },
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(3),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
         e.apply(Cmd::SetRoot { bus: BusId(0) });
 
         let mut out = [StereoFrame::default(); 16];
@@ -166,16 +285,54 @@ mod tests {
     #[test]
     fn golden_saw_lpf_env_first_block() {
         let mut e = E::new(48_000.0);
-        e.apply(Cmd::NewNode { node: NodeId(0), kind: Kind::Saw,
-            args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)] });
-        e.apply(Cmd::NewNode { node: NodeId(1), kind: Kind::Lpf,
-            args: [Input::Node { node: NodeId(0), port: 0 }, Input::Const(800.0), Input::Const(0.0)] });
-        e.apply(Cmd::NewNode { node: NodeId(2), kind: Kind::Env,
-            args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)] });
-        e.apply(Cmd::Gate { node: NodeId(2), on: true });
-        e.apply(Cmd::NewNode { node: NodeId(3), kind: Kind::Mul,
-            args: [Input::Node { node: NodeId(1), port: 0 }, Input::Node { node: NodeId(2), port: 0 }, Input::Const(0.0)] });
-        e.apply(Cmd::BusWrite { src: Input::Node { node: NodeId(3), port: 0 }, bus: BusId(0) });
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Lpf,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(800.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(2),
+            kind: Kind::Env,
+            args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)],
+        });
+        e.apply(Cmd::Gate {
+            node: NodeId(2),
+            on: true,
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(3),
+            kind: Kind::Mul,
+            args: [
+                Input::Node {
+                    node: NodeId(1),
+                    port: 0,
+                },
+                Input::Node {
+                    node: NodeId(2),
+                    port: 0,
+                },
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(3),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
         e.apply(Cmd::SetRoot { bus: BusId(0) });
 
         let mut out = [StereoFrame::default(); 8];
@@ -206,10 +363,18 @@ mod tests {
 
     #[test]
     fn cmds_are_comparable_and_debuggable() {
-        use crate::{Input, NodeId};
         use crate::node::Kind;
-        let a = Cmd::NewNode { node: NodeId(1), kind: Kind::Saw, args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)] };
-        let b = Cmd::NewNode { node: NodeId(1), kind: Kind::Saw, args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)] };
+        use crate::{Input, NodeId};
+        let a = Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Saw,
+            args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)],
+        };
+        let b = Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Saw,
+            args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)],
+        };
         assert_eq!(a, b);
         assert_ne!(a, Cmd::Reset);
         // Debug is verified by assert_eq! error messages requiring it

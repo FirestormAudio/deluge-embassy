@@ -212,7 +212,9 @@ mod tests {
 
     fn render_wave(samples: &[f32]) -> Grid {
         let mut ui = GridUi::new();
-        ui.run(0, PadInput::new(), |f| draw_waveform(f, samples, Color::CYAN));
+        ui.run(0, PadInput::new(), |f| {
+            draw_waveform(f, samples, Color::CYAN)
+        });
         ui.grid().clone()
     }
 

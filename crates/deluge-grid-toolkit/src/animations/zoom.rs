@@ -50,7 +50,11 @@ impl ZoomAnimation {
     fn render_frame(&self, progress: f32) -> Grid {
         let mut output_rgb = [[Color::BLACK; 18]; 8];
 
-        let fade_progress = if self.zoom_in { progress } else { 1.0 - progress };
+        let fade_progress = if self.zoom_in {
+            progress
+        } else {
+            1.0 - progress
+        };
 
         let zoom_factor = 1.0 + (self.magnitude as f32 * progress);
         let inner_scale = if self.zoom_in {
@@ -121,7 +125,11 @@ impl ZoomAnimation {
 }
 
 /// Blend two rows with a per-pixel weight (`result = inner·w + outer·(1-w)`).
-fn blend_rows_variable(inner: &[Color; 18], outer: &[Color; 18], weights: &[f32; 18]) -> [Color; 18] {
+fn blend_rows_variable(
+    inner: &[Color; 18],
+    outer: &[Color; 18],
+    weights: &[f32; 18],
+) -> [Color; 18] {
     let mut result = [Color::BLACK; 18];
     for i in 0..18 {
         let w = weights[i];

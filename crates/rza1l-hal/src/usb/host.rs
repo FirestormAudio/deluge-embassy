@@ -62,19 +62,18 @@ use super::pipe::BufAllocator;
 use super::regs::{
     BUSWAIT_VALUE, DCPCFG_DIR, DCPCFG_SHTNAK, DCPCTR_SUREQ, DCPCTR_SUREQCLR, DCPMAXP_DEVSEL_SHIFT,
     DCPMAXP_MXPS_MASK, DEVADD_HUBPORT_SHIFT, DEVADD_UPPHUB_SHIFT, DEVADD_USBSPD_FS,
-    DEVADD_USBSPD_HS, DEVADD_USBSPD_LS, DVSTCTR0_RHST, DVSTCTR0_RHST_LS, DVSTCTR0_UACT,
-    DVSTCTR0_RHST_FS, DVSTCTR0_RHST_HS, DVSTCTR0_USBRST, FIFOCTR_BCLR, FIFOCTR_BVAL,
-    FIFOCTR_DTLN_MASK, FIFOCTR_FRDY,
-    FIFOSEL_CURPIPE_MASK, FIFOSEL_ISEL, FIFOSEL_MBW_SHIFT, INTENB0_BEMPE, INTENB0_BRDYE,
-    INTENB0_NRDYE, MBW_32,
-    INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_SACKE, INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY,
-    INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH, INTSTS1_SACK, INTSTS1_SIGN, PIPECFG_DBLB,
-    PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO,
-    PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK,
-    PIPEBUF_BUFNMB_MASK, PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT, PIPECTR_SQCLR, PIPECTR_SQSET,
+    DEVADD_USBSPD_HS, DEVADD_USBSPD_LS, DVSTCTR0_RHST, DVSTCTR0_RHST_FS, DVSTCTR0_RHST_HS,
+    DVSTCTR0_RHST_LS, DVSTCTR0_UACT, DVSTCTR0_USBRST, FIFOCTR_BCLR, FIFOCTR_BVAL,
+    FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_ISEL, FIFOSEL_MBW_SHIFT,
+    INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_NRDYE, INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_SACKE,
+    INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH,
+    INTSTS1_SACK, INTSTS1_SIGN, MBW_32, PIPEBUF_BUFNMB_MASK, PIPEBUF_BUFSIZE_MASK,
+    PIPEBUF_BUFSIZE_SHIFT, PIPECFG_DBLB, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK,
+    PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY,
+    PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_SQCLR, PIPECTR_SQSET,
     PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK, PKT_BUF_BLOCK_SIZE, Rusb1Regs,
-    SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE,
-    SYSCFG_USBE, SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, wr,
+    SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE,
+    SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -305,7 +304,11 @@ impl Rusb1HostDriver {
             let regs0 = Rusb1Regs::ptr(0);
             if rd(core::ptr::addr_of!((*regs0).syscfg0)) & SYSCFG_UPLLE == 0 {
                 let other = Rusb1Regs::ptr(if port == 0 { 1 } else { 0 });
-                rmw(core::ptr::addr_of_mut!((*other).suspmode), SUSPMODE_SUSPM, 0);
+                rmw(
+                    core::ptr::addr_of_mut!((*other).suspmode),
+                    SUSPMODE_SUSPM,
+                    0,
+                );
                 rmw(
                     core::ptr::addr_of_mut!((*regs0).syscfg0),
                     SYSCFG_UPLLE,
@@ -544,13 +547,9 @@ impl Rusb1HostDriver {
         // port_speed()'s `_ => Full` fallback and LS/HS devices were mis-detected
         // as Full.  Poll up to ~50 ms (mirrors the reference's bounded retry).
         for _ in 0..50 {
-            let rhst =
-                unsafe { rd(core::ptr::addr_of!((*Rusb1Regs::ptr(self.port)).dvstctr0)) }
-                    & DVSTCTR0_RHST;
-            if matches!(
-                rhst,
-                DVSTCTR0_RHST_LS | DVSTCTR0_RHST_FS | DVSTCTR0_RHST_HS
-            ) {
+            let rhst = unsafe { rd(core::ptr::addr_of!((*Rusb1Regs::ptr(self.port)).dvstctr0)) }
+                & DVSTCTR0_RHST;
+            if matches!(rhst, DVSTCTR0_RHST_LS | DVSTCTR0_RHST_FS | DVSTCTR0_RHST_HS) {
                 break;
             }
             Timer::after_millis(1).await;
@@ -924,8 +923,7 @@ impl Rusb1HostDriver {
             let pipebuf: Option<(u8, u8)> = if (6..=8).contains(&pipe) {
                 None
             } else {
-                let double_buf =
-                    matches!(ep_type, EndpointType::Bulk | EndpointType::Isochronous);
+                let double_buf = matches!(ep_type, EndpointType::Bulk | EndpointType::Isochronous);
                 match alloc.alloc_pipe_buf(pipe, mps, double_buf) {
                     Some(v) => Some(v),
                     None => {
@@ -1086,7 +1084,10 @@ impl Rusb1HostDriver {
                 // ZLP: select D0FIFO, wait FRDY, then BCLR + BVAL (TRM
                 // §28.4.5: "to send a zero-length packet, the BCLR bit must be
                 // used to clear the buffer and then the BVAL bit is set").
-                wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
+                wr(
+                    core::ptr::addr_of_mut!(e.d0fifosel),
+                    pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT),
+                );
                 while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
                 while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
                 wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BCLR);
@@ -1095,7 +1096,10 @@ impl Rusb1HostDriver {
                 while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
             } else {
                 // Write first packet to D0FIFO (16-bit access for speed).
-                wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
+                wr(
+                    core::ptr::addr_of_mut!(e.d0fifosel),
+                    pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT),
+                );
                 while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
                 while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
 

@@ -21,8 +21,19 @@ const BORDER: Color = Color::from_rgb(0.20, 0.20, 0.24);
 
 /// Draw a scope trace of `samples` (each in `-1.0..=1.0`, oldest first) into
 /// `area`, in `color`. `trigger` enables the rising-edge 50 % trigger.
-pub fn draw_trace(frame: &mut Frame, area: Rectangle, samples: &[f32], color: Color, trigger: bool) {
-    let Rectangle { x: ox, y: oy, width: w, height: h } = area;
+pub fn draw_trace(
+    frame: &mut Frame,
+    area: Rectangle,
+    samples: &[f32],
+    color: Color,
+    trigger: bool,
+) {
+    let Rectangle {
+        x: ox,
+        y: oy,
+        width: w,
+        height: h,
+    } = area;
 
     let well = Path::new(|b| b.rounded_rectangle(Point::new(ox, oy), Size::new(w, h), 2.0.into()));
     frame.fill(&well, BG);
@@ -75,5 +86,8 @@ pub fn draw_trace(frame: &mut Frame, area: Rectangle, samples: &[f32], color: Co
     // Glow underlay, then the crisp line on top (spark's two-pass stroke).
     let glow = Color { a: 0.25, ..color };
     frame.stroke(&trace(), Stroke::default().with_color(glow).with_width(4.0));
-    frame.stroke(&trace(), Stroke::default().with_color(color).with_width(1.5));
+    frame.stroke(
+        &trace(),
+        Stroke::default().with_color(color).with_width(1.5),
+    );
 }

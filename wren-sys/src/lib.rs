@@ -98,11 +98,7 @@ unsafe extern "C" {
     pub fn wrenNewVM(config: *mut WrenConfiguration) -> *mut WrenVM;
     pub fn wrenFreeVM(vm: *mut WrenVM);
     pub fn wrenCollectGarbage(vm: *mut WrenVM);
-    pub fn wrenInterpret(
-        vm: *mut WrenVM,
-        module: *const c_char,
-        source: *const c_char,
-    ) -> c_int;
+    pub fn wrenInterpret(vm: *mut WrenVM, module: *const c_char, source: *const c_char) -> c_int;
 
     // Slot API — declared now, used from the foreign registry in later milestones.
     pub fn wrenGetSlotCount(vm: *mut WrenVM) -> c_int;
@@ -173,8 +169,7 @@ unsafe extern "C" {
 #[repr(C)]
 pub struct WrenLoadModuleResult {
     pub source: *const c_char,
-    pub on_complete:
-        Option<unsafe extern "C" fn(*mut WrenVM, *const c_char, WrenLoadModuleResult)>,
+    pub on_complete: Option<unsafe extern "C" fn(*mut WrenVM, *const c_char, WrenLoadModuleResult)>,
     pub user_data: *mut c_void,
 }
 
@@ -184,8 +179,16 @@ unsafe extern "C" fn load_module_trampoline(
     _vm: *mut WrenVM,
     name: *const c_char,
 ) -> WrenLoadModuleResult {
-    let source = if name.is_null() { ptr::null() } else { unsafe { wren_host_load_module(name) } };
-    WrenLoadModuleResult { source, on_complete: None, user_data: ptr::null_mut() }
+    let source = if name.is_null() {
+        ptr::null()
+    } else {
+        unsafe { wren_host_load_module(name) }
+    };
+    WrenLoadModuleResult {
+        source,
+        on_complete: None,
+        user_data: ptr::null_mut(),
+    }
 }
 
 unsafe extern "C" fn write_trampoline(_vm: *mut WrenVM, text: *const c_char) {
@@ -218,9 +221,9 @@ unsafe extern "C" fn error_trampoline(
 
 /// Peak VM-heap bytes ever outstanding at once (device only; the host reports 0).
 pub use heap::peak_bytes;
+use heap::wren_reallocate;
 /// Current + peak SRAM / SDRAM bytes the VM heap holds (device only; host: 0).
 pub use heap::{peak_sdram_bytes, peak_sram_bytes, sdram_bytes, sram_bytes};
-use heap::wren_reallocate;
 
 #[cfg(target_os = "none")]
 mod heap {

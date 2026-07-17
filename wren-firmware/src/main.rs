@@ -129,7 +129,12 @@ struct ByteRing<const N: usize> {
 
 impl<const N: usize> ByteRing<N> {
     const fn new() -> Self {
-        Self { buf: [0; N], head: 0, tail: 0, full: false }
+        Self {
+            buf: [0; N],
+            head: 0,
+            tail: 0,
+            full: false,
+        }
     }
     #[allow(dead_code)] // part of the lifted ring API; used by `space`
     fn len(&self) -> usize {
@@ -192,7 +197,10 @@ struct TxFmt {
 
 impl TxFmt {
     fn new() -> Self {
-        Self { buf: [0; 128], len: 0 }
+        Self {
+            buf: [0; 128],
+            len: 0,
+        }
     }
     fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]
@@ -286,7 +294,10 @@ unsafe fn cstr(ptr: *const c_char) -> (&'static str, bool) {
         len += 1;
     }
     let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
-    (core::str::from_utf8(bytes).unwrap_or("<non-utf8>"), len == CSTR_CAP)
+    (
+        core::str::from_utf8(bytes).unwrap_or("<non-utf8>"),
+        len == CSTR_CAP,
+    )
 }
 
 /// `System.print` output sink → host REPL (+ RTT mirror).
@@ -294,7 +305,10 @@ unsafe fn cstr(ptr: *const c_char) -> (&'static str, bool) {
 extern "C" fn wren_host_write(text: *const c_char) {
     let (s, capped) = unsafe { cstr(text) };
     if capped {
-        error!("wren> <string not NUL-terminated within {} B @ {:p}>", CSTR_CAP, text);
+        error!(
+            "wren> <string not NUL-terminated within {} B @ {:p}>",
+            CSTR_CAP, text
+        );
         return;
     }
     // To the host terminal, with CR before any LF so lines don't stair-step.
@@ -386,8 +400,9 @@ fn setup() {
     // Boot the VM and load the prelude (declares the foreign classes + the
     // `output[]` / `gate[]` accessors). ~0.6 s; mirrors crow's ordering.
     info!("wren: booting VM...");
-    let vm =
-        unsafe { wren_sys::boot_with_foreign(deluge_wren_core::METHODS, deluge_wren_core::CLASSES) };
+    let vm = unsafe {
+        wren_sys::boot_with_foreign(deluge_wren_core::METHODS, deluge_wren_core::CLASSES)
+    };
     if vm.is_null() {
         error!("wren: wrenNewVM returned NULL — out of SDRAM?");
         loop {
@@ -713,7 +728,12 @@ struct MidiParser {
 
 impl MidiParser {
     const fn new() -> Self {
-        Self { status: 0, needed: 0, have: 0, data: [0; 2] }
+        Self {
+            status: 0,
+            needed: 0,
+            have: 0,
+            data: [0; 2],
+        }
     }
 
     /// Feed one raw MIDI byte; yields a complete `(status, d1, d2)` when ready.
@@ -728,7 +748,11 @@ impl MidiParser {
                 return None;
             }
             self.status = b;
-            self.needed = if matches!(b & 0xF0, 0xC0 | 0xD0) { 1 } else { 2 };
+            self.needed = if matches!(b & 0xF0, 0xC0 | 0xD0) {
+                1
+            } else {
+                2
+            };
             self.have = 0;
             return None;
         }

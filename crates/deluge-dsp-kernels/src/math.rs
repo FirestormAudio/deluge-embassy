@@ -93,16 +93,25 @@ mod pan_tests {
     #[test]
     fn pan_hard_left_and_right() {
         let (l, r) = pan_gains(-1.0);
-        assert!((l - 1.0).abs() < 1e-6 && r.abs() < 1e-6, "hard left: {l},{r}");
+        assert!(
+            (l - 1.0).abs() < 1e-6 && r.abs() < 1e-6,
+            "hard left: {l},{r}"
+        );
         let (l, r) = pan_gains(1.0);
-        assert!(l.abs() < 1e-6 && (r - 1.0).abs() < 1e-6, "hard right: {l},{r}");
+        assert!(
+            l.abs() < 1e-6 && (r - 1.0).abs() < 1e-6,
+            "hard right: {l},{r}"
+        );
     }
 
     #[test]
     fn pan_center_is_minus_3db() {
         let (l, r) = pan_gains(0.0);
         let c = (0.5f32).sqrt(); // 0.7071…
-        assert!((l - c).abs() < 1e-6 && (r - c).abs() < 1e-6, "center: {l},{r}");
+        assert!(
+            (l - c).abs() < 1e-6 && (r - c).abs() < 1e-6,
+            "center: {l},{r}"
+        );
     }
 
     #[test]

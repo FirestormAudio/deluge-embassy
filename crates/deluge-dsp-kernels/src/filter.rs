@@ -63,7 +63,10 @@ pub struct Svf {
 
 impl Svf {
     pub fn new() -> Svf {
-        Svf { ic1eq: 0.0, ic2eq: 0.0 }
+        Svf {
+            ic1eq: 0.0,
+            ic2eq: 0.0,
+        }
     }
 
     pub fn process(
@@ -101,7 +104,15 @@ impl Svf {
 
     /// One TPT step + response selection (spec §2).
     #[inline]
-    pub(crate) fn tick(&mut self, v0: f32, k: f32, a1: f32, a2: f32, a3: f32, resp: SvfResp) -> f32 {
+    pub(crate) fn tick(
+        &mut self,
+        v0: f32,
+        k: f32,
+        a1: f32,
+        a2: f32,
+        a3: f32,
+        resp: SvfResp,
+    ) -> f32 {
         let v3 = v0 - self.ic2eq;
         let v1 = a1 * self.ic1eq + a2 * v3;
         let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
@@ -195,7 +206,9 @@ pub struct DiodeLadder<const STAGES: usize> {
 
 impl<const STAGES: usize> DiodeLadder<STAGES> {
     pub fn new() -> Self {
-        DiodeLadder { state: [0.0; STAGES] }
+        DiodeLadder {
+            state: [0.0; STAGES],
+        }
     }
 
     /// One Heun (RK2 predictor-corrector) step. `fh` = normalized cutoff
@@ -302,7 +315,9 @@ pub struct MasterDcBlock {
 
 impl MasterDcBlock {
     pub fn new(cutoff_hz: f32, dt: f32) -> MasterDcBlock {
-        let mut m = MasterDcBlock { ch: [OnePoleHp::default(); 2] };
+        let mut m = MasterDcBlock {
+            ch: [OnePoleHp::default(); 2],
+        };
         m.set_cutoff(cutoff_hz, dt);
         m
     }
@@ -439,11 +454,7 @@ const MOOG_K2: f32 = 1.0;
 
 #[inline]
 const fn moog_k(poles: usize) -> f32 {
-    if poles <= 2 {
-        MOOG_K2
-    } else {
-        MOOG_K4
-    }
+    if poles <= 2 { MOOG_K2 } else { MOOG_K4 }
 }
 
 /// Moog per-sample coefficients (drive-independent), shared by the mono
@@ -471,7 +482,10 @@ pub struct Moog<const POLES: usize> {
 
 impl<const POLES: usize> Moog<POLES> {
     pub fn new() -> Self {
-        Moog { ladder: DiodeLadder::new(), drive: 1.0 }
+        Moog {
+            ladder: DiodeLadder::new(),
+            drive: 1.0,
+        }
     }
 
     /// Pre-ladder input gain into the tanh (control param; 1.0 = clean).
@@ -584,7 +598,13 @@ pub struct Ms20 {
 
 impl Ms20 {
     pub fn new() -> Ms20 {
-        Ms20 { ic1eq: 0.0, ic2eq: 0.0, dc: OnePoleHp::default(), drive: 1.0, cached_dt: 0.0 }
+        Ms20 {
+            ic1eq: 0.0,
+            ic2eq: 0.0,
+            dc: OnePoleHp::default(),
+            drive: 1.0,
+            cached_dt: 0.0,
+        }
     }
 
     pub fn set_drive(&mut self, d: f32) {
@@ -595,7 +615,15 @@ impl Ms20 {
     /// are the DC-blocker state and drive gain. Shared by mono `process` and `PolyMs20`.
     /// Assumes `self.dc`'s coefficient is already set (see `tick_with_dt`).
     #[inline]
-    pub(crate) fn tick(&mut self, input: f32, k: f32, a1: f32, a2: f32, a3: f32, resp: Ms20Resp) -> f32 {
+    pub(crate) fn tick(
+        &mut self,
+        input: f32,
+        k: f32,
+        a1: f32,
+        a2: f32,
+        a3: f32,
+        resp: Ms20Resp,
+    ) -> f32 {
         let mut y = 0.0;
         for _ in 0..MS20_OVERSAMPLE {
             // The resonance feedback (bandpass v1) is where the diode clips (MS-20).
@@ -642,13 +670,22 @@ impl Ms20 {
     ) -> f32 {
         if dt != self.cached_dt {
             // DC blocker (removes the asymmetric clip's offset) — see MS20_DC_HP_HZ.
-            self.dc.set_coeff(MS20_DC_HP_HZ * 2.0 * core::f64::consts::PI / (1.0 / dt as f64));
+            self.dc
+                .set_coeff(MS20_DC_HP_HZ * 2.0 * core::f64::consts::PI / (1.0 / dt as f64));
             self.cached_dt = dt;
         }
         self.tick(input, k, a1, a2, a3, resp)
     }
 
-    pub fn process(&mut self, input: In, cutoff: In, res: In, resp: Ms20Resp, dt: f32, out: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        input: In,
+        cutoff: In,
+        res: In,
+        resp: Ms20Resp,
+        dt: f32,
+        out: &mut [f32],
+    ) {
         for (i, s) in out.iter_mut().enumerate() {
             let (k, a1, a2, a3) = ms20_coeffs(cutoff.at(i), res.at(i), dt);
             *s = self.tick_with_dt(input.at(i), k, a1, a2, a3, resp, dt);
@@ -689,7 +726,12 @@ pub struct Modal<const N: usize> {
 
 impl<const N: usize> Modal<N> {
     pub fn new() -> Self {
-        Modal { modes: [(0.0, 0.0); N], structure: 0.0, brightness: 0.7, position: 0.3 }
+        Modal {
+            modes: [(0.0, 0.0); N],
+            structure: 0.0,
+            brightness: 0.7,
+            position: 0.3,
+        }
     }
     pub fn set_structure(&mut self, v: f32) {
         self.structure = v.clamp(0.0, 1.0);
@@ -739,7 +781,11 @@ impl<const N: usize> Modal<N> {
             active += gain[i];
         }
         // Normalize so a struck note peaks near unity (tuned; see MODAL_NORM_SCALE).
-        let norm = if active > 1e-6 { MODAL_NORM_SCALE / active } else { 0.0 };
+        let norm = if active > 1e-6 {
+            MODAL_NORM_SCALE / active
+        } else {
+            0.0
+        };
 
         for (j, s) in out.iter_mut().enumerate() {
             let x = input.at(j);
@@ -817,7 +863,10 @@ mod tb303_tests {
             Tb303::new().process(In::A(&x), In::K(cutoff), In::K(1.0), DT, buf);
         });
         assert!(rms > 1e-3, "self-osc rms={rms}");
-        assert!((hz - cutoff).abs() / cutoff < 0.4, "self-osc hz={hz} (near cutoff?)");
+        assert!(
+            (hz - cutoff).abs() / cutoff < 0.4,
+            "self-osc hz={hz} (near cutoff?)"
+        );
     }
 
     // Drive a pure sine through the filter; the diode nonlinearity generates
@@ -859,7 +908,10 @@ mod tb303_tests {
                 x[0] = 1.0;
                 Tb303::new().process(In::A(&x), In::K(cutoff), In::K(1.0), DT, buf);
             });
-            assert!((hz - cutoff).abs() / cutoff < 0.4, "cutoff={cutoff} peak={hz}");
+            assert!(
+                (hz - cutoff).abs() / cutoff < 0.4,
+                "cutoff={cutoff} peak={hz}"
+            );
             assert!(hz > prev, "peak should rise with cutoff: {hz} !> {prev}");
             prev = hz;
         }
@@ -897,7 +949,10 @@ mod diode_ladder_tests {
         for &t in &[0.5f32, 1.0, 2.0] {
             let approx = pade_tanh(t);
             let exact = libm::tanhf(t);
-            assert!((approx - exact).abs() < 0.021, "tanh({t}): approx {approx} vs {exact}");
+            assert!(
+                (approx - exact).abs() < 0.021,
+                "tanh({t}): approx {approx} vs {exact}"
+            );
         }
     }
 
@@ -936,7 +991,10 @@ mod diode_ladder_tests {
             let yb = b.process(x, base / 2.0, 0.9, 2);
             max_diff = max_diff.max((ya - yb).abs());
         }
-        assert!(max_diff > 1e-4, "oversample param not honoured: max|Δ|={max_diff}");
+        assert!(
+            max_diff > 1e-4,
+            "oversample param not honoured: max|Δ|={max_diff}"
+        );
     }
 
     #[cfg(feature = "simd")]
@@ -944,11 +1002,17 @@ mod diode_ladder_tests {
     fn pade_tanh_x8_matches_scalar() {
         use core::simd::prelude::*;
         // Sweep including saturating tails (scalar clamps to ±1 at |x|≥3).
-        let xs = [-8.0f32, -3.5, -3.0, -1.7, -0.4, 0.0, 0.25, 1.0, 2.9, 3.0, 5.0, 8.0];
+        let xs = [
+            -8.0f32, -3.5, -3.0, -1.7, -0.4, 0.0, 0.25, 1.0, 2.9, 3.0, 5.0, 8.0,
+        ];
         for &x in &xs {
             let v = pade_tanh_x8(f32x8::splat(x)).to_array();
             for lane in v {
-                assert!((lane - pade_tanh(x)).abs() <= 1e-4, "x={x} got {lane} want {}", pade_tanh(x));
+                assert!(
+                    (lane - pade_tanh(x)).abs() <= 1e-4,
+                    "x={x} got {lane} want {}",
+                    pade_tanh(x)
+                );
             }
         }
     }
@@ -961,7 +1025,11 @@ mod diode_ladder_tests {
         for &x in &xs {
             let v = ms20_clip_x8(f32x8::splat(x)).to_array();
             for lane in v {
-                assert!((lane - ms20_clip(x)).abs() <= 1e-4, "x={x} got {lane} want {}", ms20_clip(x));
+                assert!(
+                    (lane - ms20_clip(x)).abs() <= 1e-4,
+                    "x={x} got {lane} want {}",
+                    ms20_clip(x)
+                );
             }
         }
     }
@@ -1005,7 +1073,11 @@ mod tests {
         assert!(mean.abs() < 1e-2, "DC not removed, mean={}", mean);
         // AC amplitude preserved: settled peak still near 0.3.
         let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        assert!((peak - 0.3).abs() < 0.05, "AC amplitude lost, peak={}", peak);
+        assert!(
+            (peak - 0.3).abs() < 0.05,
+            "AC amplitude lost, peak={}",
+            peak
+        );
     }
 
     #[test]
@@ -1120,9 +1192,13 @@ mod svf_tests {
     fn lp_attenuates_highs_hp_attenuates_lows() {
         let fc = 1_000.0;
         // LP: passband well above stopband
-        assert!(mag_at(SvfResp::Lp, fc, 0.2, 100.0) - mag_at(SvfResp::Lp, fc, 0.2, 10_000.0) > 30.0);
+        assert!(
+            mag_at(SvfResp::Lp, fc, 0.2, 100.0) - mag_at(SvfResp::Lp, fc, 0.2, 10_000.0) > 30.0
+        );
         // HP: mirror
-        assert!(mag_at(SvfResp::Hp, fc, 0.2, 10_000.0) - mag_at(SvfResp::Hp, fc, 0.2, 100.0) > 30.0);
+        assert!(
+            mag_at(SvfResp::Hp, fc, 0.2, 10_000.0) - mag_at(SvfResp::Hp, fc, 0.2, 100.0) > 30.0
+        );
         // Notch: deep dip at fc, ~unity an octave away
         assert!(mag_at(SvfResp::Notch, fc, 0.2, fc) < -12.0);
         assert!(mag_at(SvfResp::Notch, fc, 0.2, fc / 4.0) > -2.0);
@@ -1182,14 +1258,27 @@ mod svf_tests {
         const TOL: f32 = 2e-3;
         for &fc in &[110.0f32, 440.0, 1_000.0, 4_000.0, 9_000.0] {
             for &res in &[0.0f32, 0.5, 0.95] {
-                let x: std::vec::Vec<f32> =
-                    (0..256).map(|i| (0.02 * i as f32).sin()).collect();
+                let x: std::vec::Vec<f32> = (0..256).map(|i| (0.02 * i as f32).sin()).collect();
                 let mut k_out = [0.0f32; 256];
-                Svf::new().process(In::A(&x), In::K(fc), In::K(res), SvfResp::Lp, DT, &mut k_out);
+                Svf::new().process(
+                    In::A(&x),
+                    In::K(fc),
+                    In::K(res),
+                    SvfResp::Lp,
+                    DT,
+                    &mut k_out,
+                );
                 let mut a_out = [0.0f32; 256];
                 let fcb = std::vec![fc; 256];
                 let rb = std::vec![res; 256];
-                Svf::new().process(In::A(&x), In::A(&fcb), In::A(&rb), SvfResp::Lp, DT, &mut a_out);
+                Svf::new().process(
+                    In::A(&x),
+                    In::A(&fcb),
+                    In::A(&rb),
+                    SvfResp::Lp,
+                    DT,
+                    &mut a_out,
+                );
                 let mut md = 0.0f32;
                 for i in 0..256 {
                     md = md.max((k_out[i] - a_out[i]).abs());
@@ -1218,10 +1307,18 @@ mod svf_tests {
     #[test]
     fn audio_rate_cutoff_sweep_is_stable() {
         let x = std::vec![0.5f32; 512];
-        let cutoff: std::vec::Vec<f32> =
-            (0..512).map(|i| 100.0 + (i as f32 / 512.0) * 10_000.0).collect();
+        let cutoff: std::vec::Vec<f32> = (0..512)
+            .map(|i| 100.0 + (i as f32 / 512.0) * 10_000.0)
+            .collect();
         let mut out = [0.0f32; 512];
-        Svf::new().process(In::A(&x), In::A(&cutoff), In::K(0.9), SvfResp::Lp, DT, &mut out);
+        Svf::new().process(
+            In::A(&x),
+            In::A(&cutoff),
+            In::K(0.9),
+            SvfResp::Lp,
+            DT,
+            &mut out,
+        );
         for s in out {
             assert!(s.is_finite() && s.abs() <= 4.0, "sweep s={s}");
         }
@@ -1270,7 +1367,10 @@ mod moog_tests {
             Moog::<4>::new().process(In::A(&x), In::K(cutoff), In::K(1.0), DT, buf);
         });
         assert!(rms > 1e-3, "4-pole self-osc rms={rms}");
-        assert!((hz - cutoff).abs() / cutoff < 0.4, "4-pole self-osc hz={hz}");
+        assert!(
+            (hz - cutoff).abs() / cutoff < 0.4,
+            "4-pole self-osc hz={hz}"
+        );
     }
 
     // Passband level (well below cutoff) in dB — what the resonance compensation
@@ -1292,7 +1392,10 @@ mod moog_tests {
         let lo = moog4_passband_db(cutoff, 0.1);
         for &res in &[0.3f32, 0.6, 0.9] {
             let db = moog4_passband_db(cutoff, res);
-            assert!((db - lo).abs() < 3.0, "passband drift at res={res}: {db} dB vs {lo} dB");
+            assert!(
+                (db - lo).abs() < 3.0,
+                "passband drift at res={res}: {db} dB vs {lo} dB"
+            );
         }
     }
 
@@ -1316,8 +1419,14 @@ mod moog_tests {
         let s4 = slope_db_per_oct::<4>(800.0);
         let s2 = slope_db_per_oct::<2>(800.0);
         assert!(s4 < -18.0, "4-pole slope {s4} dB/oct (expect ~ -24)");
-        assert!(s2 < -8.0 && s2 > -18.0, "2-pole slope {s2} dB/oct (expect ~ -12)");
-        assert!(s4 < s2 - 6.0, "4-pole must roll off steeper than 2-pole ({s4} vs {s2})");
+        assert!(
+            s2 < -8.0 && s2 > -18.0,
+            "2-pole slope {s2} dB/oct (expect ~ -12)"
+        );
+        assert!(
+            s4 < s2 - 6.0,
+            "4-pole must roll off steeper than 2-pole ({s4} vs {s2})"
+        );
     }
 
     #[test]
@@ -1337,7 +1446,10 @@ mod moog_tests {
         };
         // The 2-pole is the gentler mode — it resonates modestly (no self-osc);
         // the peak at cutoff rises measurably with resonance.
-        assert!(peak_db(0.9) > peak_db(0.1) + 2.0, "2-pole resonant peak should grow with res");
+        assert!(
+            peak_db(0.9) > peak_db(0.1) + 2.0,
+            "2-pole resonant peak should grow with res"
+        );
     }
 
     #[test]
@@ -1406,7 +1518,10 @@ mod ms20_tests {
         for resp in [Ms20Resp::Lp, Ms20Resp::Hp] {
             let (hz, rms) = self_osc(resp, 1_000.0);
             assert!(rms > 1e-3, "{resp:?} self-osc rms={rms}");
-            assert!((hz - 1_000.0).abs() / 1_000.0 < 0.5, "{resp:?} self-osc hz={hz}");
+            assert!(
+                (hz - 1_000.0).abs() / 1_000.0 < 0.5,
+                "{resp:?} self-osc hz={hz}"
+            );
         }
     }
 
@@ -1428,7 +1543,11 @@ mod ms20_tests {
         let spec = spec_at(Ms20Resp::Lp, 3_000.0, 0.4, 6.0, f0);
         let h1 = spec.level_at(f0).max(1e-9);
         let h2 = spec.level_at(2.0 * f0);
-        assert!(20.0 * (h2 / h1).log10() > -40.0, "2nd harmonic too weak: {}", 20.0 * (h2 / h1).log10());
+        assert!(
+            20.0 * (h2 / h1).log10() > -40.0,
+            "2nd harmonic too weak: {}",
+            20.0 * (h2 / h1).log10()
+        );
     }
 
     #[test]
@@ -1438,24 +1557,36 @@ mod ms20_tests {
         let x = std::vec![0.5f32; 4096];
         let mut f = Ms20::new();
         f.set_drive(6.0);
-        f.process(In::A(&x), In::K(2_000.0), In::K(0.6), Ms20Resp::Lp, DT, &mut out);
+        f.process(
+            In::A(&x),
+            In::K(2_000.0),
+            In::K(0.6),
+            Ms20Resp::Lp,
+            DT,
+            &mut out,
+        );
         let mean: f32 = out[512..].iter().sum::<f32>() / (out.len() - 512) as f32;
         assert!(mean.abs() < 0.05, "output DC not blocked: mean={mean}");
     }
 
     #[test]
     fn ms20_lp_hp_bands_and_slope() {
-        let mag = |resp, probe| magnitude_db(FS, probe, |buf| {
-            let x: std::vec::Vec<f32> = (0..buf.len())
-                .map(|i| (core::f32::consts::TAU * probe / FS * i as f32).sin())
-                .collect();
-            Ms20::new().process(In::A(&x), In::K(1_000.0), In::K(0.2), resp, DT, buf);
-        });
+        let mag = |resp, probe| {
+            magnitude_db(FS, probe, |buf| {
+                let x: std::vec::Vec<f32> = (0..buf.len())
+                    .map(|i| (core::f32::consts::TAU * probe / FS * i as f32).sin())
+                    .collect();
+                Ms20::new().process(In::A(&x), In::K(1_000.0), In::K(0.2), resp, DT, buf);
+            })
+        };
         // LP passes lows over highs; HP the reverse; ~2-pole (≈12 dB/oct) rolloff.
         assert!(mag(Ms20Resp::Lp, 200.0) - mag(Ms20Resp::Lp, 5_000.0) > 20.0);
         assert!(mag(Ms20Resp::Hp, 5_000.0) - mag(Ms20Resp::Hp, 200.0) > 20.0);
         let s = mag(Ms20Resp::Lp, 4_000.0) - mag(Ms20Resp::Lp, 2_000.0);
-        assert!(s < -8.0 && s > -18.0, "LP stopband slope {s} dB/oct (~ -12)");
+        assert!(
+            s < -8.0 && s > -18.0,
+            "LP stopband slope {s} dB/oct (~ -12)"
+        );
     }
 
     #[test]
@@ -1480,7 +1611,10 @@ mod ms20_tests {
                 .collect();
             Ms20::new().process(In::A(&x), In::K(300.0), In::K(0.2), Ms20Resp::Lp, DT, buf);
         });
-        assert!(mag > -4.0, "60 Hz passband unexpectedly attenuated: {mag} dB");
+        assert!(
+            mag > -4.0,
+            "60 Hz passband unexpectedly attenuated: {mag} dB"
+        );
     }
 
     #[test]
@@ -1508,7 +1642,13 @@ mod modal_tests {
     const DT: f32 = 1.0 / FS;
 
     // Strike with a unit impulse; return (early_rms, late_rms) of the ring.
-    fn strike(structure: f32, brightness: f32, position: f32, freq: f32, damping: f32) -> (f32, f32) {
+    fn strike(
+        structure: f32,
+        brightness: f32,
+        position: f32,
+        freq: f32,
+        damping: f32,
+    ) -> (f32, f32) {
         let mut m = Modal::<MODAL_MODES>::new();
         m.set_structure(structure);
         m.set_brightness(brightness);
@@ -1528,14 +1668,20 @@ mod modal_tests {
         // (late/early ≈ 2.48e-5, well under the 0.5 gate).
         let (early, late) = strike(0.0, 0.7, 0.3, 220.0, 0.5);
         assert!(early > 1e-3, "no ring: early_rms={early}");
-        assert!(late < early * 0.5, "did not decay: early={early} late={late}");
+        assert!(
+            late < early * 0.5,
+            "did not decay: early={early} late={late}"
+        );
     }
 
     #[test]
     fn modal_decay_tracks_damping() {
         // Measured: ratio(0.2)≈0.0930 (long ring, still audible at buffer end),
         // ratio(0.8)≈3.4e-12 (fully decayed well before the late window) — clearly ordered.
-        let ratio = |d| { let (e, l) = strike(0.0, 0.7, 0.3, 220.0, d); l / e.max(1e-9) };
+        let ratio = |d| {
+            let (e, l) = strike(0.0, 0.7, 0.3, 220.0, d);
+            l / e.max(1e-9)
+        };
         assert!(ratio(0.8) < ratio(0.2), "more damping should decay faster");
     }
 
@@ -1562,10 +1708,18 @@ mod modal_tests {
         }
     }
 
-    fn strike_spec(structure: f32, brightness: f32, position: f32, freq: f32, damping: f32) -> spectrum::Spectrum {
+    fn strike_spec(
+        structure: f32,
+        brightness: f32,
+        position: f32,
+        freq: f32,
+        damping: f32,
+    ) -> spectrum::Spectrum {
         spectrum::analyze(FS, |buf| {
             let mut m = Modal::<MODAL_MODES>::new();
-            m.set_structure(structure); m.set_brightness(brightness); m.set_position(position);
+            m.set_structure(structure);
+            m.set_brightness(brightness);
+            m.set_position(position);
             let mut x = std::vec![0.0f32; buf.len()];
             x[0] = 1.0;
             m.process(In::A(&x), In::K(freq), In::K(damping), DT, buf);
@@ -1576,7 +1730,10 @@ mod modal_tests {
     fn modal_has_peak_at_fundamental() {
         let spec = strike_spec(0.0, 0.9, 0.25, 220.0, 0.1);
         // fundamental is a dominant spectral component
-        assert!(spec.level_at(220.0) > spec.level_at(220.0 * 1.5) * 2.0, "no fundamental peak");
+        assert!(
+            spec.level_at(220.0) > spec.level_at(220.0 * 1.5) * 2.0,
+            "no fundamental peak"
+        );
     }
 
     #[test]
@@ -1589,15 +1746,28 @@ mod modal_tests {
             let spec = strike_spec(structure, 0.9, 0.25, f0, 0.1);
             // find the strongest bin between 1.5×f0 and 3.5×f0 (the 2nd partial region)
             let (lo, hi) = ((1.5 * f0) as usize, (3.5 * f0) as usize);
-            let mut best = lo; let mut best_lvl = 0.0f32;
+            let mut best = lo;
+            let mut best_lvl = 0.0f32;
             for hz in (lo..hi).step_by(2) {
                 let l = spec.level_at(hz as f32);
-                if l > best_lvl { best_lvl = l; best = hz; }
+                if l > best_lvl {
+                    best_lvl = l;
+                    best = hz;
+                }
             }
             best as f32 / f0
         };
-        assert!((ratio_at(0.0) - 2.0).abs() < 0.3, "structure=0 2nd partial not ~2× : {}", ratio_at(0.0));
-        assert!(ratio_at(1.0) > ratio_at(0.0) + 0.3, "structure=1 should stretch: {} vs {}", ratio_at(1.0), ratio_at(0.0));
+        assert!(
+            (ratio_at(0.0) - 2.0).abs() < 0.3,
+            "structure=0 2nd partial not ~2× : {}",
+            ratio_at(0.0)
+        );
+        assert!(
+            ratio_at(1.0) > ratio_at(0.0) + 0.3,
+            "structure=1 should stretch: {} vs {}",
+            ratio_at(1.0),
+            ratio_at(0.0)
+        );
     }
 
     #[test]
@@ -1608,7 +1778,10 @@ mod modal_tests {
         let f0 = 220.0f32;
         let p25 = strike_spec(0.0, 0.9, 0.25, f0, 0.1).level_at(2.0 * f0);
         let p50 = strike_spec(0.0, 0.9, 0.5, f0, 0.1).level_at(2.0 * f0);
-        assert!(p50 < p25 * 0.3, "position=0.5 should null mode 2: p25={p25} p50={p50}");
+        assert!(
+            p50 < p25 * 0.3,
+            "position=0.5 should null mode 2: p25={p25} p50={p50}"
+        );
     }
 
     #[test]
@@ -1629,7 +1802,10 @@ mod modal_tests {
         let f0 = 220.0f32;
         let dull = strike_spec(0.0, 0.2, 0.3, f0, 0.1).level_at(4.0 * f0);
         let bright = strike_spec(0.0, 0.95, 0.3, f0, 0.1).level_at(4.0 * f0);
-        assert!(bright > dull * 2.0, "brightness should raise high partials: dull={dull} bright={bright}");
+        assert!(
+            bright > dull * 2.0,
+            "brightness should raise high partials: dull={dull} bright={bright}"
+        );
     }
 
     #[test]
@@ -1645,7 +1821,10 @@ mod modal_tests {
         let mut out = [0.0f32; 48_000];
         m.process(In::A(&x), In::K(freq), In::K(0.0), DT, &mut out);
         for s in out {
-            assert!(s.is_finite() && s.abs() <= 8.0, "sustained drive unbounded: s={s}");
+            assert!(
+                s.is_finite() && s.abs() <= 8.0,
+                "sustained drive unbounded: s={s}"
+            );
         }
     }
 }

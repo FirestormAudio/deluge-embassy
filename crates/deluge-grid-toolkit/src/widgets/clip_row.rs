@@ -58,7 +58,13 @@ impl ClipRowData {
 
 /// Paint a clip row at local `row` across the full frame width. `selected` and
 /// `pulse_phase` drive the selection highlight and launch blink.
-pub fn draw_clip_row(f: &mut Frame, row: usize, data: &ClipRowData, selected: bool, pulse_phase: f32) {
+pub fn draw_clip_row(
+    f: &mut Frame,
+    row: usize,
+    data: &ClipRowData,
+    selected: bool,
+    pulse_phase: f32,
+) {
     let width = f.size().1;
     let base = if selected {
         data.color.blend(data.color.brighten(0.5), pulse_phase)
@@ -101,7 +107,9 @@ mod tests {
 
     fn render(data: ClipRowData) -> Grid {
         let mut ui = GridUi::new();
-        ui.run(0, PadInput::new(), |f| draw_clip_row(f, 0, &data, false, 0.0));
+        ui.run(0, PadInput::new(), |f| {
+            draw_clip_row(f, 0, &data, false, 0.0)
+        });
         ui.grid().clone()
     }
 

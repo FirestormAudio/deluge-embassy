@@ -10,11 +10,19 @@ const FLOOR: f32 = 1e-4;
 /// A finite, strictly-positive ceiling (0/neg/NaN → default). Prevents both a
 /// div-by-zero and an over-attenuate-to-silence on a bad param.
 fn sanitize_ceiling(v: f32) -> f32 {
-    if v.is_finite() { v.max(FLOOR) } else { DEFAULT_CEILING }
+    if v.is_finite() {
+        v.max(FLOOR)
+    } else {
+        DEFAULT_CEILING
+    }
 }
 /// A finite, strictly-positive release time (0/neg/NaN → default).
 fn sanitize_release(v: f32) -> f32 {
-    if v.is_finite() { v.max(FLOOR) } else { DEFAULT_RELEASE }
+    if v.is_finite() {
+        v.max(FLOOR)
+    } else {
+        DEFAULT_RELEASE
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -26,10 +34,18 @@ pub struct MasterLimiter {
 
 impl MasterLimiter {
     pub fn new(ceiling: f32, release: f32) -> MasterLimiter {
-        MasterLimiter { gain: 1.0, ceiling: sanitize_ceiling(ceiling), release_s: sanitize_release(release) }
+        MasterLimiter {
+            gain: 1.0,
+            ceiling: sanitize_ceiling(ceiling),
+            release_s: sanitize_release(release),
+        }
     }
-    pub fn set_ceiling(&mut self, v: f32) { self.ceiling = sanitize_ceiling(v); }
-    pub fn set_release(&mut self, v: f32) { self.release_s = sanitize_release(v); }
+    pub fn set_ceiling(&mut self, v: f32) {
+        self.ceiling = sanitize_ceiling(v);
+    }
+    pub fn set_release(&mut self, v: f32) {
+        self.release_s = sanitize_release(v);
+    }
 
     /// Limit `l`/`r` in place with a single linked gain. `dt` = 1/sample_rate.
     pub fn process(&mut self, l: &mut [f32], r: &mut [f32], dt: f32) {
@@ -38,7 +54,11 @@ impl MasterLimiter {
         // the instant-attack branch can never recover it) — fatal on the master
         // output. `dt` is normally 1/sample_rate (a sane constant), but this
         // kernel is the last safety net before the clamp, so guard it.
-        let dt = if dt.is_finite() && dt > 0.0 { dt } else { FLOOR };
+        let dt = if dt.is_finite() && dt > 0.0 {
+            dt
+        } else {
+            FLOOR
+        };
         // One-pole release coefficient: 1 - e^(-dt/tau), tau floored at dt.
         let rel_c = 1.0 - libm::expf(-dt / self.release_s.max(dt));
         let n = l.len().min(r.len());
@@ -91,8 +111,8 @@ mod tests {
         let mut r = [0.2f32; 64];
         lim.process(&mut l, &mut r, DT);
         // both scaled by the same gain: out_r/out_l == in_r/in_l == 0.25
-        assert!((l[0] - 0.5).abs() < 1e-6);          // L clamped to ceiling
-        assert!((r[0] / l[0] - 0.25).abs() < 1e-6);  // ratio preserved
+        assert!((l[0] - 0.5).abs() < 1e-6); // L clamped to ceiling
+        assert!((r[0] / l[0] - 0.25).abs() < 1e-6); // ratio preserved
     }
 
     #[test]
@@ -133,8 +153,8 @@ mod tests {
         let mut l = [f32::NAN, f32::INFINITY, 0.0, 1e30, -1e30, 0.5];
         let mut r = [0.0, f32::NEG_INFINITY, f32::NAN, 1.0, -1.0, 0.5];
         lim.process(&mut l, &mut r, DT);
-        lim.set_ceiling(0.0);        // floored, not div-by-zero
-        lim.set_release(f32::NAN);   // → default
+        lim.set_ceiling(0.0); // floored, not div-by-zero
+        lim.set_release(f32::NAN); // → default
         let mut l2 = [2.0f32; 8];
         let mut r2 = [2.0f32; 8];
         lim.process(&mut l2, &mut r2, DT); // must not panic
@@ -148,11 +168,15 @@ mod tests {
         let mut lim = MasterLimiter::new(0.5, 0.05);
         let mut l = [0.8f32; 64];
         let mut r = [0.8f32; 64];
-        lim.process(&mut l, &mut r, f32::NAN);      // must not poison gain
+        lim.process(&mut l, &mut r, f32::NAN); // must not poison gain
         lim.process(&mut l, &mut r, f32::INFINITY); // nor this
         let mut l2 = [0.8f32; 64];
         let mut r2 = [0.8f32; 64];
-        lim.process(&mut l2, &mut r2, DT);          // valid dt → clean limiting
-        assert!(l2[63].is_finite() && l2[63].abs() <= 0.5 + 1e-6, "l2[63]={}", l2[63]);
+        lim.process(&mut l2, &mut r2, DT); // valid dt → clean limiting
+        assert!(
+            l2[63].is_finite() && l2[63].abs() <= 0.5 + 1e-6,
+            "l2[63]={}",
+            l2[63]
+        );
     }
 }

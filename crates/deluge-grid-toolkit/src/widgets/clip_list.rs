@@ -133,8 +133,8 @@ where
 mod tests {
     use super::*;
     use crate::Color;
-    use crate::imode::{GridUi, PadInput};
     use crate::Pad;
+    use crate::imode::{GridUi, PadInput};
 
     fn plain(_row: usize) -> ClipRowData {
         ClipRowData {
@@ -147,7 +147,11 @@ mod tests {
     fn windows_and_scrolls() {
         let mut state = ClipListState::new();
         let rowfn = |i: usize| ClipRowData {
-            color: if i == 5 { Color::rgb(255, 0, 0) } else { Color::rgb(0, 0, 255) },
+            color: if i == 5 {
+                Color::rgb(255, 0, 0)
+            } else {
+                Color::rgb(0, 0, 255)
+            },
             ..Default::default()
         };
         let mut ui = GridUi::new();

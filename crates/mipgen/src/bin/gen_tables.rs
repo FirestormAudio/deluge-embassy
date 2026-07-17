@@ -59,7 +59,10 @@ fn emit_2d(name: &str, bases: &[[f32; N]; FRAMES]) {
     let len = FRAMES * COMPACT_LEN;
     let mut region = std::vec![0.0f32; len];
     for (f, base) in bases.iter().enumerate() {
-        mipgen::build_pyramid_flat_compact(base, &mut region[f * COMPACT_LEN..(f + 1) * COMPACT_LEN]);
+        mipgen::build_pyramid_flat_compact(
+            base,
+            &mut region[f * COMPACT_LEN..(f + 1) * COMPACT_LEN],
+        );
     }
     println!("#[rustfmt::skip]");
     println!("pub static {name}: [f32; {len}] = [");

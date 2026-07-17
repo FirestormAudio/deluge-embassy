@@ -36,7 +36,8 @@ use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 // Sizes satisfy the binding contract: NODES >= WREN_MAX_NODES(64), BUSES >= 8.
 const PCAP: usize = 90112;
 type Eng = Engine<32, 64, 128, 8, PCAP, 2048>; // BLOCK, NODES, OUTS, BUSES, PCAP, PCHUNK
-const _: () = assert!(64 >= deluge_wren_core::WREN_MAX_NODES && 8 >= deluge_wren_core::WREN_MAX_BUSES);
+const _: () =
+    assert!(64 >= deluge_wren_core::WREN_MAX_NODES && 8 >= deluge_wren_core::WREN_MAX_BUSES);
 const SAMPLE_RATE: f32 = 44_100.0;
 
 // SAFETY: ENGINE is written exactly once by `init_engine` (from `main`, before any
@@ -69,7 +70,12 @@ struct CmdRing {
 
 impl CmdRing {
     const fn new() -> Self {
-        CmdRing { buf: [Cmd::Nop; CMD_CAP], head: 0, tail: 0, full: false }
+        CmdRing {
+            buf: [Cmd::Nop; CMD_CAP],
+            head: 0,
+            tail: 0,
+            full: false,
+        }
     }
     fn push(&mut self, c: Cmd) {
         if self.full {

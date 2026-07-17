@@ -227,7 +227,11 @@ impl SharedPanel {
         if data.is_empty() {
             return;
         }
-        self.inner.midi_out.lock().unwrap().extend(data.iter().copied());
+        self.inner
+            .midi_out
+            .lock()
+            .unwrap()
+            .extend(data.iter().copied());
         self.inner.midi_out_gen.fetch_add(1, Ordering::Release);
     }
 
@@ -241,7 +245,11 @@ impl SharedPanel {
         if data.is_empty() {
             return;
         }
-        self.inner.midi_in.lock().unwrap().extend(data.iter().copied());
+        self.inner
+            .midi_in
+            .lock()
+            .unwrap()
+            .extend(data.iter().copied());
         self.inner.midi_in_gen.fetch_add(1, Ordering::Release);
     }
 

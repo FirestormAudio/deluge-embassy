@@ -73,7 +73,11 @@ pub(crate) fn checked_str<S: SlotApi>(vm: &S, slot: i32) -> &str {
 /// else `None`. Prevents the heap over-read where a small 4-byte foreign
 /// (Node/Port/Bus) is cast to a larger `WtObj`/`SampleObj`: a mismatched tag
 /// yields `None` before the large cast happens. Mirrors `arg_input`'s tag peek.
-pub(crate) fn checked_tagged_foreign<T, S: SlotApi>(vm: &S, slot: i32, want_tag: u8) -> Option<&mut T> {
+pub(crate) fn checked_tagged_foreign<T, S: SlotApi>(
+    vm: &S,
+    slot: i32,
+    want_tag: u8,
+) -> Option<&mut T> {
     if vm.slot_type(slot) != WrenType::Foreign {
         return None;
     }

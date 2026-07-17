@@ -15,7 +15,10 @@
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "deluge-simulator", about = "Desktop front panel for a Deluge brain")]
+#[command(
+    name = "deluge-simulator",
+    about = "Desktop front panel for a Deluge brain"
+)]
 struct Cli {
     /// Connect to a Deluge brain (e.g. DelugeFirmware's `deluge_host`, launched
     /// with `DELUGE_HOST_LINK=<target>`). Accepts a TCP endpoint (`host:port`,

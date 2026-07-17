@@ -3,25 +3,26 @@
 //! buffers are voice-interleaved (sample-major): `tile[i * VOICES + v]` is voice
 //! `v` at sample `i`, so the voice loop vectorizes to `f32x8` on NEON.
 
-#[cfg(not(feature = "simd"))]
-use crate::floorf;
+use crate::In;
 use crate::env::{Adsr, Ar};
 #[cfg(not(feature = "simd"))]
 use crate::filter::{DiodeLadder, Ms20, Svf, SvfResp};
-use crate::noise::{Noise, NoiseColor};
 use crate::filter::{
-    moog_coeffs, ms20_coeffs, svf_coeffs, svf_k_from_res, svf_tan_prewarp, Ms20Resp, MOOG_OVERSAMPLE,
+    MOOG_OVERSAMPLE, Ms20Resp, moog_coeffs, ms20_coeffs, svf_coeffs, svf_k_from_res,
+    svf_tan_prewarp,
 };
 #[cfg(not(feature = "simd"))]
-use crate::osc::wave_sample;
+use crate::floorf;
+use crate::noise::{Noise, NoiseColor};
 #[cfg(not(feature = "simd"))]
 use crate::osc::SyncOsc;
 use crate::osc::Wave;
+#[cfg(not(feature = "simd"))]
+use crate::osc::wave_sample;
 #[cfg(feature = "simd")]
 use crate::osc::wave_sample_x8;
 use crate::quant::semitones_to_hz;
 use crate::wavetable::{MipSet, WtOsc};
-use crate::In;
 use core::f32::consts::PI;
 
 /// Voices processed in parallel per poly node. Fixed at compile time.
@@ -46,7 +47,9 @@ pub struct PolyCtrl {
 }
 impl PolyCtrl {
     pub fn new() -> PolyCtrl {
-        PolyCtrl { values: [0.0; VOICES] }
+        PolyCtrl {
+            values: [0.0; VOICES],
+        }
     }
     pub fn set_voice(&mut self, v: usize, x: f32) {
         if v < VOICES {
@@ -89,7 +92,13 @@ pub struct PolyOsc {
 }
 impl PolyOsc {
     pub fn new() -> PolyOsc {
-        PolyOsc { phase: [0.0; VOICES], last: [0.0; VOICES], last2: [0.0; VOICES], feedback: 0.0, shape: Wave::Sine }
+        PolyOsc {
+            phase: [0.0; VOICES],
+            last: [0.0; VOICES],
+            last2: [0.0; VOICES],
+            feedback: 0.0,
+            shape: Wave::Sine,
+        }
     }
     /// `code`: 0=Sine, 1=Saw, 2=Square, 3=Tri (default Sine).
     pub fn set_shape(&mut self, code: u8) {
@@ -189,13 +198,19 @@ pub struct PolyAr {
 }
 impl PolyAr {
     pub fn new() -> PolyAr {
-        PolyAr { voices: [Ar::new(); VOICES] }
+        PolyAr {
+            voices: [Ar::new(); VOICES],
+        }
     }
     pub fn gate_voice(&mut self, v: usize, on: bool) {
-        if v < VOICES { self.voices[v].gate(on); }
+        if v < VOICES {
+            self.voices[v].gate(on);
+        }
     }
     pub fn trigger_voice(&mut self, v: usize) {
-        if v < VOICES { self.voices[v].trigger(); }
+        if v < VOICES {
+            self.voices[v].trigger();
+        }
     }
     /// attack/release mono controls; writes a voice-interleaved env tile.
     pub fn process(&mut self, attack: In, release: In, dt: f32, out: &mut [f32]) {
@@ -210,7 +225,9 @@ impl PolyAr {
     }
 }
 impl Default for PolyAr {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Poly ADSR: 8 independent `Adsr`s, scalar-per-voice (the state machine is
@@ -221,16 +238,24 @@ pub struct PolyAdsr {
 }
 impl PolyAdsr {
     pub fn new() -> PolyAdsr {
-        PolyAdsr { voices: [Adsr::new(); VOICES] }
+        PolyAdsr {
+            voices: [Adsr::new(); VOICES],
+        }
     }
     pub fn gate_voice(&mut self, v: usize, on: bool) {
-        if v < VOICES { self.voices[v].gate(on); }
+        if v < VOICES {
+            self.voices[v].gate(on);
+        }
     }
     pub fn trigger_voice(&mut self, v: usize) {
-        if v < VOICES { self.voices[v].trigger(); }
+        if v < VOICES {
+            self.voices[v].trigger();
+        }
     }
     pub fn set_sustain(&mut self, s: f32) {
-        for a in &mut self.voices { a.set_sustain(s); }
+        for a in &mut self.voices {
+            a.set_sustain(s);
+        }
     }
     /// attack/decay/release mono controls; writes a voice-interleaved env tile.
     pub fn process(&mut self, attack: In, decay: In, release: In, dt: f32, out: &mut [f32]) {
@@ -244,7 +269,9 @@ impl PolyAdsr {
     }
 }
 impl Default for PolyAdsr {
-    fn default() -> Self { PolyAdsr::new() }
+    fn default() -> Self {
+        PolyAdsr::new()
+    }
 }
 
 /// Poly one-pole slew/lag (glide). Per-voice `z`; scalar `time` (seconds, set via
@@ -257,9 +284,21 @@ pub struct PolySlew {
     time: f32,
 }
 impl PolySlew {
-    pub fn new() -> Self { PolySlew { z: [0.0; VOICES], snap: [false; VOICES], time: 0.0 } }
-    pub fn set_time(&mut self, t: f32) { self.time = t.max(0.0); }
-    pub fn trigger_voice(&mut self, v: usize) { if v < VOICES { self.snap[v] = true; } }
+    pub fn new() -> Self {
+        PolySlew {
+            z: [0.0; VOICES],
+            snap: [false; VOICES],
+            time: 0.0,
+        }
+    }
+    pub fn set_time(&mut self, t: f32) {
+        self.time = t.max(0.0);
+    }
+    pub fn trigger_voice(&mut self, v: usize) {
+        if v < VOICES {
+            self.snap[v] = true;
+        }
+    }
     /// `target` = voice-interleaved input tile; writes the slewed tile.
     pub fn process(&mut self, target: &[f32], dt: f32, out: &mut [f32]) {
         let n = out.len() / VOICES;
@@ -267,15 +306,21 @@ impl PolySlew {
         for i in 0..n {
             for v in 0..VOICES {
                 let t = target[i * VOICES + v];
-                if self.snap[v] { self.z[v] = t; self.snap[v] = false; }
-                else { self.z[v] += (t - self.z[v]) * c; }
+                if self.snap[v] {
+                    self.z[v] = t;
+                    self.snap[v] = false;
+                } else {
+                    self.z[v] += (t - self.z[v]) * c;
+                }
                 out[i * VOICES + v] = self.z[v];
             }
         }
     }
 }
 impl Default for PolySlew {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Collapse the `VOICES`-lane tile to mono, scaled by `gain` (1.0 = plain sum;
@@ -343,11 +388,16 @@ pub struct PolySvf {
 impl PolySvf {
     #[cfg(not(feature = "simd"))]
     pub fn new() -> PolySvf {
-        PolySvf { voices: [Svf::new(); VOICES] }
+        PolySvf {
+            voices: [Svf::new(); VOICES],
+        }
     }
     #[cfg(feature = "simd")]
     pub fn new() -> PolySvf {
-        PolySvf { ic1: [0.0; VOICES], ic2: [0.0; VOICES] }
+        PolySvf {
+            ic1: [0.0; VOICES],
+            ic2: [0.0; VOICES],
+        }
     }
 
     /// `audio` = voice-interleaved poly input; cutoff/res mono; LP output tile.
@@ -386,7 +436,9 @@ impl PolySvf {
     }
 }
 impl Default for PolySvf {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// One Heun (RK2) diode-ladder sub-step across `VOICES` lanes. Mirrors the
@@ -400,8 +452,8 @@ fn heun_step_x8<const STAGES: usize>(
     fh: core::simd::f32x8,
     res4: core::simd::f32x8, // res * 4.0, pre-multiplied
 ) {
-    use core::simd::prelude::*;
     use crate::filter::pade_tanh_x8;
+    use core::simd::prelude::*;
     let feedback = pade_tanh_x8(state[STAGES - 1]) * res4;
     let x = input - feedback;
 
@@ -445,11 +497,17 @@ pub struct PolyMoog<const POLES: usize> {
 impl<const POLES: usize> PolyMoog<POLES> {
     #[cfg(not(feature = "simd"))]
     pub fn new() -> Self {
-        PolyMoog { drive: 1.0, ladders: [DiodeLadder::new(); VOICES] }
+        PolyMoog {
+            drive: 1.0,
+            ladders: [DiodeLadder::new(); VOICES],
+        }
     }
     #[cfg(feature = "simd")]
     pub fn new() -> Self {
-        PolyMoog { drive: 1.0, state: [core::simd::f32x8::splat(0.0); POLES] }
+        PolyMoog {
+            drive: 1.0,
+            state: [core::simd::f32x8::splat(0.0); POLES],
+        }
     }
 
     pub fn set_drive(&mut self, d: f32) {
@@ -461,8 +519,8 @@ impl<const POLES: usize> PolyMoog<POLES> {
         let n = out.len() / VOICES;
         #[cfg(feature = "simd")]
         {
-            use core::simd::prelude::*;
             use crate::filter::pade_tanh_x8;
+            use core::simd::prelude::*;
             let drive = f32x8::splat(self.drive);
             for i in 0..n {
                 // res4 = ladder_res*4 = k, so moog_coeffs' k is exactly heun_step_x8's res4.
@@ -493,7 +551,9 @@ impl<const POLES: usize> PolyMoog<POLES> {
 }
 
 impl<const POLES: usize> Default for PolyMoog<POLES> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Poly MS-20 (Korg35) Sallen-Key. Poly audio in → 8 filtered lanes; shared
@@ -522,7 +582,10 @@ pub struct PolyMs20 {
 impl PolyMs20 {
     #[cfg(not(feature = "simd"))]
     pub fn new() -> Self {
-        PolyMs20 { drive: 1.0, voices: [Ms20::new(); VOICES] }
+        PolyMs20 {
+            drive: 1.0,
+            voices: [Ms20::new(); VOICES],
+        }
     }
     #[cfg(feature = "simd")]
     pub fn new() -> Self {
@@ -548,12 +611,22 @@ impl PolyMs20 {
     }
 
     /// `audio` = voice-interleaved poly input; cutoff/res/resp shared mono; out tile.
-    pub fn process(&mut self, audio: &[f32], cutoff: In, res: In, resp: Ms20Resp, dt: f32, out: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        audio: &[f32],
+        cutoff: In,
+        res: In,
+        resp: Ms20Resp,
+        dt: f32,
+        out: &mut [f32],
+    ) {
         let n = out.len() / VOICES;
         #[cfg(feature = "simd")]
         {
+            use crate::filter::{
+                MS20_DC_HP_HZ, MS20_OVERSAMPLE, OnePoleHp, ms20_clip_x8, pade_tanh_x8,
+            };
             use core::simd::prelude::*;
-            use crate::filter::{ms20_clip_x8, pade_tanh_x8, OnePoleHp, MS20_DC_HP_HZ, MS20_OVERSAMPLE};
             if dt != self.cached_dt {
                 // Reuse the scalar OnePoleHp coeff computation for exact agreement.
                 let mut hp = OnePoleHp::default();
@@ -568,8 +641,12 @@ impl PolyMs20 {
             let eight = f32x8::splat(8.0);
             for i in 0..n {
                 let (k, a1, a2, a3) = ms20_coeffs(cutoff.at(i), res.at(i), dt);
-                let (kv, a1v, a2v, a3v) =
-                    (f32x8::splat(k), f32x8::splat(a1), f32x8::splat(a2), f32x8::splat(a3));
+                let (kv, a1v, a2v, a3v) = (
+                    f32x8::splat(k),
+                    f32x8::splat(a1),
+                    f32x8::splat(a2),
+                    f32x8::splat(a3),
+                );
                 let input = f32x8::from_slice(&audio[i * VOICES..]);
                 let mut y = f32x8::splat(0.0);
                 for _ in 0..MS20_OVERSAMPLE {
@@ -627,11 +704,16 @@ pub struct PolySync {
 impl PolySync {
     #[cfg(not(feature = "simd"))]
     pub fn new() -> Self {
-        PolySync { voices: [SyncOsc::new(); VOICES] }
+        PolySync {
+            voices: [SyncOsc::new(); VOICES],
+        }
     }
     #[cfg(feature = "simd")]
     pub fn new() -> Self {
-        PolySync { master_phase: core::simd::f32x8::splat(0.0), slave_phase: core::simd::f32x8::splat(0.0) }
+        PolySync {
+            master_phase: core::simd::f32x8::splat(0.0),
+            slave_phase: core::simd::f32x8::splat(0.0),
+        }
     }
 
     /// `master`/`slave` = voice-interleaved per-voice Hz tiles; writes a
@@ -641,8 +723,8 @@ impl PolySync {
         let n = out.len() / VOICES;
         #[cfg(feature = "simd")]
         {
-            use core::simd::prelude::*;
             use crate::osc::{floor_x8, naive_wave_x8, poly_blep_x8, wave_sample_x8};
+            use core::simd::prelude::*;
             let dtv = f32x8::splat(dt);
             let zero = f32x8::splat(0.0);
             let one = f32x8::splat(1.0);
@@ -686,8 +768,12 @@ impl PolySync {
         {
             for i in 0..n {
                 for v in 0..VOICES {
-                    out[i * VOICES + v] =
-                        self.voices[v].tick(wave, master[i * VOICES + v], slave[i * VOICES + v], dt);
+                    out[i * VOICES + v] = self.voices[v].tick(
+                        wave,
+                        master[i * VOICES + v],
+                        slave[i * VOICES + v],
+                        dt,
+                    );
                 }
             }
         }
@@ -711,24 +797,43 @@ pub struct PolyWt {
 }
 impl PolyWt {
     pub fn new() -> Self {
-        PolyWt { voices: [WtOsc::new(); VOICES] }
+        PolyWt {
+            voices: [WtOsc::new(); VOICES],
+        }
     }
 
     /// Self-FM depth, clamped to [-1, 1] (mirrors `PolyOsc::set_feedback`).
     /// Fans out to every voice's `WtOsc` (shared feedback across all 8 lanes).
     pub fn set_feedback(&mut self, f: f32) {
-        for w in &mut self.voices { w.set_feedback(f); }
+        for w in &mut self.voices {
+            w.set_feedback(f);
+        }
     }
 
     /// Single-cycle: process voice `v` into a mono `out` block, sharing `mips`.
-    pub fn process_voice(&mut self, v: usize, mips: MipSet, freq: In, pmod: In, dt: f32, out: &mut [f32]) {
+    pub fn process_voice(
+        &mut self,
+        v: usize,
+        mips: MipSet,
+        freq: In,
+        pmod: In,
+        dt: f32,
+        out: &mut [f32],
+    ) {
         self.voices[v].process(mips, freq, pmod, dt, out);
     }
 
     /// 2D morph: process voice `v` into a mono `out` block.
     pub fn process_voice_morph(
-        &mut self, v: usize, region: &[f32], frames: usize,
-        freq: In, pmod: In, position: In, dt: f32, out: &mut [f32],
+        &mut self,
+        v: usize,
+        region: &[f32],
+        frames: usize,
+        freq: In,
+        pmod: In,
+        position: In,
+        dt: f32,
+        out: &mut [f32],
     ) {
         self.voices[v].process_morph(region, frames, freq, pmod, position, dt, out);
     }
@@ -810,7 +915,9 @@ impl PolyMtof {
     }
 }
 impl Default for PolyMtof {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -847,7 +954,11 @@ mod tests {
         let mut out_lo = std::vec![0.0f32; VOICES * n];
         PolySvf::new().process(&hi, In::A(&cutoff), In::A(&res), dt, &mut out_hi);
         PolySvf::new().process(&lo, In::A(&cutoff), In::A(&res), dt, &mut out_lo);
-        let peak = |t: &[f32]| t[VOICES * n / 2..].iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        let peak = |t: &[f32]| {
+            t[VOICES * n / 2..]
+                .iter()
+                .fold(0.0f32, |m, &s| m.max(s.abs()))
+        };
         assert!(peak(&out_hi) < 0.3, "18 kHz attenuated: {}", peak(&out_hi));
         assert!(peak(&out_lo) > 0.7, "100 Hz passes: {}", peak(&out_lo));
     }
@@ -865,9 +976,19 @@ mod tests {
         PolySvf::new().process(&sig, In::A(&cutoff), In::A(&res), dt, &mut poly_out);
         let mono_in: std::vec::Vec<f32> = (0..n).map(|i| sig[i * VOICES]).collect();
         let mut mono_out = std::vec![0.0f32; n];
-        Svf::new().process(In::A(&mono_in), In::A(&cutoff), In::A(&res), SvfResp::Lp, dt, &mut mono_out);
+        Svf::new().process(
+            In::A(&mono_in),
+            In::A(&cutoff),
+            In::A(&res),
+            SvfResp::Lp,
+            dt,
+            &mut mono_out,
+        );
         for i in 0..n {
-            assert!((poly_out[i * VOICES] - mono_out[i]).abs() < 1e-4, "sample {i}");
+            assert!(
+                (poly_out[i * VOICES] - mono_out[i]).abs() < 1e-4,
+                "sample {i}"
+            );
         }
     }
 
@@ -904,15 +1025,33 @@ mod tests {
         let mut po = PolyOsc::new();
         po.set_shape(1); // Saw
         let mut out = std::vec![0.0f32; VOICES * n];
-        po.process(&std::vec![freq; VOICES * n], &std::vec![0.0f32; VOICES * n], &std::vec![0.0f32; VOICES * n], dt, &mut out);
+        po.process(
+            &std::vec![freq; VOICES * n],
+            &std::vec![0.0f32; VOICES * n],
+            &std::vec![0.0f32; VOICES * n],
+            dt,
+            &mut out,
+        );
         // Mono reference: Osc::process(wave, freq, pmod, width, dt, out).
         // PolyOsc advances phase THEN outputs (Sy-1 convention); mono Osc outputs
         // THEN advances — PolyOsc is one sample ahead: poly[i] == mono[i+1].
         let mut mono = Osc::new();
         let mut mref = std::vec![0.0f32; n + 1];
-        mono.process(Wave::Saw, In::K(freq), In::K(0.0), In::K(0.0), dt, &mut mref);
+        mono.process(
+            Wave::Saw,
+            In::K(freq),
+            In::K(0.0),
+            In::K(0.0),
+            dt,
+            &mut mref,
+        );
         for i in 0..n {
-            assert!((out[i * VOICES] - mref[i + 1]).abs() < 1e-4, "sample {i}: {} vs {}", out[i * VOICES], mref[i + 1]);
+            assert!(
+                (out[i * VOICES] - mref[i + 1]).abs() < 1e-4,
+                "sample {i}: {} vs {}",
+                out[i * VOICES],
+                mref[i + 1]
+            );
         }
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
     }
@@ -931,7 +1070,11 @@ mod tests {
                 let mut refn = Noise::seeded_color(seed, color);
                 for i in 0..n {
                     let want = refn.tick();
-                    assert_eq!(out[i * VOICES + v], want, "color {color:?} lane {v} sample {i}");
+                    assert_eq!(
+                        out[i * VOICES + v],
+                        want,
+                        "color {color:?} lane {v} sample {i}"
+                    );
                 }
             }
         }
@@ -943,10 +1086,16 @@ mod tests {
         let n = 64;
         let mut out = std::vec![0.0f32; VOICES * n];
         nz.process(&mut out);
-        assert!(out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0), "bounded");
+        assert!(
+            out.iter().all(|&s| s.is_finite() && s.abs() <= 1.0),
+            "bounded"
+        );
         assert!(out.iter().any(|&s| s != 0.0), "non-silent");
         // Decorrelated: lane 0 and lane 1 differ.
-        assert!((0..n).any(|i| out[i * VOICES] != out[i * VOICES + 1]), "lanes decorrelated");
+        assert!(
+            (0..n).any(|i| out[i * VOICES] != out[i * VOICES + 1]),
+            "lanes decorrelated"
+        );
     }
 
     #[test]
@@ -999,7 +1148,10 @@ mod tests {
                 ph[v] += f * dt;
                 ph[v] -= floorf(ph[v]);
                 let want = fast_sin(ph[v]);
-                assert!((out[i * VOICES + v] - want).abs() < 1e-5, "voice {v} sample {i}");
+                assert!(
+                    (out[i * VOICES + v] - want).abs() < 1e-5,
+                    "voice {v} sample {i}"
+                );
             }
         }
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0001));
@@ -1019,8 +1171,9 @@ mod tests {
         // re-deriving the phase recurrence (and without risking an
         // unrelated scalar-vs-SIMD tolerance mismatch — both runs go
         // through the identical code path for this build).
-        let pitch: std::vec::Vec<f32> =
-            (0..n * VOICES).map(|j| 110.0 + (j % VOICES) as f32 * 37.0).collect();
+        let pitch: std::vec::Vec<f32> = (0..n * VOICES)
+            .map(|j| 110.0 + (j % VOICES) as f32 * 37.0)
+            .collect();
         let pm_zero = std::vec![0.0f32; n * VOICES];
         for code in 0u8..4 {
             let mut o_zero = PolyOsc::new();
@@ -1067,8 +1220,9 @@ mod tests {
         let mut o = PolyOsc::new();
         o.set_shape(2); // Square
         let pitch = std::vec![220.0f32; n * VOICES];
-        let width: std::vec::Vec<f32> =
-            (0..n * VOICES).map(|j| 0.1 + 0.1 * ((j % VOICES) as f32)).collect();
+        let width: std::vec::Vec<f32> = (0..n * VOICES)
+            .map(|j| 0.1 + 0.1 * ((j % VOICES) as f32))
+            .collect();
         let pm = std::vec![0.0f32; n * VOICES];
         let mut out = std::vec![0.0f32; n * VOICES];
         o.process(&pitch, &width, &pm, dt, &mut out);
@@ -1099,10 +1253,14 @@ mod tests {
                 let mut p = ref_phase[v] + dtp;
                 p -= libm::floorf(p);
                 ref_phase[v] = p;
-                out_ref[i * VOICES + v] = crate::osc::wave_sample(Wave::Sine, p, dtp, width[i * VOICES + v]);
+                out_ref[i * VOICES + v] =
+                    crate::osc::wave_sample(Wave::Sine, p, dtp, width[i * VOICES + v]);
             }
         }
-        assert_eq!(out_new, out_ref, "pm=0,fb=0 is bit-identical to the old PolyOsc");
+        assert_eq!(
+            out_new, out_ref,
+            "pm=0,fb=0 is bit-identical to the old PolyOsc"
+        );
     }
 
     #[test]
@@ -1113,7 +1271,9 @@ mod tests {
         let pitch = std::vec![440.0f32; VOICES * n];
         let width = std::vec![0.0f32; VOICES * n];
         let mut pm = std::vec![0.0f32; VOICES * n];
-        for i in 0..n { pm[i * VOICES + 0] = 0.25; } // constant phase offset on lane 0
+        for i in 0..n {
+            pm[i * VOICES + 0] = 0.25;
+        } // constant phase offset on lane 0
         let dt = 1.0 / 48000.0;
         let mut a = PolyOsc::new();
         let mut out = std::vec![0.0f32; VOICES * n];
@@ -1125,7 +1285,11 @@ mod tests {
         let mut out0 = std::vec![0.0f32; VOICES * n];
         b.process(&pitch, &width, &zero, dt, &mut out0);
         let mut differs = false;
-        for i in 0..n { if (out[i*VOICES] - out0[i*VOICES]).abs() > 1e-6 { differs = true; } }
+        for i in 0..n {
+            if (out[i * VOICES] - out0[i * VOICES]).abs() > 1e-6 {
+                differs = true;
+            }
+        }
         assert!(differs, "pm on lane 0 changes its output");
         assert!(l0.is_finite());
     }
@@ -1141,7 +1305,10 @@ mod tests {
         a.set_feedback(1.0);
         let mut out = std::vec![0.0f32; VOICES * n];
         a.process(&pitch, &width, &pm, dt, &mut out);
-        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 2.0), "feedback bounded");
+        assert!(
+            out.iter().all(|s| s.is_finite() && s.abs() <= 2.0),
+            "feedback bounded"
+        );
     }
 
     #[cfg(feature = "simd")]
@@ -1153,7 +1320,11 @@ mod tests {
             let ps: [f32; 8] = core::array::from_fn(|k| (base as f32 * 8.0 + k as f32) / 1000.0);
             let v = crate::fast_sin_x8(f32x8::from_array(ps)).to_array();
             for k in 0..8 {
-                assert!((v[k] - crate::fast_sin(ps[k])).abs() < 1e-6, "phase {} lane {k}", ps[k]);
+                assert!(
+                    (v[k] - crate::fast_sin(ps[k])).abs() < 1e-6,
+                    "phase {} lane {k}",
+                    ps[k]
+                );
             }
         }
     }
@@ -1179,7 +1350,13 @@ mod tests {
     fn voice_sum_gain_scales_and_unity_is_plain_sum() {
         let n = 4usize;
         // tile: lane v of sample i = (i+1)*(v+1) as a simple pattern
-        let tile: std::vec::Vec<f32> = (0..n * VOICES).map(|j| { let i = j / VOICES; let v = j % VOICES; ((i + 1) * (v + 1)) as f32 }).collect();
+        let tile: std::vec::Vec<f32> = (0..n * VOICES)
+            .map(|j| {
+                let i = j / VOICES;
+                let v = j % VOICES;
+                ((i + 1) * (v + 1)) as f32
+            })
+            .collect();
         // unity gain == plain sum
         let mut out1 = std::vec![0.0f32; n];
         voice_sum(&tile, &mut out1, 1.0);
@@ -1190,7 +1367,9 @@ mod tests {
         // gain 0.5 scales
         let mut out2 = std::vec![0.0f32; n];
         voice_sum(&tile, &mut out2, 0.5);
-        for i in 0..n { assert_eq!(out2[i], out1[i] * 0.5, "gain scales the sum"); }
+        for i in 0..n {
+            assert_eq!(out2[i], out1[i] * 0.5, "gain scales the sum");
+        }
     }
 
     #[test]
@@ -1218,8 +1397,14 @@ mod tests {
         voice_sum_stereo(&tile, &mut l2, &mut r2, 1.0, &pan);
         // L2 = sum of lanes 1..VOICES (lane 0 dropped); R2 = full sum.
         let drop0: f32 = (1..VOICES).map(|v| tile[v]).sum();
-        assert!((l2[0] - drop0).abs() < 1e-6, "hard-right lane 0 absent from L");
-        assert!((r2[0] - mono[0]).abs() < 1e-6, "hard-right lane 0 present in R");
+        assert!(
+            (l2[0] - drop0).abs() < 1e-6,
+            "hard-right lane 0 absent from L"
+        );
+        assert!(
+            (r2[0] - mono[0]).abs() < 1e-6,
+            "hard-right lane 0 present in R"
+        );
         // (c) gain scales both rows.
         let (mut lg, mut rg) = ([0.0f32; 2], [0.0f32; 2]);
         voice_sum_stereo(&tile, &mut lg, &mut rg, 0.5, &center);
@@ -1258,8 +1443,14 @@ mod tests {
         let mut out = std::vec![0.0f32; VOICES * n];
         env.process(In::A(&atk_mono), In::A(&rel_mono), dt, &mut out);
         // Gated voices reach ~1.0 by the end of a 100 ms window (10 ms attack).
-        assert!((out[(n - 1) * VOICES + 0] - 1.0).abs() < 1e-3, "voice 0 reached sustain");
-        assert!((out[(n - 1) * VOICES + 3] - 1.0).abs() < 1e-3, "voice 3 reached sustain");
+        assert!(
+            (out[(n - 1) * VOICES + 0] - 1.0).abs() < 1e-3,
+            "voice 0 reached sustain"
+        );
+        assert!(
+            (out[(n - 1) * VOICES + 3] - 1.0).abs() < 1e-3,
+            "voice 3 reached sustain"
+        );
         // Ungated voices stay silent.
         for v in [1usize, 2, 4, 5, 6, 7] {
             assert!(out[(n - 1) * VOICES + v].abs() < 1e-9, "voice {v} silent");
@@ -1278,7 +1469,10 @@ mod tests {
         let rel: std::vec::Vec<f32> = (0..n).map(|_| 0.001).collect();
         let mut out = std::vec![0.0f32; VOICES * n];
         env.process(In::A(&atk), In::A(&rel), dt, &mut out);
-        assert!((out[(n - 1) * VOICES] - 1.0).abs() < 1e-3, "reached sustain");
+        assert!(
+            (out[(n - 1) * VOICES] - 1.0).abs() < 1e-3,
+            "reached sustain"
+        );
         env.gate_voice(0, false); // release
         let mut out2 = std::vec![0.0f32; VOICES * n];
         env.process(In::A(&atk), In::A(&rel), dt, &mut out2);
@@ -1299,8 +1493,15 @@ mod tests {
         env.process(In::A(&atk), In::A(&rel), dt, &mut out);
         let peak = (0..n).map(|i| out[i * VOICES + 2]).fold(0.0f32, f32::max);
         assert!(peak > 0.99, "one-shot reaches peak: {peak}");
-        assert!(out[(n - 1) * VOICES + 2] < 0.05, "one-shot decays after: {}", out[(n - 1) * VOICES + 2]);
-        assert!(out[(n - 1) * VOICES].abs() < 1e-9, "untriggered voice 0 silent");
+        assert!(
+            out[(n - 1) * VOICES + 2] < 0.05,
+            "one-shot decays after: {}",
+            out[(n - 1) * VOICES + 2]
+        );
+        assert!(
+            out[(n - 1) * VOICES].abs() < 1e-9,
+            "untriggered voice 0 silent"
+        );
     }
 
     #[test]
@@ -1309,8 +1510,15 @@ mod tests {
         let n = 512usize;
         let mut poly = PolyAdsr::new();
         poly.set_sustain(0.4);
-        let mut refs: [Adsr; VOICES] = core::array::from_fn(|_| { let mut a = Adsr::new(); a.set_sustain(0.4); a });
-        for v in 0..VOICES { poly.gate_voice(v, true); refs[v].gate(true); }
+        let mut refs: [Adsr; VOICES] = core::array::from_fn(|_| {
+            let mut a = Adsr::new();
+            a.set_sustain(0.4);
+            a
+        });
+        for v in 0..VOICES {
+            poly.gate_voice(v, true);
+            refs[v].gate(true);
+        }
         let mut out = std::vec![0.0f32; n * VOICES];
         // shared a/d/r
         poly.process(In::K(0.01), In::K(0.05), In::K(0.1), dt, &mut out);
@@ -1327,13 +1535,24 @@ mod tests {
         let dt = 1.0 / 48_000.0;
         let mut poly = PolyAdsr::new();
         poly.set_sustain(1.0);
-        for v in 0..VOICES { poly.gate_voice(v, true); }
+        for v in 0..VOICES {
+            poly.gate_voice(v, true);
+        }
         let mut out = std::vec![0.0f32; VOICES];
         // let all attack to sustain
-        for _ in 0..2000 { poly.process(In::K(0.001), In::K(0.001), In::K(0.5), dt, &mut out); }
+        for _ in 0..2000 {
+            poly.process(In::K(0.001), In::K(0.001), In::K(0.5), dt, &mut out);
+        }
         poly.gate_voice(3, false); // release only voice 3
-        for _ in 0..2000 { poly.process(In::K(0.001), In::K(0.001), In::K(0.5), dt, &mut out); }
-        assert!(out[3] < out[0], "voice 3 released, others held: {} !< {}", out[3], out[0]);
+        for _ in 0..2000 {
+            poly.process(In::K(0.001), In::K(0.001), In::K(0.5), dt, &mut out);
+        }
+        assert!(
+            out[3] < out[0],
+            "voice 3 released, others held: {} !< {}",
+            out[3],
+            out[0]
+        );
     }
 
     #[test]
@@ -1380,7 +1599,11 @@ mod tests {
             let mut refs: [Moog<P>; VOICES] = core::array::from_fn(|_| Moog::<P>::new());
             // Voice v gets a saw-ish ramp scaled per voice.
             let audio: std::vec::Vec<f32> = (0..n * VOICES)
-                .map(|j| { let i = j / VOICES; let v = j % VOICES; ((i as f32 * 0.017 + v as f32 * 0.03) % 1.0) * 2.0 - 1.0 })
+                .map(|j| {
+                    let i = j / VOICES;
+                    let v = j % VOICES;
+                    ((i as f32 * 0.017 + v as f32 * 0.03) % 1.0) * 2.0 - 1.0
+                })
                 .collect();
             let mut out = std::vec![0.0f32; n * VOICES];
             poly.process(&audio, In::K(cutoff), In::K(res), dt, &mut out);
@@ -1389,8 +1612,12 @@ mod tests {
                 let mut vout = std::vec![0.0f32; n];
                 refs[v].process(In::A(&vin), In::K(cutoff), In::K(res), dt, &mut vout);
                 for i in 0..n {
-                    assert!((out[i * VOICES + v] - vout[i]).abs() <= 1e-4,
-                        "slope {P} voice {v} sample {i}: {} vs {}", out[i * VOICES + v], vout[i]);
+                    assert!(
+                        (out[i * VOICES + v] - vout[i]).abs() <= 1e-4,
+                        "slope {P} voice {v} sample {i}: {} vs {}",
+                        out[i * VOICES + v],
+                        vout[i]
+                    );
                 }
             }
         }
@@ -1404,7 +1631,9 @@ mod tests {
         let audio = std::vec![0.5f32; n * VOICES]; // constant excitation
         let mut out = std::vec![0.0f32; n * VOICES];
         poly.process(&audio, In::K(1000.0), In::K(1.0), dt, &mut out);
-        for &s in &out { assert!(s.abs() <= 1.0001, "moog diverged: {s}"); }
+        for &s in &out {
+            assert!(s.abs() <= 1.0001, "moog diverged: {s}");
+        }
     }
 
     #[test]
@@ -1417,7 +1646,11 @@ mod tests {
             let mut refs: [Ms20; VOICES] = core::array::from_fn(|_| Ms20::new());
             // Voice v gets a saw-ish ramp scaled per voice.
             let audio: std::vec::Vec<f32> = (0..n * VOICES)
-                .map(|j| { let i = j / VOICES; let v = j % VOICES; ((i as f32 * 0.021 + v as f32 * 0.04) % 1.0) * 2.0 - 1.0 })
+                .map(|j| {
+                    let i = j / VOICES;
+                    let v = j % VOICES;
+                    ((i as f32 * 0.021 + v as f32 * 0.04) % 1.0) * 2.0 - 1.0
+                })
                 .collect();
             let mut out = std::vec![0.0f32; n * VOICES];
             poly.process(&audio, In::K(1500.0), In::K(0.8), resp, dt, &mut out);
@@ -1426,8 +1659,12 @@ mod tests {
                 let mut vout = std::vec![0.0f32; n];
                 refs[v].process(In::A(&vin), In::K(1500.0), In::K(0.8), resp, dt, &mut vout);
                 for i in 0..n {
-                    assert!((out[i * VOICES + v] - vout[i]).abs() <= 1e-4,
-                        "{resp:?} voice {v} sample {i}: {} vs {}", out[i * VOICES + v], vout[i]);
+                    assert!(
+                        (out[i * VOICES + v] - vout[i]).abs() <= 1e-4,
+                        "{resp:?} voice {v} sample {i}: {} vs {}",
+                        out[i * VOICES + v],
+                        vout[i]
+                    );
                 }
             }
         }
@@ -1442,8 +1679,17 @@ mod tests {
         poly.set_drive(6.0);
         let audio = std::vec![0.5f32; n * VOICES];
         let mut out = std::vec![0.0f32; n * VOICES];
-        poly.process(&audio, In::K(8000.0), In::K(0.99), Ms20Resp::Lp, dt, &mut out);
-        for &s in &out { assert!(s.abs() <= 8.0001, "ms20 diverged: {s}"); }
+        poly.process(
+            &audio,
+            In::K(8000.0),
+            In::K(0.99),
+            Ms20Resp::Lp,
+            dt,
+            &mut out,
+        );
+        for &s in &out {
+            assert!(s.abs() <= 8.0001, "ms20 diverged: {s}");
+        }
     }
 
     #[test]
@@ -1451,22 +1697,32 @@ mod tests {
         use crate::osc::SyncOsc;
         let dt = 1.0 / 48_000.0;
         let n = 300;
-        for (name, wave) in [("Sine", Wave::Sine), ("Saw", Wave::Saw), ("Square", Wave::Square), ("Tri", Wave::Tri)] {
+        for (name, wave) in [
+            ("Sine", Wave::Sine),
+            ("Saw", Wave::Saw),
+            ("Square", Wave::Square),
+            ("Tri", Wave::Tri),
+        ] {
             let mut poly = PolySync::new();
             let mut refs: [SyncOsc; VOICES] = core::array::from_fn(|_| SyncOsc::new());
             // per-voice distinct master & slave freqs
-            let master: std::vec::Vec<f32> =
-                (0..n * VOICES).map(|j| 110.0 + 20.0 * ((j % VOICES) as f32)).collect();
-            let slave: std::vec::Vec<f32> =
-                (0..n * VOICES).map(|j| 165.0 + 30.0 * ((j % VOICES) as f32)).collect();
+            let master: std::vec::Vec<f32> = (0..n * VOICES)
+                .map(|j| 110.0 + 20.0 * ((j % VOICES) as f32))
+                .collect();
+            let slave: std::vec::Vec<f32> = (0..n * VOICES)
+                .map(|j| 165.0 + 30.0 * ((j % VOICES) as f32))
+                .collect();
             let mut out = std::vec![0.0f32; n * VOICES];
             poly.process(&master, &slave, wave, dt, &mut out);
             for v in 0..VOICES {
                 for i in 0..n {
-                    let want = refs[v].tick(wave, master[i * VOICES + v], slave[i * VOICES + v], dt);
+                    let want =
+                        refs[v].tick(wave, master[i * VOICES + v], slave[i * VOICES + v], dt);
                     assert!(
                         (out[i * VOICES + v] - want).abs() <= 1e-4,
-                        "{name} lane {v} i {i}: {} vs {}", out[i * VOICES + v], want
+                        "{name} lane {v} i {i}: {} vs {}",
+                        out[i * VOICES + v],
+                        want
                     );
                 }
             }
@@ -1491,7 +1747,9 @@ mod tests {
             }
             let mut out = std::vec![0.0f32; VOICES * deluge_dsp_test::FFT_N];
             poly.process(&master, &slave, Wave::Saw, 1.0 / sr, &mut out);
-            let lane: std::vec::Vec<f32> = (0..deluge_dsp_test::FFT_N).map(|i| out[i * VOICES]).collect();
+            let lane: std::vec::Vec<f32> = (0..deluge_dsp_test::FFT_N)
+                .map(|i| out[i * VOICES])
+                .collect();
             let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
             buf.copy_from_slice(&lane);
             let wa = deluge_dsp_test::spectrum::analyze_buf(sr, &buf)
@@ -1502,7 +1760,10 @@ mod tests {
             // against it above), so the same floor applies: gate at -25 dB,
             // matching `sync_saw_is_band_limited`'s margin below its
             // measured -27.2 dB worst case (slave×4.3).
-            assert!(wa < -25.0, "polysync saw slave×{slave_mul}: worst_alias {wa} dB");
+            assert!(
+                wa < -25.0,
+                "polysync saw slave×{slave_mul}: worst_alias {wa} dB"
+            );
         }
     }
 
@@ -1511,7 +1772,7 @@ mod tests {
         // PolyWt::process_voice is a thin per-voice delegate to WtOsc::process
         // — voice v fed pitch f must equal a standalone WtOsc fed the same
         // pitch, sharing the same (borrowed) mip pyramid.
-        use crate::wavetable::{compact_levels, COMPACT_LEN};
+        use crate::wavetable::{COMPACT_LEN, compact_levels};
         let n = mipgen::N;
         let mut base = std::vec![0.0f32; n];
         for (i, s) in base.iter_mut().enumerate() {
@@ -1526,18 +1787,48 @@ mod tests {
         let mut poly = PolyWt::new();
         for (v, &f) in [220.0f32, 330.0f32, 55.0f32].iter().enumerate() {
             let mut out = std::vec![0.0f32; nsamp];
-            poly.process_voice(v, MipSet { levels: &levels }, In::K(f), In::K(0.0), dt, &mut out);
+            poly.process_voice(
+                v,
+                MipSet { levels: &levels },
+                In::K(f),
+                In::K(0.0),
+                dt,
+                &mut out,
+            );
             let mut refosc = WtOsc::new();
             let mut want = std::vec![0.0f32; nsamp];
-            refosc.process(MipSet { levels: &levels }, In::K(f), In::K(0.0), dt, &mut want);
+            refosc.process(
+                MipSet { levels: &levels },
+                In::K(f),
+                In::K(0.0),
+                dt,
+                &mut want,
+            );
             assert_eq!(out, want, "voice {v} @ {f} Hz");
         }
         // Distinct per-voice phase accumulators: lanes at different pitches diverge.
         let mut o0 = std::vec![0.0f32; nsamp];
         let mut o1 = std::vec![0.0f32; nsamp];
-        poly.process_voice(0, MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut o0);
-        poly.process_voice(1, MipSet { levels: &levels }, In::K(330.0), In::K(0.0), dt, &mut o1);
-        assert!(o0 != o1, "independent voices at different pitches must diverge");
+        poly.process_voice(
+            0,
+            MipSet { levels: &levels },
+            In::K(220.0),
+            In::K(0.0),
+            dt,
+            &mut o0,
+        );
+        poly.process_voice(
+            1,
+            MipSet { levels: &levels },
+            In::K(330.0),
+            In::K(0.0),
+            dt,
+            &mut o1,
+        );
+        assert!(
+            o0 != o1,
+            "independent voices at different pitches must diverge"
+        );
     }
 
     #[test]
@@ -1566,18 +1857,56 @@ mod tests {
         let mut poly = PolyWt::new();
         for (v, &f) in [220.0f32, 330.0f32, 55.0f32].iter().enumerate() {
             let mut out = std::vec![0.0f32; nsamp];
-            poly.process_voice_morph(v, &region, 2, In::K(f), In::K(0.0), In::K(position), dt, &mut out);
+            poly.process_voice_morph(
+                v,
+                &region,
+                2,
+                In::K(f),
+                In::K(0.0),
+                In::K(position),
+                dt,
+                &mut out,
+            );
             let mut refosc = WtOsc::new();
             let mut want = std::vec![0.0f32; nsamp];
-            refosc.process_morph(&region, 2, In::K(f), In::K(0.0), In::K(position), dt, &mut want);
+            refosc.process_morph(
+                &region,
+                2,
+                In::K(f),
+                In::K(0.0),
+                In::K(position),
+                dt,
+                &mut want,
+            );
             assert_eq!(out, want, "voice {v} @ {f} Hz");
         }
         // Distinct per-voice phase accumulators: lanes at different pitches diverge.
         let mut o0 = std::vec![0.0f32; nsamp];
         let mut o1 = std::vec![0.0f32; nsamp];
-        poly.process_voice_morph(0, &region, 2, In::K(220.0), In::K(0.0), In::K(position), dt, &mut o0);
-        poly.process_voice_morph(1, &region, 2, In::K(330.0), In::K(0.0), In::K(position), dt, &mut o1);
-        assert!(o0 != o1, "independent voices at different pitches must diverge");
+        poly.process_voice_morph(
+            0,
+            &region,
+            2,
+            In::K(220.0),
+            In::K(0.0),
+            In::K(position),
+            dt,
+            &mut o0,
+        );
+        poly.process_voice_morph(
+            1,
+            &region,
+            2,
+            In::K(330.0),
+            In::K(0.0),
+            In::K(position),
+            dt,
+            &mut o1,
+        );
+        assert!(
+            o0 != o1,
+            "independent voices at different pitches must diverge"
+        );
     }
 
     #[test]
@@ -1598,14 +1927,35 @@ mod tests {
         let nsamp = 256;
         let mut poly = PolyWt::new();
         let mut out_lo = std::vec![0.0f32; nsamp];
-        poly.process_voice_morph(0, &region, 2, In::K(220.0), In::K(0.0), In::K(0.0), dt, &mut out_lo);
+        poly.process_voice_morph(
+            0,
+            &region,
+            2,
+            In::K(220.0),
+            In::K(0.0),
+            In::K(0.0),
+            dt,
+            &mut out_lo,
+        );
         let mut poly2 = PolyWt::new();
         let mut out_hi = std::vec![0.0f32; nsamp];
-        poly2.process_voice_morph(0, &region, 2, In::K(220.0), In::K(0.0), In::K(1.0), dt, &mut out_hi);
+        poly2.process_voice_morph(
+            0,
+            &region,
+            2,
+            In::K(220.0),
+            In::K(0.0),
+            In::K(1.0),
+            dt,
+            &mut out_hi,
+        );
         assert!(out_lo.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out_hi.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
         assert!(out_lo.iter().any(|&s| s != 0.0) && out_hi.iter().any(|&s| s != 0.0));
-        assert!(out_lo != out_hi, "position 0 (saw) vs 1 (square) must differ");
+        assert!(
+            out_lo != out_hi,
+            "position 0 (saw) vs 1 (square) must differ"
+        );
     }
 
     #[test]
@@ -1614,7 +1964,7 @@ mod tests {
         // fed-back PolyWt voice matches a standalone WtOsc driven with the
         // same feedback and inputs bit-for-bit — and diverges from the
         // feedback=0 (default) render.
-        use crate::wavetable::{compact_levels, COMPACT_LEN};
+        use crate::wavetable::{COMPACT_LEN, compact_levels};
         let n = mipgen::N;
         let mut base = std::vec![0.0f32; n];
         for (i, s) in base.iter_mut().enumerate() {
@@ -1630,17 +1980,40 @@ mod tests {
         poly.set_feedback(0.6);
         let v = 3usize;
         let mut out = std::vec![0.0f32; nsamp];
-        poly.process_voice(v, MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut out);
+        poly.process_voice(
+            v,
+            MipSet { levels: &levels },
+            In::K(220.0),
+            In::K(0.0),
+            dt,
+            &mut out,
+        );
 
         let mut refosc = WtOsc::new();
         refosc.set_feedback(0.6);
         let mut want = std::vec![0.0f32; nsamp];
-        refosc.process(MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut want);
-        assert_eq!(out, want, "fed-back voice {v} must match standalone WtOsc with same feedback");
+        refosc.process(
+            MipSet { levels: &levels },
+            In::K(220.0),
+            In::K(0.0),
+            dt,
+            &mut want,
+        );
+        assert_eq!(
+            out, want,
+            "fed-back voice {v} must match standalone WtOsc with same feedback"
+        );
 
         let mut poly0 = PolyWt::new(); // feedback defaults 0
         let mut out0 = std::vec![0.0f32; nsamp];
-        poly0.process_voice(v, MipSet { levels: &levels }, In::K(220.0), In::K(0.0), dt, &mut out0);
+        poly0.process_voice(
+            v,
+            MipSet { levels: &levels },
+            In::K(220.0),
+            In::K(0.0),
+            dt,
+            &mut out0,
+        );
         assert!(out != out0, "feedback=0.6 must diverge from feedback=0");
     }
 
@@ -1655,7 +2028,11 @@ mod tests {
         let mut mono = Slew::new();
         // per-voice-distinct target ramps
         let target: std::vec::Vec<f32> = (0..n * VOICES)
-            .map(|j| { let i = j / VOICES; let v = j % VOICES; (i as f32 * 0.01) + v as f32 })
+            .map(|j| {
+                let i = j / VOICES;
+                let v = j % VOICES;
+                (i as f32 * 0.01) + v as f32
+            })
             .collect();
         let mut out = std::vec![0.0f32; n * VOICES];
         poly.process(&target, dt, &mut out);
@@ -1664,7 +2041,13 @@ mod tests {
         let mut mout = std::vec![0.0f32; n];
         mono.process(In::A(&vin), In::K(time), dt, &mut mout);
         for i in 0..n {
-            assert_eq!(out[i * VOICES], mout[i], "lane0 sample {i}: {} vs {}", out[i * VOICES], mout[i]);
+            assert_eq!(
+                out[i * VOICES],
+                mout[i],
+                "lane0 sample {i}: {} vs {}",
+                out[i * VOICES],
+                mout[i]
+            );
         }
     }
 
@@ -1689,6 +2072,8 @@ mod tests {
         let target = std::vec![3.0f32; VOICES * 2];
         let mut out = std::vec![0.0f32; VOICES * 2];
         s.process(&target, dt, &mut out);
-        for &o in &out { assert_eq!(o, 3.0, "time=0 snaps every sample"); }
+        for &o in &out {
+            assert_eq!(o, 3.0, "time=0 snaps every sample");
+        }
     }
 }

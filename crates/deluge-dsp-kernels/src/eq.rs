@@ -3,8 +3,8 @@
 //! Coefficients (RBJ "Audio EQ Cookbook") recomputed per block. Not ported from
 //! any GPL source.
 
-use crate::fast_sin;
 use crate::In;
+use crate::fast_sin;
 
 /// Direct-Form-II-Transposed biquad (CMSIS-DSP `df2T` style). `a0`-normalized.
 #[derive(Clone, Copy)]
@@ -19,7 +19,15 @@ pub struct Biquad {
 }
 impl Biquad {
     pub fn new() -> Biquad {
-        Biquad { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0, z1: 0.0, z2: 0.0 }
+        Biquad {
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+            z1: 0.0,
+            z2: 0.0,
+        }
     }
     pub fn set_coeffs(&mut self, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) {
         self.b0 = b0;
@@ -102,11 +110,23 @@ pub struct Eq {
 }
 impl Eq {
     pub fn new(ty: EqType) -> Eq {
-        Eq { ty, freq: 1000.0, gain: 0.0, q: 0.707, biquad: Biquad::new() }
+        Eq {
+            ty,
+            freq: 1000.0,
+            gain: 0.0,
+            q: 0.707,
+            biquad: Biquad::new(),
+        }
     }
-    pub fn set_freq(&mut self, v: f32) { self.freq = v.clamp(10.0, 20_000.0); }
-    pub fn set_gain(&mut self, v: f32) { self.gain = v.clamp(-24.0, 24.0); }
-    pub fn set_q(&mut self, v: f32) { self.q = v.clamp(0.1, 20.0); }
+    pub fn set_freq(&mut self, v: f32) {
+        self.freq = v.clamp(10.0, 20_000.0);
+    }
+    pub fn set_gain(&mut self, v: f32) {
+        self.gain = v.clamp(-24.0, 24.0);
+    }
+    pub fn set_q(&mut self, v: f32) {
+        self.q = v.clamp(0.1, 20.0);
+    }
     pub fn set_type(&mut self, code: u8) {
         self.ty = match code {
             1 => EqType::LowShelf,
@@ -148,7 +168,9 @@ pub struct MasterEq {
 
 impl MasterEq {
     pub fn new(freq: f32, gain_db: f32, q: f32, eq_type: u8) -> MasterEq {
-        let mut m = MasterEq { ch: [Eq::new(EqType::Peak); 2] };
+        let mut m = MasterEq {
+            ch: [Eq::new(EqType::Peak); 2],
+        };
         m.set_params(freq, gain_db, q, eq_type);
         m
     }
@@ -168,7 +190,11 @@ impl MasterEq {
     /// EQ `l`/`r` in place. `dt` = 1/sample_rate (guarded — a non-finite dt would
     /// otherwise poison the coeffs on the master output).
     pub fn process(&mut self, l: &mut [f32], r: &mut [f32], dt: f32) {
-        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 1.0 / 48_000.0 };
+        let dt = if dt.is_finite() && dt > 0.0 {
+            dt
+        } else {
+            1.0 / 48_000.0
+        };
         self.ch[0].process_in_place(l, dt);
         self.ch[1].process_in_place(r, dt);
     }
@@ -202,8 +228,16 @@ mod tests {
         let mut eq = MasterEq::new(f, 12.0, 2.0, 0); // +12 dB peak at 1 kHz
         eq.process(&mut l, &mut r, DT);
         let out_peak = tail_peak(&l);
-        assert!(out_peak > in_peak * 1.5, "peak boost should amplify: in={} out={}", in_peak, out_peak);
-        assert!((tail_peak(&l) - tail_peak(&r)).abs() < 1e-4, "L/R same response");
+        assert!(
+            out_peak > in_peak * 1.5,
+            "peak boost should amplify: in={} out={}",
+            in_peak,
+            out_peak
+        );
+        assert!(
+            (tail_peak(&l) - tail_peak(&r)).abs() < 1e-4,
+            "L/R same response"
+        );
     }
 
     #[test]
@@ -237,7 +271,10 @@ mod tests {
         let in_peak = tail_peak(&l);
         let mut eq = MasterEq::new(f, 0.0, 2.0, 0); // flat (0 dB peak)
         eq.process(&mut l, &mut r, DT);
-        assert!((tail_peak(&l) - in_peak).abs() < in_peak * 0.1, "flat EQ ~unchanged");
+        assert!(
+            (tail_peak(&l) - in_peak).abs() < in_peak * 0.1,
+            "flat EQ ~unchanged"
+        );
     }
 
     #[test]
@@ -267,13 +304,22 @@ mod tests {
 
     #[test]
     fn peak_boosts_at_center() {
-        assert!((mag(EqType::Peak, 1000.0, 12.0, 1.0, 1000.0) - 12.0).abs() < 1.5, "peak +12dB at center");
-        assert!(mag(EqType::Peak, 1000.0, 12.0, 1.0, 150.0).abs() < 2.0, "≈0dB far below center");
+        assert!(
+            (mag(EqType::Peak, 1000.0, 12.0, 1.0, 1000.0) - 12.0).abs() < 1.5,
+            "peak +12dB at center"
+        );
+        assert!(
+            mag(EqType::Peak, 1000.0, 12.0, 1.0, 150.0).abs() < 2.0,
+            "≈0dB far below center"
+        );
     }
 
     #[test]
     fn peak_cuts_at_center() {
-        assert!((mag(EqType::Peak, 1000.0, -12.0, 1.0, 1000.0) + 12.0).abs() < 1.5, "peak −12dB at center");
+        assert!(
+            (mag(EqType::Peak, 1000.0, -12.0, 1.0, 1000.0) + 12.0).abs() < 1.5,
+            "peak −12dB at center"
+        );
     }
 
     #[test]
@@ -298,7 +344,10 @@ mod tests {
         // high-Q peak has rolled off more there → less boost.
         let off_lowq = mag(EqType::Peak, 1000.0, 12.0, 0.7, 700.0);
         let off_highq = mag(EqType::Peak, 1000.0, 12.0, 5.0, 700.0);
-        assert!(off_lowq > off_highq, "higher Q → narrower (less boost off-center): {off_lowq} vs {off_highq}");
+        assert!(
+            off_lowq > off_highq,
+            "higher Q → narrower (less boost off-center): {off_lowq} vs {off_highq}"
+        );
     }
 
     #[test]

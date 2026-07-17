@@ -73,7 +73,13 @@ fn noise_pink_brown_render_finite_nonsilent() {
 fn svf_lp_emits_newnode() {
     // node0 = saw, node1 = svf lp over node0, cutoff 800, res 0.3
     let cmds = run_and_capture_cmds("var x = Svf.lp(Osc.saw(110), 800, 0.3)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::SvfLp, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::SvfLp,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -87,7 +93,13 @@ fn svf_lp_renders_finite_nonsilent() {
 #[test]
 fn tb303_lp_emits_newnode() {
     let cmds = run_and_capture_cmds("var x = Tb303.lp(Osc.saw(110), 800, 0.7)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Tb303, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Tb303,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -101,17 +113,41 @@ fn tb303_lp_renders_finite_nonsilent() {
 #[test]
 fn moog_lp_emits_newnode() {
     let c4 = run_and_capture_cmds("var x = Moog.lp(Osc.saw(110), 1000, 0.7)");
-    assert!(c4.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::MoogLp4, .. })));
+    assert!(c4.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::MoogLp4,
+            ..
+        }
+    )));
     let c2 = run_and_capture_cmds("var x = Moog.lp2(Osc.saw(110), 1000, 0.7)");
-    assert!(c2.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::MoogLp2, .. })));
+    assert!(c2.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::MoogLp2,
+            ..
+        }
+    )));
 }
 
 #[test]
 fn ms20_emits_newnode() {
     let lp = run_and_capture_cmds("var x = Ms20.lp(Osc.saw(110), 1000, 0.7)");
-    assert!(lp.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Ms20Lp, .. })));
+    assert!(lp.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Ms20Lp,
+            ..
+        }
+    )));
     let hp = run_and_capture_cmds("var x = Ms20.hp(Osc.saw(110), 1000, 0.7)");
-    assert!(hp.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Ms20Hp, .. })));
+    assert!(hp.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Ms20Hp,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -133,7 +169,13 @@ fn moog_lp_renders_finite_nonsilent() {
 #[test]
 fn resonator_emits_newnode() {
     let cmds = run_and_capture_cmds("var x = Resonator.new(Osc.saw(110), 220, 0.3)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Modal, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Modal,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -151,7 +193,13 @@ fn patch_writes_master_bus_and_sets_root() {
         cmds,
         vec![
             saw(110.0),
-            Cmd::BusWrite { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0) },
+            Cmd::BusWrite {
+                src: Input::Node {
+                    node: NodeId(0),
+                    port: 0
+                },
+                bus: BusId(0)
+            },
             Cmd::SetRoot { bus: BusId(0) },
         ]
     );
@@ -164,8 +212,24 @@ fn patch_line_in_emits_input_node_two_side_writes_and_root() {
         cmds,
         vec![
             new_input(),
-            Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(0), gl: 1.0, gr: 0.0 },
-            Cmd::BusWriteGains { src: Input::Node { node: NodeId(0), port: 1 }, bus: BusId(0), gl: 0.0, gr: 1.0 },
+            Cmd::BusWriteGains {
+                src: Input::Node {
+                    node: NodeId(0),
+                    port: 0
+                },
+                bus: BusId(0),
+                gl: 1.0,
+                gr: 0.0
+            },
+            Cmd::BusWriteGains {
+                src: Input::Node {
+                    node: NodeId(0),
+                    port: 1
+                },
+                bus: BusId(0),
+                gl: 0.0,
+                gr: 1.0
+            },
             Cmd::SetRoot { bus: BusId(0) },
         ]
     );
@@ -175,7 +239,13 @@ fn patch_line_in_emits_input_node_two_side_writes_and_root() {
 fn line_in_composes_with_mul() {
     // Just needs to build & emit a NewNode{Input} + the Mul node; no panic.
     let cmds = run_and_capture_cmds("Out.patch(In.line() * 0.5)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Input, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Input,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -192,8 +262,16 @@ fn line_in_round_trips_through_graph() {
     let mut out = [StereoFrame::default(); 32];
     run_and_render_with_input("Out.patch(In.line())", &mut out, &input);
     for (i, f) in out.iter().enumerate() {
-        assert!((f.l - 0.3).abs() < 1e-6, "frame {i}: l={} expected 0.3", f.l);
-        assert!((f.r - (-0.2)).abs() < 1e-6, "frame {i}: r={} expected -0.2", f.r);
+        assert!(
+            (f.l - 0.3).abs() < 1e-6,
+            "frame {i}: l={} expected 0.3",
+            f.l
+        );
+        assert!(
+            (f.r - (-0.2)).abs() < 1e-6,
+            "frame {i}: r={} expected -0.2",
+            f.r
+        );
     }
 }
 
@@ -205,9 +283,14 @@ fn line_in_through_effect_renders() {
     // bounded for a nontrivial fed block.
     let input: Vec<StereoFrame> = (0..32).map(|_| StereoFrame { l: 0.4, r: -0.4 }).collect();
     let mut out = [StereoFrame::default(); 32];
-    run_and_render_with_input("Out.patch(Room.new(In.line(), 0.7, 0.4, 0.6))", &mut out, &input);
+    run_and_render_with_input(
+        "Out.patch(Room.new(In.line(), 0.7, 0.4, 0.6))",
+        &mut out,
+        &input,
+    );
     assert!(
-        out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0),
+        out.iter()
+            .all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0),
         "line-in through Room must render finite, bounded audio: {out:?}"
     );
 }
@@ -224,7 +307,10 @@ fn lpf_and_binop_resolve_node_inputs() {
                 node: NodeId(1),
                 kind: Kind::Lpf,
                 args: [
-                    Input::Node { node: NodeId(0), port: 0 },
+                    Input::Node {
+                        node: NodeId(0),
+                        port: 0
+                    },
                     Input::Const(800.0),
                     Input::Const(0.0)
                 ],
@@ -241,7 +327,13 @@ fn nonaudio_foreign_arg_does_not_crash() {
     // (inert) value and the factory still emits its `NewNode`.
     let cmds = run_and_capture_cmds("Osc.sine(output[2])");
     assert_eq!(cmds.len(), 1);
-    assert!(matches!(cmds[0], Cmd::NewNode { kind: Kind::Sine, .. }));
+    assert!(matches!(
+        cmds[0],
+        Cmd::NewNode {
+            kind: Kind::Sine,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -257,11 +349,20 @@ fn bus_write_and_patch() {
          m.write(Osc.saw(110))\n\
          Out.patch(m)",
     );
-    assert_eq!(cmds, vec![
-        saw(110.0),
-        Cmd::BusWrite { src: Input::Node { node: NodeId(0), port: 0 }, bus: BusId(1) },
-        Cmd::SetRoot { bus: BusId(1) },
-    ]);
+    assert_eq!(
+        cmds,
+        vec![
+            saw(110.0),
+            Cmd::BusWrite {
+                src: Input::Node {
+                    node: NodeId(0),
+                    port: 0
+                },
+                bus: BusId(1)
+            },
+            Cmd::SetRoot { bus: BusId(1) },
+        ]
+    );
 }
 
 #[test]
@@ -272,10 +373,19 @@ fn out_port_resolves_to_that_port() {
          var c = s.out(1) * 2",
     );
     // node0 saw, node1 split2(node0), node2 mul(node1.port1, 2)
-    assert!(cmds.iter().any(|c| *c == Cmd::NewNode {
-        node: NodeId(2), kind: Kind::Mul,
-        args: [Input::Node { node: NodeId(1), port: 1 }, Input::Const(2.0), Input::Const(0.0)],
-    }));
+    assert!(cmds.iter().any(|c| *c
+        == Cmd::NewNode {
+            node: NodeId(2),
+            kind: Kind::Mul,
+            args: [
+                Input::Node {
+                    node: NodeId(1),
+                    port: 1
+                },
+                Input::Const(2.0),
+                Input::Const(0.0)
+            ],
+        }));
 }
 
 #[test]
@@ -286,11 +396,22 @@ fn free_emits_free_and_reuses_id() {
          a.free()\n\
          var b = Osc.saw(220)",
     );
-    assert_eq!(cmds, vec![
-        Cmd::NewNode { node: NodeId(0), kind: Kind::Saw, args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)] },
-        Cmd::Free { node: NodeId(0) },
-        Cmd::NewNode { node: NodeId(0), kind: Kind::Saw, args: [Input::Const(220.0), Input::Const(0.0), Input::Const(0.0)] },
-    ]);
+    assert_eq!(
+        cmds,
+        vec![
+            Cmd::NewNode {
+                node: NodeId(0),
+                kind: Kind::Saw,
+                args: [Input::Const(110.0), Input::Const(0.0), Input::Const(0.0)]
+            },
+            Cmd::Free { node: NodeId(0) },
+            Cmd::NewNode {
+                node: NodeId(0),
+                kind: Kind::Saw,
+                args: [Input::Const(220.0), Input::Const(0.0), Input::Const(0.0)]
+            },
+        ]
+    );
 }
 
 #[test]
@@ -301,7 +422,12 @@ fn golden_saw_lpf_renders_expected_block() {
     // Regenerate only on an intended, reviewed output change.
     let expected = [0.0, -0.103913695, -0.204913, -0.29383174];
     for i in 0..4 {
-        assert!((out[i].l - expected[i]).abs() < 1e-6, "sample {i}: {} vs {}", out[i].l, expected[i]);
+        assert!(
+            (out[i].l - expected[i]).abs() < 1e-6,
+            "sample {i}: {} vs {}",
+            out[i].l,
+            expected[i]
+        );
     }
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
 }
@@ -332,17 +458,23 @@ fn midi_synth_example_parses_and_runs() {
 #[test]
 fn osc_width_emits_setinput_port2() {
     let cmds = run_and_capture_cmds("var s = Osc.square(110)\ns.width = 0.3");
-    assert!(cmds.iter().any(|c| *c == Cmd::SetInput {
-        node: NodeId(0), port: 2, src: Input::Const(0.3)
-    }));
+    assert!(cmds.iter().any(|c| *c
+        == Cmd::SetInput {
+            node: NodeId(0),
+            port: 2,
+            src: Input::Const(0.3)
+        }));
 }
 
 #[test]
 fn osc_pm_emits_setinput_port1() {
     let cmds = run_and_capture_cmds("var s = Osc.sine(440)\ns.pm = 0.5");
-    assert!(cmds.iter().any(|c| *c == Cmd::SetInput {
-        node: NodeId(0), port: 1, src: Input::Const(0.5)
-    }));
+    assert!(cmds.iter().any(|c| *c
+        == Cmd::SetInput {
+            node: NodeId(0),
+            port: 1,
+            src: Input::Const(0.5)
+        }));
 }
 
 #[test]
@@ -359,9 +491,12 @@ fn resonator_pitch_and_damping_set_ports_1_and_2() {
 #[test]
 fn osc_feedback_emits_setparam() {
     let cmds = run_and_capture_cmds("var s = Osc.sine(440)\ns.feedback = 0.8");
-    assert!(cmds.iter().any(|c| *c == Cmd::SetParam {
-        node: NodeId(0), param: 0, value: 0.8
-    }));
+    assert!(cmds.iter().any(|c| *c
+        == Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.8
+        }));
 }
 
 #[test]
@@ -371,8 +506,17 @@ fn poly_osc_pm_emits_setinput_port2() {
     let cmds = run_and_capture_cmds(
         "var b = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m\n  return c * Env.ar(0.01,0.3)\n}",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 2, .. })), "poly pm= sets port 2");
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 1, .. })), "poly pm= does not touch mono port 1");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetInput { port: 2, .. })),
+        "poly pm= sets port 2"
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::SetInput { port: 1, .. })),
+        "poly pm= does not touch mono port 1"
+    );
 }
 
 #[test]
@@ -386,28 +530,59 @@ fn poly_osc_feedback_emits_setparam_param1() {
     let cmds = run_and_capture_cmds(
         "var b = Synth.new { |p|\n  var c = Osc.sine(p)\n  c.feedback = 0.4\n  return c * Env.ar(0.01,0.3)\n}",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, value, .. } if (*value - 0.4).abs() < 1e-6)), "poly feedback= sets param 1 to 0.4");
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.4).abs() < 1e-6)), "poly feedback= value does not land on mono param 0");
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 1, value, .. } if (*value - 0.4).abs() < 1e-6)
+        ),
+        "poly feedback= sets param 1 to 0.4"
+    );
+    assert!(
+        !cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.4).abs() < 1e-6)
+        ),
+        "poly feedback= value does not land on mono param 0"
+    );
 }
 
 #[test]
 fn mono_osc_pm_feedback_unchanged() {
     // Non-regression: at top level (poly_mode false) pm=/feedback= still emit
     // the pre-Task-4 mono indices (pm port 1, feedback param 0).
-    let cmds = run_and_capture_cmds(
-        "var c = Osc.sine(440)\nc.pm = Osc.sine(110)\nc.feedback = 0.4",
+    let cmds =
+        run_and_capture_cmds("var c = Osc.sine(440)\nc.pm = Osc.sine(110)\nc.feedback = 0.4");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::SetInput {
+                node: NodeId(0),
+                port: 1,
+                ..
+            }
+        )),
+        "mono pm= still port 1"
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetInput { node: NodeId(0), port: 1, .. })), "mono pm= still port 1");
-    assert!(cmds.iter().any(|c| *c == Cmd::SetParam {
-        node: NodeId(0), param: 0, value: 0.4
-    }), "mono feedback= still param 0");
+    assert!(
+        cmds.iter().any(|c| *c
+            == Cmd::SetParam {
+                node: NodeId(0),
+                param: 0,
+                value: 0.4
+            }),
+        "mono feedback= still param 0"
+    );
 }
 
 #[test]
 fn osc_wavetable_emits_newnode_and_bindtable() {
     let cmds = run_and_capture_cmds("var s = Osc.wavetable(WT.Saw, 220)");
-    assert!(cmds.iter().any(|c| matches!(c,
-        Cmd::NewNode { node: NodeId(0), kind: Kind::Wavetable, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Wavetable,
+            ..
+        }
+    )));
     assert!(cmds.iter().any(|c| matches!(c,
         Cmd::BindTable { node: NodeId(0), src: TableSrc::Static(id) } if id.0 == 0)));
     // WT.Saw == id 0 — Saw is index 0 in the generated `TABLES` (Task 3).
@@ -431,8 +606,14 @@ fn wavetable_from_unbound_on_cmd_capture_host_no_bogus_bindtable() {
         "var w = Wavetable.from([ -1, -0.5, 0, 0.5, 1, 0.5, 0, -0.5 ])\n\
          var v = Osc.wavetable(w, 220)",
     );
-    assert!(cmds.iter().any(|c| matches!(c,
-        Cmd::NewNode { node: NodeId(0), kind: Kind::Wavetable, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Wavetable,
+            ..
+        }
+    )));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })));
 }
 
@@ -474,9 +655,18 @@ fn wavetable_from_round_trip_renders_finite_nonsilent_bounded_deterministic() {
 
     let mut out1 = [StereoFrame::default(); 32];
     run_and_render(&script, &mut out1);
-    assert!(out1.iter().all(|f| f.l.is_finite() && f.r.is_finite()), "non-finite sample: {out1:?}");
-    assert!(out1.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0), "unbounded sample: {out1:?}");
-    assert!(out1.iter().any(|f| f.l != 0.0), "round-trip render must be non-silent");
+    assert!(
+        out1.iter().all(|f| f.l.is_finite() && f.r.is_finite()),
+        "non-finite sample: {out1:?}"
+    );
+    assert!(
+        out1.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0),
+        "unbounded sample: {out1:?}"
+    );
+    assert!(
+        out1.iter().any(|f| f.l != 0.0),
+        "round-trip render must be non-silent"
+    );
 
     // Deterministic: a second, independent VM+engine lifecycle on the same
     // script renders bit-identical output (no uninitialized pool memory,
@@ -496,9 +686,12 @@ fn osc_position_emits_setinput_port2() {
          var s = Osc.wavetable(w, 220)\n\
          s.position = 0.5",
     );
-    assert!(cmds.iter().any(|c| *c == Cmd::SetInput {
-        node: NodeId(0), port: 2, src: Input::Const(0.5)
-    }));
+    assert!(cmds.iter().any(|c| *c
+        == Cmd::SetInput {
+            node: NodeId(0),
+            port: 2,
+            src: Input::Const(0.5)
+        }));
 }
 
 #[test]
@@ -511,8 +704,14 @@ fn wavetable_from2d_unbound_on_cmd_capture_host_no_bogus_bindtable() {
         "var w = Wavetable.from2d([[-1, 0, 1, 0], [1, 0, -1, 0]])\n\
          var v = Osc.wavetable(w, 220)",
     );
-    assert!(cmds.iter().any(|c| matches!(c,
-        Cmd::NewNode { node: NodeId(0), kind: Kind::Wavetable, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Wavetable,
+            ..
+        }
+    )));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })));
 }
 
@@ -528,8 +727,15 @@ fn wavetable_from2d_round_trip_renders_finite_nonsilent_and_morphs() {
     // therefore differ audibly from `position=0`.
     let n = 32;
     let frame0: Vec<String> = (0..n).map(|_| "0.0".to_string()).collect();
-    let frame1: Vec<String> =
-        (0..n).map(|i| if i < n / 2 { "1.0".to_string() } else { "-1.0".to_string() }).collect();
+    let frame1: Vec<String> = (0..n)
+        .map(|i| {
+            if i < n / 2 {
+                "1.0".to_string()
+            } else {
+                "-1.0".to_string()
+            }
+        })
+        .collect();
     let script_at = |pos: f32| {
         format!(
             "var w = Wavetable.from2d([[{}], [{}]])\n\
@@ -545,7 +751,11 @@ fn wavetable_from2d_round_trip_renders_finite_nonsilent_and_morphs() {
     let mut out_pos0 = [StereoFrame::default(); 32];
     run_and_render(&script_at(0.0), &mut out_pos0);
     assert!(out_pos0.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
-    assert!(out_pos0.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
+    assert!(
+        out_pos0
+            .iter()
+            .all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0)
+    );
     assert!(
         out_pos0.iter().all(|f| f.l == 0.0 && f.r == 0.0),
         "position=0 (silent frame) should render silence: {out_pos0:?}"
@@ -554,7 +764,11 @@ fn wavetable_from2d_round_trip_renders_finite_nonsilent_and_morphs() {
     let mut out_pos1 = [StereoFrame::default(); 32];
     run_and_render(&script_at(1.0), &mut out_pos1);
     assert!(out_pos1.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
-    assert!(out_pos1.iter().all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
+    assert!(
+        out_pos1
+            .iter()
+            .all(|f| f.l.abs() <= 1.0 && f.r.abs() <= 1.0)
+    );
     assert!(
         out_pos1.iter().any(|f| f.l != 0.0),
         "position=1 (loud frame) should render non-silent: {out_pos1:?}"
@@ -598,8 +812,8 @@ fn osc_sync_render_bounded_nonsilent() {
 
 #[test]
 fn delay_new_emits_newnode_and_bindtable_on_engine_host_and_renders_bounded() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
         "var d = Delay.new(Osc.saw(110), 0.01, 0.4)\n\
@@ -609,18 +823,27 @@ fn delay_new_emits_newnode_and_bindtable_on_engine_host_and_renders_bounded() {
         &mut out,
     );
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
-    assert!(out.iter().any(|f| f.l != 0.0), "delay output should be non-silent");
+    assert!(
+        out.iter().any(|f| f.l != 0.0),
+        "delay output should be non-silent"
+    );
 }
 
 #[test]
 fn delay_on_cmd_capture_host_creates_node_without_bindtable() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     // CmdCaptureHost has no pool → alloc_buffer returns None → the node is
     // created but NOT bound (dry passthrough), never a bogus BindTable.
     let cmds = run_and_capture_cmds("var d = Delay.new(Osc.saw(110), 0.01, 0.4)\nOut.patch(d)");
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Delay, .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Delay,
+                ..
+            }
+        )),
         "expected a NewNode(Delay): {cmds:?}"
     );
     assert!(
@@ -631,36 +854,44 @@ fn delay_on_cmd_capture_host_creates_node_without_bindtable() {
 
 #[test]
 fn delay_mix_and_damp_emit_setparam_0_and_1() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var d = Delay.new(Osc.saw(110), 0.01, 0.4)\nd.mix = 0.5\nd.damp = 0.3",
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
         "mix= should SetParam(0): {cmds:?}"
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 1, .. })),
         "damp= should SetParam(1): {cmds:?}"
     );
 }
 
 #[test]
 fn pan_new_emits_kind_pan_node() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var p = Pan.new(Osc.saw(110), -0.5)");
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Pan, .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Pan,
+                ..
+            }
+        )),
         "expected a NewNode(Pan): {cmds:?}"
     );
 }
 
 #[test]
 fn patch_stereo_node_emits_two_side_writes() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     // Out.patch of a width-2 Pan → two BusWriteGains: (1,0) and (0,1) to master.
     let cmds = run_and_capture_cmds("Out.patch(Pan.new(Osc.saw(110), 0.0))");
     let gains: std::vec::Vec<(f32, f32)> = cmds
@@ -670,26 +901,44 @@ fn patch_stereo_node_emits_two_side_writes() {
             _ => None,
         })
         .collect();
-    assert!(gains.contains(&(1.0, 0.0)), "missing L-side write: {gains:?}");
-    assert!(gains.contains(&(0.0, 1.0)), "missing R-side write: {gains:?}");
+    assert!(
+        gains.contains(&(1.0, 0.0)),
+        "missing L-side write: {gains:?}"
+    );
+    assert!(
+        gains.contains(&(0.0, 1.0)),
+        "missing R-side write: {gains:?}"
+    );
 }
 
 #[test]
 fn patch_mono_node_still_emits_single_center_write() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     // A mono node patched → exactly one plain center BusWrite, no gained writes.
     let cmds = run_and_capture_cmds("Out.patch(Osc.saw(110))");
-    let center = cmds.iter().filter(|c| matches!(c, Cmd::BusWrite { .. })).count();
-    let gained = cmds.iter().filter(|c| matches!(c, Cmd::BusWriteGains { .. })).count();
-    assert_eq!(center, 1, "mono patch should emit one center write: {cmds:?}");
-    assert_eq!(gained, 0, "mono patch should emit no gained writes: {cmds:?}");
+    let center = cmds
+        .iter()
+        .filter(|c| matches!(c, Cmd::BusWrite { .. }))
+        .count();
+    let gained = cmds
+        .iter()
+        .filter(|c| matches!(c, Cmd::BusWriteGains { .. }))
+        .count();
+    assert_eq!(
+        center, 1,
+        "mono patch should emit one center write: {cmds:?}"
+    );
+    assert_eq!(
+        gained, 0,
+        "mono patch should emit no gained writes: {cmds:?}"
+    );
 }
 
 #[test]
 fn stereo_pan_renders_distinct_l_and_r() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     // Hard-left pan → L carries signal, R ≈ silent.
     run_and_render("Out.patch(Pan.new(Osc.saw(110), -1.0))", &mut out);
@@ -702,280 +951,503 @@ fn stereo_pan_renders_distinct_l_and_r() {
 
 #[test]
 fn chorus_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     // CmdCaptureHost has no pool → alloc_buffer None → NewNode + SetParams but
     // NO BindTable (dry-passthrough contract, same as Ef-1 Delay). The real
     // bind + render is covered by `chorus_renders_stereo_bounded_on_engine_host`.
     let cmds = run_and_capture_cmds("var c = Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Chorus, .. })));
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })), "no pool → no BindTable: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Chorus,
+            ..
+        }
+    )));
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })),
+        "no pool → no BindTable: {cmds:?}"
+    );
     // rate(1)/depth(2)/mix(0) SetParams emitted from the constructor args (pool-independent).
     for p in [0u8, 1, 2] {
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "missing SetParam {p}: {cmds:?}");
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)),
+            "missing SetParam {p}: {cmds:?}"
+        );
     }
 }
 
 #[test]
 fn chorus_patch_routes_stereo() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     // A Chorus is width-2 → Out.patch emits the two side-writes.
     let cmds = run_and_capture_cmds("Out.patch(Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5))");
-    let gains: std::vec::Vec<(f32, f32)> = cmds.iter().filter_map(|c| match c {
-        Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
-        _ => None,
-    }).collect();
-    assert!(gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)), "not stereo-routed: {gains:?}");
+    let gains: std::vec::Vec<(f32, f32)> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)),
+        "not stereo-routed: {gains:?}"
+    );
 }
 
 #[test]
 fn flanger_regen_sets_feedback_param() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var f = Flanger.new(Osc.saw(110), 0.3, 0.7, 0.6, 0.5)\nf.regen = 0.8",
     );
     // Flanger.new sets feedback (param 3) from its arg; regen= sets it again.
-    let p3 = cmds.iter().filter(|c| matches!(c, Cmd::SetParam { param: 3, .. })).count();
-    assert!(p3 >= 2, "expected feedback param set by ctor and regen=: {cmds:?}");
+    let p3 = cmds
+        .iter()
+        .filter(|c| matches!(c, Cmd::SetParam { param: 3, .. }))
+        .count();
+    assert!(
+        p3 >= 2,
+        "expected feedback param set by ctor and regen=: {cmds:?}"
+    );
 }
 
 #[test]
 fn chorus_renders_stereo_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Chorus.new(Osc.saw(110), 1.0, 0.5, 0.6))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
-    assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "chorus should be non-silent");
+    run_and_render(
+        "Out.patch(Chorus.new(Osc.saw(110), 1.0, 0.5, 0.6))",
+        &mut out,
+    );
+    assert!(
+        out.iter()
+            .all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0)
+    );
+    assert!(
+        out.iter().any(|f| f.l != 0.0 || f.r != 0.0),
+        "chorus should be non-silent"
+    );
 }
 
 #[test]
 fn room_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var r = Room.new(Osc.saw(110), 0.7, 0.4, 0.5)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Room, .. })));
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })), "no pool → no BindTable: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Room,
+            ..
+        }
+    )));
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })),
+        "no pool → no BindTable: {cmds:?}"
+    );
     for p in [0u8, 1, 2] {
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "missing SetParam {p}: {cmds:?}");
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)),
+            "missing SetParam {p}: {cmds:?}"
+        );
     }
 }
 
 #[test]
 fn room_patch_routes_stereo() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.5))");
-    let gains: std::vec::Vec<(f32, f32)> = cmds.iter().filter_map(|c| match c {
-        Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
-        _ => None,
-    }).collect();
-    assert!(gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)), "not stereo-routed: {gains:?}");
+    let gains: std::vec::Vec<(f32, f32)> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)),
+        "not stereo-routed: {gains:?}"
+    );
 }
 
 #[test]
 fn room_size_and_spread_set_params_2_and_3() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var r = Room.new(Osc.saw(110), 0.5, 0.5, 0.5)\nr.size = 0.9\nr.spread = 0.3",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, .. })), "size→2: {cmds:?}");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, .. })), "spread→3: {cmds:?}");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 2, .. })),
+        "size→2: {cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 3, .. })),
+        "spread→3: {cmds:?}"
+    );
 }
 
 #[test]
 fn room_renders_stereo_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render("Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.6))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
-    assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "reverb should be non-silent");
+    assert!(
+        out.iter()
+            .all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0)
+    );
+    assert!(
+        out.iter().any(|f| f.l != 0.0 || f.r != 0.0),
+        "reverb should be non-silent"
+    );
 }
 
 #[test]
 fn hall_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var h = Hall.new(Osc.saw(110), 0.8, 0.4, 0.5)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Hall, .. })));
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })), "no pool → no BindTable: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Hall,
+            ..
+        }
+    )));
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })),
+        "no pool → no BindTable: {cmds:?}"
+    );
     for p in [0u8, 1, 2] {
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "missing SetParam {p}: {cmds:?}");
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)),
+            "missing SetParam {p}: {cmds:?}"
+        );
     }
 }
 
 #[test]
 fn hall_patch_routes_stereo_and_size_setter_reused() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     // Reuses the Room `size=` setter (param 2) — proves the shared surface works on a Hall.
-    let cmds = run_and_capture_cmds("var h = Hall.new(Osc.saw(110), 0.5, 0.5, 0.5)\nh.size = 0.9\nOut.patch(h)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, .. })), "size→2: {cmds:?}");
-    let gains: std::vec::Vec<(f32, f32)> = cmds.iter().filter_map(|c| match c {
-        Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
-        _ => None,
-    }).collect();
-    assert!(gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)), "not stereo-routed: {gains:?}");
+    let cmds = run_and_capture_cmds(
+        "var h = Hall.new(Osc.saw(110), 0.5, 0.5, 0.5)\nh.size = 0.9\nOut.patch(h)",
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 2, .. })),
+        "size→2: {cmds:?}"
+    );
+    let gains: std::vec::Vec<(f32, f32)> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)),
+        "not stereo-routed: {gains:?}"
+    );
 }
 
 #[test]
 fn hall_renders_stereo_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Hall.new(Osc.saw(110), 0.85, 0.4, 0.6))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
-    assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "hall should be non-silent");
+    run_and_render(
+        "Out.patch(Hall.new(Osc.saw(110), 0.85, 0.4, 0.6))",
+        &mut out,
+    );
+    assert!(
+        out.iter()
+            .all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0)
+    );
+    assert!(
+        out.iter().any(|f| f.l != 0.0 || f.r != 0.0),
+        "hall should be non-silent"
+    );
 }
 
 #[test]
 fn plate_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var p = Plate.new(Osc.saw(110), 0.8, 0.4, 0.5)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Plate, .. })));
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })), "no pool → no BindTable: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::Plate,
+            ..
+        }
+    )));
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::BindTable { .. })),
+        "no pool → no BindTable: {cmds:?}"
+    );
     for p in [0u8, 1, 2] {
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "missing SetParam {p}: {cmds:?}");
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)),
+            "missing SetParam {p}: {cmds:?}"
+        );
     }
 }
 
 #[test]
 fn plate_patch_routes_stereo() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("Out.patch(Plate.new(Osc.saw(110), 0.8, 0.4, 0.5))");
-    let gains: std::vec::Vec<(f32, f32)> = cmds.iter().filter_map(|c| match c {
-        Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
-        _ => None,
-    }).collect();
-    assert!(gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)), "not stereo-routed: {gains:?}");
+    let gains: std::vec::Vec<(f32, f32)> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::BusWriteGains { gl, gr, .. } => Some((*gl, *gr)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        gains.contains(&(1.0, 0.0)) && gains.contains(&(0.0, 1.0)),
+        "not stereo-routed: {gains:?}"
+    );
 }
 
 #[test]
 fn plate_renders_stereo_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Plate.new(Osc.saw(110), 0.85, 0.4, 0.6))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0));
-    assert!(out.iter().any(|f| f.l != 0.0 || f.r != 0.0), "plate should be non-silent");
+    run_and_render(
+        "Out.patch(Plate.new(Osc.saw(110), 0.85, 0.4, 0.6))",
+        &mut out,
+    );
+    assert!(
+        out.iter()
+            .all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 1.0 && f.r.abs() <= 1.0)
+    );
+    assert!(
+        out.iter().any(|f| f.l != 0.0 || f.r != 0.0),
+        "plate should be non-silent"
+    );
 }
 
 #[test]
 fn drive_factories_emit_kind_drive_with_shape() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
-    for (call, shape) in [("soft", 0.0f32), ("hard", 1.0), ("fold", 2.0), ("tube", 3.0)] {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    for (call, shape) in [
+        ("soft", 0.0f32),
+        ("hard", 1.0),
+        ("fold", 2.0),
+        ("tube", 3.0),
+    ] {
         let src = std::format!("var d = Drive.{}(Osc.saw(110), 0.7, 0.5, 0.8)", call);
         let cmds = run_and_capture_cmds(&src);
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Drive, .. })), "{call}: {cmds:?}");
+        assert!(
+            cmds.iter().any(|c| matches!(
+                c,
+                Cmd::NewNode {
+                    kind: Kind::Drive,
+                    ..
+                }
+            )),
+            "{call}: {cmds:?}"
+        );
         // shape → SetParam(3, code)
         assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, value, .. } if (*value - shape).abs() < 1e-4)), "{call} shape {shape}: {cmds:?}");
         // drive/tone/mix → params 0/1/2
         for p in [0u8, 1, 2] {
-            assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "{call} missing SetParam {p}");
+            assert!(
+                cmds.iter()
+                    .any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)),
+                "{call} missing SetParam {p}"
+            );
         }
     }
 }
 
 #[test]
 fn drive_setters_map_to_params() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var d = Drive.soft(Osc.saw(110), 0.5, 0.5, 0.5)\nd.drive = 0.9\nd.tone = 0.3\nd.wet = 0.7",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })), "drive=→0: {cmds:?}");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })), "tone=→1: {cmds:?}");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, .. })), "wet=→2: {cmds:?}");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
+        "drive=→0: {cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 1, .. })),
+        "tone=→1: {cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 2, .. })),
+        "wet=→2: {cmds:?}"
+    );
 }
 
 #[test]
 fn drive_renders_mono_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Drive.hard(Osc.saw(110), 0.9, 0.6, 1.0))", &mut out);
+    run_and_render(
+        "Out.patch(Drive.hard(Osc.saw(110), 0.9, 0.6, 1.0))",
+        &mut out,
+    );
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0), "drive should be non-silent");
 }
 
 #[test]
 fn eq_factories_emit_kind_eq_with_type() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     for (call, code) in [("peak", 0.0f32), ("lowShelf", 1.0), ("highShelf", 2.0)] {
         let src = std::format!("var e = EQ.{}(Osc.saw(110), 1000, 6, 1)", call);
         let cmds = run_and_capture_cmds(&src);
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Eq, .. })), "{call}: {cmds:?}");
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::NewNode { kind: Kind::Eq, .. })),
+            "{call}: {cmds:?}"
+        );
         assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, value, .. } if (*value - code).abs() < 1e-4)), "{call} type {code}: {cmds:?}");
         for p in [0u8, 1, 2] {
-            assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)), "{call} missing SetParam {p}");
+            assert!(
+                cmds.iter()
+                    .any(|c| matches!(c, Cmd::SetParam { param, .. } if *param == p)),
+                "{call} missing SetParam {p}"
+            );
         }
     }
 }
 
 #[test]
 fn eq_setters_map_to_params() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var e = EQ.peak(Osc.saw(110), 1000, 0, 1)\ne.hz = 2000\ne.gain = 6\ne.q = 2",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })), "hz=→0: {cmds:?}");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })), "gain=→1: {cmds:?}");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, .. })), "q=→2: {cmds:?}");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
+        "hz=→0: {cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 1, .. })),
+        "gain=→1: {cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 2, .. })),
+        "q=→2: {cmds:?}"
+    );
 }
 
 #[test]
 fn eq_renders_mono_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(EQ.highShelf(Osc.saw(110), 3000, 6, 0.707))", &mut out);
+    run_and_render(
+        "Out.patch(EQ.highShelf(Osc.saw(110), 3000, 6, 0.707))",
+        &mut out,
+    );
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
     assert!(out.iter().any(|f| f.l != 0.0), "eq should be non-silent");
 }
 
 #[test]
 fn lfo_factories_emit_kind_lfo_with_shape() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
-    for (call, code) in [("sine", 0.0f32), ("tri", 1.0), ("saw", 2.0), ("square", 3.0), ("sampleHold", 4.0), ("random", 5.0)] {
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    for (call, code) in [
+        ("sine", 0.0f32),
+        ("tri", 1.0),
+        ("saw", 2.0),
+        ("square", 3.0),
+        ("sampleHold", 4.0),
+        ("random", 5.0),
+    ] {
         let src = std::format!("var l = LFO.{}(2)", call);
         let cmds = run_and_capture_cmds(&src);
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Lfo, .. })), "{call}: {cmds:?}");
+        assert!(
+            cmds.iter().any(|c| matches!(
+                c,
+                Cmd::NewNode {
+                    kind: Kind::Lfo,
+                    ..
+                }
+            )),
+            "{call}: {cmds:?}"
+        );
         assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - code).abs() < 1e-4)), "{call} shape {code}: {cmds:?}");
     }
 }
 
 #[test]
 fn lfo_to_builds_scaling_graph() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     // `.to(200, 2000)` = this*900 + 1100 → a Mul then an Add node.
     let cmds = run_and_capture_cmds("var m = LFO.sine(1).to(200, 2000)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mul, .. })), "to→mul: {cmds:?}");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Add, .. })), "to→add: {cmds:?}");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Mul,
+                ..
+            }
+        )),
+        "to→mul: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Add,
+                ..
+            }
+        )),
+        "to→add: {cmds:?}"
+    );
 }
 
 #[test]
 fn lfo_phase_setter_maps_to_param_1() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::Cmd;
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var l = LFO.saw(1)\nl.phase = 0.25");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, .. })), "phase=→1: {cmds:?}");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 1, .. })),
+        "phase=→1: {cmds:?}"
+    );
 }
 
 #[test]
 fn lfo_renders_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render("Out.patch(LFO.tri(1000))", &mut out); // fast LFO so it moves
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
@@ -983,21 +1455,55 @@ fn lfo_renders_bounded_on_engine_host() {
 
 #[test]
 fn sample_hold_and_slew_factories_emit_nodes() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
-    let cmds = run_and_capture_cmds("var a = SampleHold.new(Noise.pink(), Osc.square(4))\nvar b = Slew.new(a, 0.05)");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::SampleHold, .. })), "S&H: {cmds:?}");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Slew, .. })), "Slew: {cmds:?}");
+    use deluge_wren_core::test_support::run_and_capture_cmds;
+    let cmds = run_and_capture_cmds(
+        "var a = SampleHold.new(Noise.pink(), Osc.square(4))\nvar b = Slew.new(a, 0.05)",
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::SampleHold,
+                ..
+            }
+        )),
+        "S&H: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Slew,
+                ..
+            }
+        )),
+        "Slew: {cmds:?}"
+    );
 }
 
 #[test]
 fn steps_factory_emits_len_and_values() {
-    use deluge_wren_core::test_support::run_and_capture_cmds;
     use deluge_audio_graph::{Cmd, Kind};
+    use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var s = Steps.new([10, 20, 30], Osc.square(2))");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Steps, .. })), "Steps: {cmds:?}");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Steps,
+                ..
+            }
+        )),
+        "Steps: {cmds:?}"
+    );
     // len = 3 → SetParam(0, 3)
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 3.0).abs() < 1e-4)), "len: {cmds:?}");
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 3.0).abs() < 1e-4)
+        ),
+        "len: {cmds:?}"
+    );
     // values → SetParam(1, 10) SetParam(2, 20) SetParam(3, 30)
     for (p, v) in [(1u8, 10.0f32), (2, 20.0), (3, 30.0)] {
         assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param, value, .. } if *param == p && (*value - v).abs() < 1e-4)), "value {p}={v}: {cmds:?}");
@@ -1006,10 +1512,13 @@ fn steps_factory_emits_len_and_values() {
 
 #[test]
 fn steps_renders_bounded_on_engine_host() {
-    use deluge_wren_core::test_support::run_and_render;
     use deluge_audio_graph::StereoFrame;
+    use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Steps.new([0.2, -0.2], Osc.square(1000)))", &mut out);
+    run_and_render(
+        "Out.patch(Steps.new([0.2, -0.2], Osc.square(1000)))",
+        &mut out,
+    );
     assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
 }
 
@@ -1019,23 +1528,83 @@ fn shaping_factories_emit_nodes() {
         "var m = Macro.new(0.5)\nvar c = Curve.exp(m)\nvar q = m.quantize(Scale.Major, 0)\nvar f = q.hz(220)\nvar s = m.steps(4)",
     );
     // Ctrl (macro) with SetParam(0, 0.5)
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Ctrl, .. })), "Ctrl node");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.5).abs() < 1e-6)), "Ctrl value 0.5");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Ctrl,
+                ..
+            }
+        )),
+        "Ctrl node"
+    );
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.5).abs() < 1e-6)
+        ),
+        "Ctrl value 0.5"
+    );
     // Curve node (from Curve.exp)
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Curve, .. })), "Curve node");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Curve,
+                ..
+            }
+        )),
+        "Curve node"
+    );
     // QuantPitch with mask 2741 (Scale.Major) + root 0
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::QuantPitch, .. })), "QuantPitch node");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 2741.0).abs() < 0.5)), "major mask 2741");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::QuantPitch,
+                ..
+            }
+        )),
+        "QuantPitch node"
+    );
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 2741.0).abs() < 0.5)
+        ),
+        "major mask 2741"
+    );
     // Mtof with ref 220 + QuantStep with N 4
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mtof, .. })), "Mtof node");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::QuantStep, .. })), "QuantStep node");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Mtof,
+                ..
+            }
+        )),
+        "Mtof node"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::QuantStep,
+                ..
+            }
+        )),
+        "QuantStep node"
+    );
 }
 
 #[test]
 fn macro_value_setter_emits_setparam() {
     let cmds = run_and_capture_cmds("var m = Macro.new(0.0)\nm.value = 0.75");
     // One NewNode(Ctrl) + SetParam(0, 0.0) at build, then SetParam(0, 0.75) from the setter.
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.75).abs() < 1e-6)), "value= → SetParam(0, 0.75)");
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 0.75).abs() < 1e-6)
+        ),
+        "value= → SetParam(0, 0.75)"
+    );
 }
 
 #[test]
@@ -1046,15 +1615,24 @@ fn pitch_chain_renders_bounded_nonsilent() {
         "var note = LFO.saw(4).to(0, 24).quantize(Scale.Minor, 0)\nOut.patch(Osc.saw(note.hz(110)))",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0),
+        "finite/bounded"
+    );
     assert!(out.iter().any(|f| f.l != 0.0), "non-silent");
 }
 
 #[test]
 fn curve_sugar_renders_bounded() {
     let mut out = [StereoFrame::default(); 32];
-    run_and_render("Out.patch(Osc.saw(110) * Env.ar(0.0, 0.1).curve(0.6))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
+    run_and_render(
+        "Out.patch(Osc.saw(110) * Env.ar(0.0, 0.1).curve(0.6))",
+        &mut out,
+    );
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0),
+        "finite/bounded"
+    );
 }
 
 /// Regression for C1: a MONO (non-Synth) `Env.adsr` gated on must actually
@@ -1071,8 +1649,14 @@ fn adsr_mono_gate_renders_nonsilent() {
         "var e = Env.adsr(0.001, 0.001, 0.6, 0.5)\nOut.patch(Osc.saw(110) * e)\ne.gate(true)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0), "finite/bounded");
-    assert!(out.iter().any(|f| f.l != 0.0), "non-silent (pre-fix: gate(true) was a no-op, stuck in Idle)");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0),
+        "finite/bounded"
+    );
+    assert!(
+        out.iter().any(|f| f.l != 0.0),
+        "non-silent (pre-fix: gate(true) was a no-op, stuck in Idle)"
+    );
 }
 
 #[test]
@@ -1080,13 +1664,49 @@ fn scaling_sugar_builds_arithmetic() {
     // The scale/offset sugar is thin wrappers over the * / + binops; confirm each
     // wraps into the arithmetic graph it claims (Mul for scale-like, Add for offset).
     let atten = run_and_capture_cmds("var a = LFO.sine(2).atten(0.5)");
-    assert!(atten.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mul, .. })), "atten → Mul");
+    assert!(
+        atten.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Mul,
+                ..
+            }
+        )),
+        "atten → Mul"
+    );
     let offset = run_and_capture_cmds("var a = LFO.sine(2).offset(0.25)");
-    assert!(offset.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Add, .. })), "offset → Add");
+    assert!(
+        offset.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Add,
+                ..
+            }
+        )),
+        "offset → Add"
+    );
     // unipolar = this * 0.5 + 0.5 → both a Mul and an Add.
     let uni = run_and_capture_cmds("var a = LFO.sine(2).unipolar()");
-    assert!(uni.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Mul, .. })), "unipolar has Mul");
-    assert!(uni.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Add, .. })), "unipolar has Add");
+    assert!(
+        uni.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Mul,
+                ..
+            }
+        )),
+        "unipolar has Mul"
+    );
+    assert!(
+        uni.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Add,
+                ..
+            }
+        )),
+        "unipolar has Add"
+    );
 }
 
 #[test]
@@ -1094,12 +1714,66 @@ fn poly_factories_emit_poly_kinds() {
     let cmds = run_and_capture_cmds(
         "var p = Node.polyBegin_()\nvar o = Node.polyosc_(p, 0)\nvar f = Node.polysvf_(o, 1200, 0.2)\nvar e = Node.polyar_(0.01, 0.3)\nvar v = Node.polymul_(f, e)",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyCtrl, .. })), "PolyCtrl");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyMtof, .. })), "PolyMtof");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyOsc, .. })), "PolyOsc");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolySvf, .. })), "PolySvf");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyAr, .. })), "PolyAr");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyMul, .. })), "PolyMul");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyCtrl,
+                ..
+            }
+        )),
+        "PolyCtrl"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyMtof,
+                ..
+            }
+        )),
+        "PolyMtof"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyOsc,
+                ..
+            }
+        )),
+        "PolyOsc"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolySvf,
+                ..
+            }
+        )),
+        "PolySvf"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyAr,
+                ..
+            }
+        )),
+        "PolyAr"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyMul,
+                ..
+            }
+        )),
+        "PolyMul"
+    );
 }
 
 #[test]
@@ -1109,7 +1783,13 @@ fn poly_mode_reflects_build_state() {
     let cmds = run_and_capture_cmds("var m = Node.polyMode_\nvar p = Node.polyBegin_()");
     // Nothing to assert on m directly via Cmds; the render/error behavior in
     // Task 3 exercises polyMode_. This test just confirms polyBegin_ emits nodes.
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyCtrl, .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::NewNode {
+            kind: Kind::PolyCtrl,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -1118,10 +1798,33 @@ fn synth_note_on_emits_pitch_and_gate() {
         "var p = Node.polyBegin_()\nvar v = Node.polymul_(Node.polysvf_(Node.polyosc_(p, 0), 1200, 0.2), Node.polyar_(0.01, 0.3))\nvar s = Node.polyEnd_(v)\ns.noteOn(69, 100)",
     );
     // StereoVoiceSum built at polyEnd_ (Sy-6a: width-2 sum node, replaces the old mono VoiceSum).
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::StereoVoiceSum, .. })), "StereoVoiceSum");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::StereoVoiceSum,
+                ..
+            }
+        )),
+        "StereoVoiceSum"
+    );
     // note_on → SetParam(pitch lane 0 = note-69 = 0) + GateVoice(gate, 0, true).
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if value.abs() < 1e-6)), "pitch");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::GateVoice { voice: 0, on: true, .. })), "gate on");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if value.abs() < 1e-6)),
+        "pitch"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::GateVoice {
+                voice: 0,
+                on: true,
+                ..
+            }
+        )),
+        "gate on"
+    );
 }
 
 #[test]
@@ -1129,11 +1832,33 @@ fn synth_builds_the_poly_graph() {
     let cmds = run_and_capture_cmds(
         "var bass = Synth.new { |p| Osc.sine(p).lpf(1200) * Env.ar(0.01, 0.3) }",
     );
-    for k in [Kind::PolyCtrl, Kind::PolyMtof, Kind::PolyOsc, Kind::PolySvf, Kind::PolyAr, Kind::PolyMul, Kind::StereoVoiceSum] {
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind, .. } if *kind == k)), "missing {:?}", k);
+    for k in [
+        Kind::PolyCtrl,
+        Kind::PolyMtof,
+        Kind::PolyOsc,
+        Kind::PolySvf,
+        Kind::PolyAr,
+        Kind::PolyMul,
+        Kind::StereoVoiceSum,
+    ] {
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::NewNode { kind, .. } if *kind == k)),
+            "missing {:?}",
+            k
+        );
     }
     // No mono Osc/Svf leaked in.
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Saw | Kind::Sine, .. })), "no mono osc");
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Saw | Kind::Sine,
+                ..
+            }
+        )),
+        "no mono osc"
+    );
 }
 
 #[test]
@@ -1142,28 +1867,58 @@ fn poly_mode_is_scoped_after_synth() {
     let cmds = run_and_capture_cmds(
         "var b = Synth.new { |p| Osc.sine(p) * Env.ar(0.01, 0.3) }\nOut.patch(Osc.saw(110))",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Saw, .. })), "mono Saw after Synth");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Saw,
+                ..
+            }
+        )),
+        "mono Saw after Synth"
+    );
 }
 
 #[test]
 fn synth_error_cases_abort() {
     // A no-env voice aborts; two envs abort.
-    assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) }"), "no Env.ar aborts");
+    assert!(
+        !run_script_ok("Synth.new { |p| Osc.sine(p) }"),
+        "no Env.ar aborts"
+    );
     // Sy-5c: the gate-count guard now allows up to 4 envelopes per voice, so
     // two Env.ar no longer aborts — see `synth_two_envelopes_*` and
     // `synth_five_envelopes_aborts` below for the current boundary (>4 aborts).
-    assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"), "two Env.ar now ok (Sy-5c, cap raised to 4)");
+    assert!(
+        run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"),
+        "two Env.ar now ok (Sy-5c, cap raised to 4)"
+    );
     // Audio-voice signal * scalar still aborts — the negative half of the
     // control-scaling rule locked positively by `synth_env_scaled_by_constant`.
-    assert!(!run_script_ok("Synth.new { |p| Osc.sine(p) * 0.5 }"), "poly * scalar aborts");
+    assert!(
+        !run_script_ok("Synth.new { |p| Osc.sine(p) * 0.5 }"),
+        "poly * scalar aborts"
+    );
     // Nested Synth aborts (the inner polyBegin sees poly_mode already set).
-    assert!(!run_script_ok("Synth.new { |p| Synth.new { |q| Osc.sine(q) * Env.ar(0.01,0.3) } }"), "nested Synth aborts");
+    assert!(
+        !run_script_ok("Synth.new { |p| Synth.new { |q| Osc.sine(q) * Env.ar(0.01,0.3) } }"),
+        "nested Synth aborts"
+    );
     // Poly pink/brown noise now work in a Synth (Sy-2d) — see
     // `synth_sources_render_sound` for the positive case.
-    assert!(run_script_ok("Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }"), "Noise.pink ok in Synth (Sy-2d)");
-    assert!(run_script_ok("Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }"), "Noise.brown ok in Synth (Sy-2d)");
+    assert!(
+        run_script_ok("Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }"),
+        "Noise.pink ok in Synth (Sy-2d)"
+    );
+    assert!(
+        run_script_ok("Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }"),
+        "Noise.brown ok in Synth (Sy-2d)"
+    );
     // Sanity: a valid Synth interprets fine.
-    assert!(run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"), "valid Synth ok");
+    assert!(
+        run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) }"),
+        "valid Synth ok"
+    );
 }
 
 #[test]
@@ -1182,7 +1937,9 @@ fn bus_write_mono_and_const_ok() {
         "Synth.new { |p|\n  var b = Bus.new()\n  b.write(0.5)\n  Osc.saw(p) * Env.ar(0.01, 0.3)\n}"
     ));
     // A normal bus write OUTSIDE a Synth (mono graph) is unaffected.
-    assert!(run_script_ok("var b = Bus.new()\nb.write(Osc.saw(110))\nOut.patch(b)"));
+    assert!(run_script_ok(
+        "var b = Bus.new()\nb.write(Osc.saw(110))\nOut.patch(b)"
+    ));
 }
 
 #[test]
@@ -1205,8 +1962,14 @@ fn synth_env_scaled_by_constant_renders() {
         "var b = Synth.new { |p| Osc.sine(p) * (Env.ar(0.01, 0.3) * 0.7) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "envelope-scaled voice sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "envelope-scaled voice sounds"
+    );
 }
 
 #[test]
@@ -1215,10 +1978,42 @@ fn synth_saw_and_add_and_noise_build() {
     let cmds = run_and_capture_cmds(
         "var s = Synth.new { |p| (Osc.saw(p) + Noise.new()).lpf(1200) * Env.ar(0.01,0.3) }",
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyOsc, .. })), "PolyOsc");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 1.0).abs() < 1e-6)), "saw shape");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyAdd, .. })), "PolyAdd");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyNoise, .. })), "PolyNoise");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyOsc,
+                ..
+            }
+        )),
+        "PolyOsc"
+    );
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 0, value, .. } if (*value - 1.0).abs() < 1e-6)
+        ),
+        "saw shape"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyAdd,
+                ..
+            }
+        )),
+        "PolyAdd"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyNoise,
+                ..
+            }
+        )),
+        "PolyNoise"
+    );
 }
 
 #[test]
@@ -1228,7 +2023,10 @@ fn synth_saw_renders_sound() {
         "var b = Synth.new { |p| Osc.saw(p).lpf(2000) * Env.ar(0.001,0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded"
+    );
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "saw voice sounds");
 }
 
@@ -1241,7 +2039,10 @@ fn synth_add_and_noise_render_sound() {
         "var b = Synth.new { |p| (Osc.sine(p) + Osc.saw(p)) * Env.ar(0.001,0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut mixed,
     );
-    assert!(mixed.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "mix bounded");
+    assert!(
+        mixed.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "mix bounded"
+    );
     assert!(mixed.iter().any(|f| f.l.abs() > 1e-3), "`+` mix sounds");
 
     let mut noise = [StereoFrame::default(); 32];
@@ -1249,7 +2050,10 @@ fn synth_add_and_noise_render_sound() {
         "var b = Synth.new { |p| Noise.new() * Env.ar(0.001,0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut noise,
     );
-    assert!(noise.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "noise bounded");
+    assert!(
+        noise.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "noise bounded"
+    );
     assert!(noise.iter().any(|f| f.l.abs() > 1e-3), "noise voice sounds");
 }
 
@@ -1261,7 +2065,10 @@ fn synth_note_on_renders_sound() {
         "var bass = Synth.new { |p| Osc.sine(p).lpf(2000) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.noteOn(69, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds");
 }
 
@@ -1272,10 +2079,19 @@ fn synth_plays_from_midi() {
     // closure and drive the allocator: SetParam (pitch) + GateVoice (gate on).
     let cmds = run_midi_capture_cmds(
         "var bass = Synth.new { |p| Osc.sine(p).lpf(2000) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.bindMidi()",
-        0x90, 69, 100, // note-on A4 vel 100
+        0x90,
+        69,
+        100, // note-on A4 vel 100
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::GateVoice { on: true, .. })), "MIDI note-on gates a voice");
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SetParam { .. })), "MIDI note-on sets pitch");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::GateVoice { on: true, .. })),
+        "MIDI note-on gates a voice"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SetParam { .. })),
+        "MIDI note-on sets pitch"
+    );
 }
 
 #[test]
@@ -1287,43 +2103,117 @@ fn synth_moog_and_ms20_render_sound() {
         "var b = Synth.new { |p| Moog.lp(Osc.saw(p), 1200, 0.85) * Env.ar(0.01, 0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut moog,
     );
-    assert!(moog.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "Moog.lp bounded");
-    assert!(moog.iter().any(|f| f.l.abs() > 1e-4), "Moog.lp voice sounds");
+    assert!(
+        moog.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "Moog.lp bounded"
+    );
+    assert!(
+        moog.iter().any(|f| f.l.abs() > 1e-4),
+        "Moog.lp voice sounds"
+    );
 
     let mut ms20 = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p| Ms20.hp(Osc.saw(p), 1200, 0.9) * Env.ar(0.01, 0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut ms20,
     );
-    assert!(ms20.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "Ms20.hp bounded");
-    assert!(ms20.iter().any(|f| f.l.abs() > 1e-4), "Ms20.hp voice sounds");
+    assert!(
+        ms20.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "Ms20.hp bounded"
+    );
+    assert!(
+        ms20.iter().any(|f| f.l.abs() > 1e-4),
+        "Ms20.hp voice sounds"
+    );
 }
 
 #[test]
 fn synth_sources_build_correct_kinds() {
     // Sy-2d: each flipped source route emits the poly Kind, not the mono one.
-    let sync = run_and_capture_cmds(
-        "var b = Synth.new { |p| Osc.syncSaw(p, p*1.5) * Env.ar(0.01,0.3) }",
+    let sync =
+        run_and_capture_cmds("var b = Synth.new { |p| Osc.syncSaw(p, p*1.5) * Env.ar(0.01,0.3) }");
+    assert!(
+        sync.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolySyncSaw,
+                ..
+            }
+        )),
+        "PolySyncSaw"
     );
-    assert!(sync.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolySyncSaw, .. })), "PolySyncSaw");
-    assert!(!sync.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::SyncSaw, .. })), "no mono SyncSaw");
+    assert!(
+        !sync.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::SyncSaw,
+                ..
+            }
+        )),
+        "no mono SyncSaw"
+    );
 
     let wt = run_and_capture_cmds(
         "var b = Synth.new { |p| Osc.wavetable(WT.Saw, p) * Env.ar(0.01,0.3) }",
     );
-    assert!(wt.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyWt, .. })), "PolyWt");
-    assert!(!wt.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Wavetable, .. })), "no mono Wavetable");
+    assert!(
+        wt.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyWt,
+                ..
+            }
+        )),
+        "PolyWt"
+    );
+    assert!(
+        !wt.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Wavetable,
+                ..
+            }
+        )),
+        "no mono Wavetable"
+    );
 
     let morph = run_and_capture_cmds(
         "var b = Synth.new { |p| Osc.wavetable(WT.HarmonicSweep, p) * Env.ar(0.01,0.3) }",
     );
-    assert!(morph.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyWtMorph, .. })), "PolyWtMorph");
+    assert!(
+        morph.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyWtMorph,
+                ..
+            }
+        )),
+        "PolyWtMorph"
+    );
 
     let pink = run_and_capture_cmds("var b = Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }");
-    assert!(pink.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyPink, .. })), "PolyPink");
+    assert!(
+        pink.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyPink,
+                ..
+            }
+        )),
+        "PolyPink"
+    );
 
     let brown = run_and_capture_cmds("var b = Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }");
-    assert!(brown.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyBrown, .. })), "PolyBrown");
+    assert!(
+        brown.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyBrown,
+                ..
+            }
+        )),
+        "PolyBrown"
+    );
 
     // `.width =` in poly mode targets the PolyOsc's poly width port (1), not
     // the mono port (2).
@@ -1333,8 +2223,16 @@ fn synth_sources_build_correct_kinds() {
     let pwm = run_and_capture_cmds(
         "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = LFO.sine(4).to(0.2,0.8)\n  return o * Env.ar(0.01,0.3)\n}",
     );
-    assert!(pwm.iter().any(|c| matches!(c, Cmd::SetInput { port: 1, .. })), "width= sets poly port 1");
-    assert!(!pwm.iter().any(|c| matches!(c, Cmd::SetInput { port: 2, .. })), "width= does not touch mono port 2");
+    assert!(
+        pwm.iter()
+            .any(|c| matches!(c, Cmd::SetInput { port: 1, .. })),
+        "width= sets poly port 1"
+    );
+    assert!(
+        !pwm.iter()
+            .any(|c| matches!(c, Cmd::SetInput { port: 2, .. })),
+        "width= does not touch mono port 2"
+    );
 }
 
 #[test]
@@ -1346,7 +2244,10 @@ fn synth_sources_render_sound() {
         "var b = Synth.new { |p| Osc.syncSaw(p, p*1.5).lpf(2000) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut sync,
     );
-    assert!(sync.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "sync bounded");
+    assert!(
+        sync.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "sync bounded"
+    );
     assert!(sync.iter().any(|f| f.l.abs() > 1e-4), "sync voice sounds");
 
     let mut wt = [StereoFrame::default(); 32];
@@ -1354,8 +2255,14 @@ fn synth_sources_render_sound() {
         "var b = Synth.new { |p| Osc.wavetable(WT.Saw, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut wt,
     );
-    assert!(wt.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "wavetable bounded");
-    assert!(wt.iter().any(|f| f.l.abs() > 1e-4), "wavetable voice sounds");
+    assert!(
+        wt.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "wavetable bounded"
+    );
+    assert!(
+        wt.iter().any(|f| f.l.abs() > 1e-4),
+        "wavetable voice sounds"
+    );
 
     // 2D morph table (WT.HarmonicSweep, a named static bank — Task 5).
     let mut morph = [StereoFrame::default(); 32];
@@ -1363,15 +2270,24 @@ fn synth_sources_render_sound() {
         "var b = Synth.new { |p| Osc.wavetable(WT.HarmonicSweep, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut morph,
     );
-    assert!(morph.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "wavetable morph bounded");
-    assert!(morph.iter().any(|f| f.l.abs() > 1e-4), "wavetable morph voice sounds");
+    assert!(
+        morph.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "wavetable morph bounded"
+    );
+    assert!(
+        morph.iter().any(|f| f.l.abs() > 1e-4),
+        "wavetable morph voice sounds"
+    );
 
     let mut pink = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut pink,
     );
-    assert!(pink.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "pink bounded");
+    assert!(
+        pink.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "pink bounded"
+    );
     assert!(pink.iter().any(|f| f.l.abs() > 1e-4), "pink voice sounds");
 
     let mut brown = [StereoFrame::default(); 32];
@@ -1379,7 +2295,10 @@ fn synth_sources_render_sound() {
         "var b = Synth.new { |p| Noise.brown() * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut brown,
     );
-    assert!(brown.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "brown bounded");
+    assert!(
+        brown.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "brown bounded"
+    );
     assert!(brown.iter().any(|f| f.l.abs() > 1e-4), "brown voice sounds");
 
     // PWM: a mono LFO drives the width port via the Task-1 mono→poly broadcast.
@@ -1388,7 +2307,10 @@ fn synth_sources_render_sound() {
         "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = LFO.sine(4).to(0.2,0.8)\n  return o * Env.ar(0.01,0.3)\n}\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut pwm,
     );
-    assert!(pwm.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "PWM bounded");
+    assert!(
+        pwm.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "PWM bounded"
+    );
     assert!(pwm.iter().any(|f| f.l.abs() > 1e-4), "PWM voice sounds");
 }
 
@@ -1399,12 +2321,21 @@ fn polyosc_no_width_unchanged_no_setinput_port1() {
     // at its NewNode-time default (Const(0.0) ⇒ 0.5 duty), bit-identical to
     // the pre-Sy-2d PolyOsc (proven bit-exact at the engine level — see
     // deluge-audio-graph's node.rs tests).
-    let cmds = run_and_capture_cmds(
-        "var b = Synth.new { |p| Osc.square(p) * Env.ar(0.01, 0.3) }",
-    );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyOsc, .. })), "PolyOsc built");
+    let cmds = run_and_capture_cmds("var b = Synth.new { |p| Osc.square(p) * Env.ar(0.01, 0.3) }");
     assert!(
-        !cmds.iter().any(|c| matches!(c, Cmd::SetInput { port: 1, .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyOsc,
+                ..
+            }
+        )),
+        "PolyOsc built"
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::SetInput { port: 1, .. })),
         "no SetInput on PolyOsc's width port when .width wasn't set"
     );
 
@@ -1416,7 +2347,10 @@ fn polyosc_no_width_unchanged_no_setinput_port1() {
         "var b = Synth.new { |p| Osc.square(p) * Env.ar(0.001, 0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "bounded");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "bounded"
+    );
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "square voice sounds");
 }
 
@@ -1434,8 +2368,14 @@ fn synth_fixed_numeric_master_drives_hard_sync() {
         "var b = Synth.new { |p| Osc.syncSaw(60, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut synced,
     );
-    assert!(synced.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "fixed-master sync bounded");
-    assert!(synced.iter().any(|f| f.l.abs() > 1e-4), "fixed-master sync voice sounds");
+    assert!(
+        synced.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "fixed-master sync bounded"
+    );
+    assert!(
+        synced.iter().any(|f| f.l.abs() > 1e-4),
+        "fixed-master sync voice sounds"
+    );
 
     // Reference: the slave's own oscillator with no sync applied at all.
     let mut free = [StereoFrame::default(); 32];
@@ -1445,7 +2385,10 @@ fn synth_fixed_numeric_master_drives_hard_sync() {
     );
 
     assert!(
-        synced.iter().zip(free.iter()).any(|(s, f)| (s.l - f.l).abs() > 1e-4),
+        synced
+            .iter()
+            .zip(free.iter())
+            .any(|(s, f)| (s.l - f.l).abs() > 1e-4),
         "syncSaw(60, p) with a fixed numeric master must differ from a free-running \
          Osc.saw(p) — this proves the Const(60) master is actually reaching PolySync \
          and driving the hard-sync reset, not being silently zeroed (I-1)"
@@ -1465,8 +2408,14 @@ fn synth_fixed_numeric_width_applies_to_pwm_duty() {
         "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = 0.3\n  return o * Env.ar(0.01,0.3)\n}\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut narrow,
     );
-    assert!(narrow.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "width=0.3 bounded");
-    assert!(narrow.iter().any(|f| f.l.abs() > 1e-4), "width=0.3 voice sounds");
+    assert!(
+        narrow.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "width=0.3 bounded"
+    );
+    assert!(
+        narrow.iter().any(|f| f.l.abs() > 1e-4),
+        "width=0.3 voice sounds"
+    );
 
     // Reference: an explicit 0.5 duty (the sentinel default a dropped Const
     // would silently collapse to).
@@ -1477,7 +2426,10 @@ fn synth_fixed_numeric_width_applies_to_pwm_duty() {
     );
 
     assert!(
-        narrow.iter().zip(half.iter()).any(|(n, h)| (n.l - h.l).abs() > 1e-4),
+        narrow
+            .iter()
+            .zip(half.iter())
+            .any(|(n, h)| (n.l - h.l).abs() > 1e-4),
         "o.width = 0.3 must differ from o.width = 0.5 — this proves the fixed numeric \
          0.3 literal is actually reaching PolyOsc's width port and shaping the duty \
          cycle, not being silently zeroed and collapsed to the 0.5 sentinel (I-1)"
@@ -1516,8 +2468,14 @@ fn synth_adsr_renders_and_sustains() {
         "var b = Synth.new { |p| Osc.saw(p) * Env.adsr(0.01, 0.1, 0.6, 0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "Env.adsr bounded");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-4), "Env.adsr voice sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "Env.adsr bounded"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-4),
+        "Env.adsr voice sounds"
+    );
 
     // Stronger per-sample check: with `run_and_render` fixed to a single
     // 32-sample (44.1kHz) block, attack=0.01/decay=0.1 never leave the
@@ -1535,7 +2493,10 @@ fn synth_adsr_renders_and_sustains() {
     let tail = &fast[20..]; // decay (attack+decay ~13 samples) is long done by here
     let tail_rms = (tail.iter().map(|f| f.l * f.l).sum::<f32>() / tail.len() as f32).sqrt();
     assert!(tail_rms > 0.0, "sustained tail is non-silent");
-    assert!(tail_rms < peak, "sustained tail ({tail_rms}) well below the attack peak ({peak})");
+    assert!(
+        tail_rms < peak,
+        "sustained tail ({tail_rms}) well below the attack peak ({peak})"
+    );
 }
 
 #[test]
@@ -1543,7 +2504,9 @@ fn synth_adsr_counts_as_amp_gate() {
     // Exactly one amp envelope — an ADSR satisfies the gate requirement
     // just like Env.ar; a Synth with NO envelope still aborts (unchanged
     // rule, see `synth_error_cases_abort`).
-    assert!(run_script_ok("Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }"));
+    assert!(run_script_ok(
+        "Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }"
+    ));
     assert!(!run_script_ok("Synth.new { |p| Osc.saw(p) }"));
 }
 
@@ -1565,13 +2528,22 @@ fn synth_velocity_scales_amplitude() {
         "var s = Synth.new { |pitch, vel| Osc.saw(pitch) * Env.adsr(0.001,0.001,1,0.1) * vel }\nOut.patch(s.out)\ns.noteOn(60,20)",
         &mut lo,
     );
-    assert!(hi.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "hi bounded");
-    assert!(lo.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "lo bounded");
+    assert!(
+        hi.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "hi bounded"
+    );
+    assert!(
+        lo.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "lo bounded"
+    );
     let rms_hi = (hi.iter().map(|f| f.l * f.l).sum::<f32>() / hi.len() as f32).sqrt();
     let rms_lo = (lo.iter().map(|f| f.l * f.l).sum::<f32>() / lo.len() as f32).sqrt();
     assert!(rms_hi > 0.0, "vel=127 voice sounds (rms_hi={rms_hi})");
     assert!(rms_lo > 0.0, "vel=20 voice sounds (rms_lo={rms_lo})");
-    assert!(rms_hi > rms_lo, "vel=127 ({rms_hi}) louder than vel=20 ({rms_lo})");
+    assert!(
+        rms_hi > rms_lo,
+        "vel=127 ({rms_hi}) louder than vel=20 ({rms_lo})"
+    );
 }
 
 #[test]
@@ -1632,7 +2604,10 @@ fn synth_mono_renders_finite_nonsilent() {
         "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.001,0.001,1,0.1) }\nOut.patch(s.out)\ns.noteOn(60,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1), "finite/bounded");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.1),
+        "finite/bounded"
+    );
     assert!(out.iter().any(|f| f.l != 0.0), "non-silent");
 }
 
@@ -1702,8 +2677,14 @@ fn synth_poly_unison_builds_and_renders() {
         "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 12\nOut.patch(s.out)\ns.noteOn(60,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "poly unison voice sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "poly unison voice sounds"
+    );
 }
 
 #[test]
@@ -1713,8 +2694,14 @@ fn synth_mono_unison_builds_and_renders() {
         "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 3\ns.detune = 20\nOut.patch(s.out)\ns.noteOn(60,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "mono unison voice sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "mono unison voice sounds"
+    );
 }
 
 #[test]
@@ -1724,8 +2711,14 @@ fn synth_unison_one_behaves_as_before() {
         "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 1\nOut.patch(s.out)\ns.noteOn(60,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "unison=1 still sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "unison=1 still sounds"
+    );
 }
 
 #[test]
@@ -1751,11 +2744,23 @@ fn synth_unison_normalization_reduces_level() {
     let peak1 = out1.iter().map(|f| f.l.abs()).fold(0.0f32, f32::max);
     let peak4 = out4.iter().map(|f| f.l.abs()).fold(0.0f32, f32::max);
 
-    assert!(out1.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "unison=1 bounded");
-    assert!(out4.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "unison=4 bounded");
+    assert!(
+        out1.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "unison=1 bounded"
+    );
+    assert!(
+        out4.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "unison=4 bounded"
+    );
     assert!(peak1 > 1e-3, "unison=1 peak nonzero (peak1={peak1})");
-    assert!(peak4 < 4.0 * peak1, "1/sqrt(N) normalization took effect (peak1={peak1}, peak4={peak4})");
-    assert!(peak4 > peak1, "4 unison voices louder than 1 (peak1={peak1}, peak4={peak4})");
+    assert!(
+        peak4 < 4.0 * peak1,
+        "1/sqrt(N) normalization took effect (peak1={peak1}, peak4={peak4})"
+    );
+    assert!(
+        peak4 > peak1,
+        "4 unison voices louder than 1 (peak1={peak1}, peak4={peak4})"
+    );
 }
 
 // Sy-6a Task 5: e2e proof that `synth.width = amount` (Task 4 setter) renders
@@ -1770,9 +2775,19 @@ fn synth_poly_width_renders_stereo_image() {
         "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 12\ns.width = 1\nOut.patch(s.out)\ns.noteOn(60,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 8.0 && f.r.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3 || f.r.abs() > 1e-3), "sounds");
-    assert!(out.iter().any(|f| (f.l - f.r).abs() > 1e-4), "stereo image: L != R somewhere");
+    assert!(
+        out.iter()
+            .all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 8.0 && f.r.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3 || f.r.abs() > 1e-3),
+        "sounds"
+    );
+    assert!(
+        out.iter().any(|f| (f.l - f.r).abs() > 1e-4),
+        "stereo image: L != R somewhere"
+    );
 }
 
 #[test]
@@ -1782,22 +2797,35 @@ fn synth_mono_width_renders_stereo_image() {
         "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 3\ns.detune = 20\ns.width = 1\nOut.patch(s.out)\ns.noteOn(60,100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 8.0 && f.r.abs() <= 8.0), "bounded");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3 || f.r.abs() > 1e-3), "sounds");
-    assert!(out.iter().any(|f| (f.l - f.r).abs() > 1e-4), "mono unison spread: L != R");
+    assert!(
+        out.iter()
+            .all(|f| f.l.is_finite() && f.r.is_finite() && f.l.abs() <= 8.0 && f.r.abs() <= 8.0),
+        "bounded"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3 || f.r.abs() > 1e-3),
+        "sounds"
+    );
+    assert!(
+        out.iter().any(|f| (f.l - f.r).abs() > 1e-4),
+        "mono unison spread: L != R"
+    );
 }
 
 #[test]
 fn synth_width_zero_is_mono_and_byte_identical() {
     // Same patch/note rendered twice: once with `s.width = 0`, once with no width call.
     let patch_width0 = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 0\ns.width = 0\nOut.patch(s.out)\ns.noteOn(60,100)";
-    let patch_none   = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 0\nOut.patch(s.out)\ns.noteOn(60,100)";
+    let patch_none = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.1,0.7,0.2) }\ns.unison = 4\ns.detune = 0\nOut.patch(s.out)\ns.noteOn(60,100)";
     let mut a = [StereoFrame::default(); 32];
     let mut b = [StereoFrame::default(); 32];
     run_and_render(patch_width0, &mut a);
     run_and_render(patch_none, &mut b);
     // width=0 => L == R (dual-mono) ...
-    assert!(a.iter().all(|f| (f.l - f.r).abs() < 1e-9), "width=0 is dual-mono (L==R)");
+    assert!(
+        a.iter().all(|f| (f.l - f.r).abs() < 1e-9),
+        "width=0 is dual-mono (L==R)"
+    );
     // ... and byte-identical to the no-width render, frame by frame.
     for (fa, fb) in a.iter().zip(b.iter()) {
         assert_eq!(fa.l, fb.l, "width=0 L byte-identical to no-width");
@@ -1838,12 +2866,22 @@ fn synth_live_detune_moves_sounding_note() {
     let mut b = [StereoFrame::default(); 32];
     run_and_render(base, &mut a);
     run_and_render(live, &mut b);
-    assert!(a.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "base bounded");
-    assert!(b.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "live bounded");
+    assert!(
+        a.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "base bounded"
+    );
+    assert!(
+        b.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "live bounded"
+    );
     assert!(b.iter().any(|f| f.l.abs() > 1e-3), "live sounds");
     // The live re-detune changed the held note's spread → output differs.
-    assert!(a.iter().zip(b.iter()).any(|(x, y)| (x.l - y.l).abs() > 1e-4),
-        "live detune moved the sounding note");
+    assert!(
+        a.iter()
+            .zip(b.iter())
+            .any(|(x, y)| (x.l - y.l).abs() > 1e-4),
+        "live detune moved the sounding note"
+    );
 }
 
 #[test]
@@ -1855,8 +2893,14 @@ fn synth_live_width_respreads_sounding_note() {
     run_and_render(base, &mut a);
     run_and_render(live, &mut b);
     // base has no width → dual-mono (L==R); live width=1 → a real stereo image.
-    assert!(a.iter().all(|f| (f.l - f.r).abs() < 1e-9), "base is dual-mono");
-    assert!(b.iter().any(|f| (f.l - f.r).abs() > 1e-4), "live width spread the held note");
+    assert!(
+        a.iter().all(|f| (f.l - f.r).abs() < 1e-9),
+        "base is dual-mono"
+    );
+    assert!(
+        b.iter().any(|f| (f.l - f.r).abs() > 1e-4),
+        "live width spread the held note"
+    );
 }
 
 #[test]
@@ -1870,15 +2914,23 @@ fn synth_live_mono_detune_moves_sounding_note() {
     let mut b = [StereoFrame::default(); 32];
     run_and_render(base, &mut a);
     run_and_render(live, &mut b);
-    assert!(b.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0) && b.iter().any(|f| f.l.abs() > 1e-3), "mono live bounded+sounds");
-    assert!(a.iter().zip(b.iter()).any(|(x, y)| (x.l - y.l).abs() > 1e-4), "mono live detune moved the note");
+    assert!(
+        b.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0) && b.iter().any(|f| f.l.abs() > 1e-3),
+        "mono live bounded+sounds"
+    );
+    assert!(
+        a.iter()
+            .zip(b.iter())
+            .any(|(x, y)| (x.l - y.l).abs() > 1e-4),
+        "mono live detune moved the note"
+    );
 }
 
 #[test]
 fn synth_setter_before_noteon_is_unchanged() {
     // Setting detune/width BEFORE noteOn re-emits nothing → identical to a plain build.
     let with_pre = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 2\ns.detune = 0\nOut.patch(s.out)\ns.noteOn(60,100)";
-    let plain    = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 2\nOut.patch(s.out)\ns.noteOn(60,100)";
+    let plain = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 2\nOut.patch(s.out)\ns.noteOn(60,100)";
     let mut a = [StereoFrame::default(); 32];
     let mut b = [StereoFrame::default(); 32];
     run_and_render(with_pre, &mut a);
@@ -1892,9 +2944,18 @@ fn synth_setter_before_noteon_is_unchanged() {
 #[test]
 fn comp_renders_finite_nonsilent() {
     let mut out = [StereoFrame::default(); 64];
-    run_and_render("Out.patch(Comp.new(Osc.saw(110), -20, 4, 0.005, 0.1))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "compressed signal sounds");
+    run_and_render(
+        "Out.patch(Comp.new(Osc.saw(110), -20, 4, 0.005, 0.1))",
+        &mut out,
+    );
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "compressed signal sounds"
+    );
 }
 
 #[test]
@@ -1906,22 +2967,42 @@ fn comp_limiter_reduces_peak_of_loud_source() {
     let mut lim = [StereoFrame::default(); 128];
     run_and_render("Out.patch(Comp.limit(Osc.saw(110), -12))", &mut lim);
     assert!(lim.iter().all(|f| f.l.is_finite()), "limiter finite");
-    assert!(peak(&lim) < peak(&dry), "limiter lowers the peak (dry {} vs lim {})", peak(&dry), peak(&lim));
-    assert!(lim.iter().any(|f| f.l.abs() > 1e-3), "limited signal still sounds");
+    assert!(
+        peak(&lim) < peak(&dry),
+        "limiter lowers the peak (dry {} vs lim {})",
+        peak(&dry),
+        peak(&lim)
+    );
+    assert!(
+        lim.iter().any(|f| f.l.abs() > 1e-3),
+        "limited signal still sounds"
+    );
 }
 
 #[test]
 fn comp_unity_ratio_is_transparent_ish() {
     // ratio 1:1 → no compression; a quiet source passes essentially unchanged in level.
-    assert!(run_script_ok("Out.patch(Comp.new(Osc.sine(220), -20, 1, 0.005, 0.1))"), "ratio 1 builds/runs");
+    assert!(
+        run_script_ok("Out.patch(Comp.new(Osc.sine(220), -20, 1, 0.005, 0.1))"),
+        "ratio 1 builds/runs"
+    );
 }
 
 #[test]
 fn expander_renders_finite_nonsilent() {
     let mut out = [StereoFrame::default(); 128];
-    run_and_render("Out.patch(Expander.new(Osc.saw(110), -6, 2, 0.001, 0.1))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "expander passes signal above threshold");
+    run_and_render(
+        "Out.patch(Expander.new(Osc.saw(110), -6, 2, 0.001, 0.1))",
+        &mut out,
+    );
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "expander passes signal above threshold"
+    );
 }
 
 #[test]
@@ -1931,45 +3012,81 @@ fn gate_closes_below_threshold() {
     let mut dry = [StereoFrame::default(); 128];
     run_and_render("Out.patch(Osc.saw(110))", &mut dry);
     let mut gated = [StereoFrame::default(); 128];
-    run_and_render("Out.patch(NoiseGate.new(Osc.saw(110), 6, 0.001, 0.002, 0.001))", &mut gated);
+    run_and_render(
+        "Out.patch(NoiseGate.new(Osc.saw(110), 6, 0.001, 0.002, 0.001))",
+        &mut gated,
+    );
     assert!(gated.iter().all(|f| f.l.is_finite()), "gated finite");
-    assert!(peak(&gated) < peak(&dry), "gate closed below threshold lowers peak (dry {} vs gated {})", peak(&dry), peak(&gated));
+    assert!(
+        peak(&gated) < peak(&dry),
+        "gate closed below threshold lowers peak (dry {} vs gated {})",
+        peak(&dry),
+        peak(&gated)
+    );
 }
 
 #[test]
 fn gate_low_threshold_passes() {
     // Low threshold (-40, below the source) → gate stays open → non-silent.
     let mut out = [StereoFrame::default(); 128];
-    run_and_render("Out.patch(NoiseGate.new(Osc.saw(110), -40, 0.001, 0.05, 0.001))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "open gate passes loud source");
+    run_and_render(
+        "Out.patch(NoiseGate.new(Osc.saw(110), -40, 0.001, 0.05, 0.001))",
+        &mut out,
+    );
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "open gate passes loud source"
+    );
 }
 
 #[test]
 fn bitcrush_renders_on_grid() {
     let mut out = [StereoFrame::default(); 64];
     run_and_render("Out.patch(Bitcrush.new(Osc.saw(110), 3))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sounds");
     // 3-bit step = 1/2^2 = 0.25; every sample is on the grid.
     let step = 0.25f32;
-    assert!(out.iter().all(|f| { let q = f.l / step; (q - q.round()).abs() < 1e-3 }), "output on the 3-bit grid");
+    assert!(
+        out.iter().all(|f| {
+            let q = f.l / step;
+            (q - q.round()).abs() < 1e-3
+        }),
+        "output on the 3-bit grid"
+    );
 }
 
 #[test]
 fn decimate_renders_piecewise_constant() {
     let mut out = [StereoFrame::default(); 128];
     run_and_render("Out.patch(Decimate.new(Osc.saw(110), 4000))", &mut out);
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded"
+    );
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sounds");
     // 4 kHz vs 44.1 kHz SR → holds ~11 samples → mostly repeated consecutive samples.
     let repeats = out.windows(2).filter(|w| w[0].l == w[1].l).count();
-    assert!(repeats > out.len() / 2, "decimated → piecewise constant, got {} repeats", repeats);
+    assert!(
+        repeats > out.len() / 2,
+        "decimated → piecewise constant, got {} repeats",
+        repeats
+    );
 }
 
 #[test]
 fn lofi_chain_builds() {
-    assert!(run_script_ok("Out.patch(Bitcrush.new(Decimate.new(Osc.saw(110), 6000), 6))"), "chained lo-fi builds/runs");
+    assert!(
+        run_script_ok("Out.patch(Bitcrush.new(Decimate.new(Osc.saw(110), 6000), 6))"),
+        "chained lo-fi builds/runs"
+    );
 }
 
 #[test]
@@ -1980,8 +3097,14 @@ fn sample_player_plays_buffer() {
         "var b = SampleBuffer.from([0.5, 0.5, -0.5, -0.5])\nvar p = Player.new(b)\np.loop = 1\np.trigger()\nOut.patch(p)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sample plays (non-silent)");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "sample plays (non-silent)"
+    );
 }
 
 #[test]
@@ -1993,14 +3116,25 @@ fn one_shot_goes_silent_after_length() {
         &mut out,
     );
     assert!(out.iter().all(|f| f.l.is_finite()), "finite");
-    assert!(out[0..8].iter().any(|f| f.l.abs() > 1e-3), "sounds at the start");
-    assert!(out[64..128].iter().all(|f| f.l.abs() < 1e-4), "one-shot silent well after its 2 samples");
+    assert!(
+        out[0..8].iter().any(|f| f.l.abs() > 1e-3),
+        "sounds at the start"
+    );
+    assert!(
+        out[64..128].iter().all(|f| f.l.abs() < 1e-4),
+        "one-shot silent well after its 2 samples"
+    );
 }
 
 #[test]
 fn player_pitch_and_build() {
     // speed / semitone setters build + render.
-    assert!(run_script_ok("var b = SampleBuffer.from([0.3, 0.6, -0.6, -0.3])\nvar p = Player.new(b)\np.speed = 2\np.semitones = 12\np.loop = 1\np.trigger()\nOut.patch(p)"), "pitch setters build/run");
+    assert!(
+        run_script_ok(
+            "var b = SampleBuffer.from([0.3, 0.6, -0.6, -0.3])\nvar p = Player.new(b)\np.speed = 2\np.semitones = 12\np.loop = 1\np.trigger()\nOut.patch(p)"
+        ),
+        "pitch setters build/run"
+    );
 }
 
 // `Keymap.from` (Sa-2 Task 5) has no consuming node yet — that's Task 6's
@@ -2047,7 +3181,10 @@ fn keymap_from_uploads_through_real_pool_without_panicking() {
          ])",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l == 0.0 && f.r == 0.0), "nothing patched: silent render");
+    assert!(
+        out.iter().all(|f| f.l == 0.0 && f.r == 0.0),
+        "nothing patched: silent render"
+    );
 }
 
 // Task 5 review fix (CRITICAL): `keymap_from_impl` used to read zone
@@ -2063,7 +3200,10 @@ fn keymap_from_uploads_through_real_pool_without_panicking() {
 // `deluge_dsp_kernels::sampler::Zone::empty()`'s defaults instead.
 #[test]
 fn keymap_from_malformed_arg_not_a_list_does_not_crash() {
-    assert!(run_script_ok("var k = Keymap.from(5)"), "non-list arg must degrade to zero zones, not UB");
+    assert!(
+        run_script_ok("var k = Keymap.from(5)"),
+        "non-list arg must degrade to zero zones, not UB"
+    );
 }
 
 #[test]
@@ -2095,28 +3235,46 @@ fn keymap_from_malformed_short_zone_missing_high_and_root_does_not_crash() {
 // out-of-bounds read.
 #[test]
 fn sample_from_malformed_arg_not_a_list_does_not_crash() {
-    assert!(run_script_ok("var b = SampleBuffer.from(5)"), "SampleBuffer.from(non-list) degrades, no crash");
+    assert!(
+        run_script_ok("var b = SampleBuffer.from(5)"),
+        "SampleBuffer.from(non-list) degrades, no crash"
+    );
 }
 
 #[test]
 fn wavetable_from_malformed_arg_not_a_list_does_not_crash() {
-    assert!(run_script_ok("var w = Wavetable.from(5)"), "Wavetable.from(non-list) degrades, no crash");
+    assert!(
+        run_script_ok("var w = Wavetable.from(5)"),
+        "Wavetable.from(non-list) degrades, no crash"
+    );
 }
 
 #[test]
 fn wavetable_from2d_malformed_args_do_not_crash() {
-    assert!(run_script_ok("var w = Wavetable.from2d(5)"), "from2d(non-list) degrades");
-    assert!(run_script_ok("var w = Wavetable.from2d([5, 6])"), "from2d([non-list frames]) degrades");
+    assert!(
+        run_script_ok("var w = Wavetable.from2d(5)"),
+        "from2d(non-list) degrades"
+    );
+    assert!(
+        run_script_ok("var w = Wavetable.from2d([5, 6])"),
+        "from2d([non-list frames]) degrades"
+    );
 }
 
 #[test]
 fn steps_malformed_values_not_a_list_does_not_crash() {
-    assert!(run_script_ok("var s = Steps.new(5, 1)"), "Steps.new(non-list values) degrades to 0 steps, no crash");
+    assert!(
+        run_script_ok("var s = Steps.new(5, 1)"),
+        "Steps.new(non-list values) degrades to 0 steps, no crash"
+    );
 }
 
 #[test]
 fn oled_text_malformed_non_string_does_not_crash() {
-    assert!(run_script_ok("Oled.text(0, 0, 42)"), "Oled.text(non-string) skips draw, no crash");
+    assert!(
+        run_script_ok("Oled.text(0, 0, 42)"),
+        "Oled.text(non-string) skips draw, no crash"
+    );
 }
 
 // `Sample.new(pitch, source)` (Sa-2 Task 6) — the poly sample-source factory
@@ -2189,8 +3347,14 @@ fn sample_new_samplebuffer_round_trip_renders_finite_nonsilent() {
         "var bass = Synth.new { |p| Sample.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.noteOn(69, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a SampleBuffer source");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "note-on sounds through a SampleBuffer source"
+    );
 }
 
 #[test]
@@ -2207,8 +3371,14 @@ fn sample_new_keymap_round_trip_renders_finite_nonsilent() {
          ])) * Env.ar(0.001, 0.05) }\nOut.patch(bass.out)\nbass.noteOn(69, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a Keymap source");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "note-on sounds through a Keymap source"
+    );
 }
 
 // Sa-2 Task 7 — end-to-end: a poly sample voice actually plays inside a
@@ -2226,7 +3396,10 @@ fn poly_sample_voice_plays_in_synth() {
         "var b = SampleBuffer.from([0.6, 0.6, -0.6, -0.6])\nvar s = Synth.new { |p| Sample.new(p, b) * Env.adsr(0.001, 0.5, 1, 0.2) }\nOut.patch(s.out)\ns.noteOn(60, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "sample voice sounds");
 }
 
@@ -2237,7 +3410,10 @@ fn poly_sample_two_notes_two_voices() {
         "var b = SampleBuffer.from([0.5, 0.5, -0.5, -0.5])\nvar s = Synth.new { |p| Sample.new(p, b) * Env.adsr(0.001, 0.5, 1, 0.2) }\nOut.patch(s.out)\ns.noteOn(60, 100)\ns.noteOn(64, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "two poly sample voices sound");
+    assert!(
+        out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3),
+        "two poly sample voices sound"
+    );
 }
 
 #[test]
@@ -2284,12 +3460,18 @@ fn keymap_and_scope_guard() {
 // Wren.
 #[test]
 fn player_malformed_buffer_not_a_foreign_does_not_crash() {
-    assert!(run_script_ok("var p = Player.new(5)"), "Player.new(non-foreign) -> unbound silent node, no crash");
+    assert!(
+        run_script_ok("var p = Player.new(5)"),
+        "Player.new(non-foreign) -> unbound silent node, no crash"
+    );
 }
 
 #[test]
 fn wavetable_pooled_malformed_not_a_wavetable_does_not_crash() {
-    assert!(run_script_ok("var n = Node.wavetable_pooled_(5, 220)"), "wavetable_pooled_(non-foreign) degrades, no crash");
+    assert!(
+        run_script_ok("var n = Node.wavetable_pooled_(5, 220)"),
+        "wavetable_pooled_(non-foreign) degrades, no crash"
+    );
     // A wrong-tag foreign (a Bus, not a Wavetable) must also degrade, not heap-over-read:
     assert!(
         run_script_ok("var b = Bus.new()\nvar n = Node.wavetable_pooled_(b, 220)"),
@@ -2299,7 +3481,10 @@ fn wavetable_pooled_malformed_not_a_wavetable_does_not_crash() {
 
 #[test]
 fn polywt_pooled_malformed_not_a_wavetable_does_not_crash() {
-    assert!(run_script_ok("var n = Node.polywt_pooled_(5, 220)"), "polywt_pooled_(non-foreign) degrades, no crash");
+    assert!(
+        run_script_ok("var n = Node.polywt_pooled_(5, 220)"),
+        "polywt_pooled_(non-foreign) degrades, no crash"
+    );
     assert!(
         run_script_ok("var b = Bus.new()\nvar n = Node.polywt_pooled_(b, 220)"),
         "polywt_pooled_(Bus) degrades, no over-read"
@@ -2308,9 +3493,18 @@ fn polywt_pooled_malformed_not_a_wavetable_does_not_crash() {
 
 #[test]
 fn out_patch_malformed_non_source_does_not_crash() {
-    assert!(run_script_ok("Out.patch(5)"), "Out.patch(Num) -> patches silence, no crash");
-    assert!(run_script_ok("Out.patch(\"x\")"), "Out.patch(String) -> patches silence, no crash");
-    assert!(run_script_ok("Out.patch([1, 2])"), "Out.patch(List) -> patches silence, no crash");
+    assert!(
+        run_script_ok("Out.patch(5)"),
+        "Out.patch(Num) -> patches silence, no crash"
+    );
+    assert!(
+        run_script_ok("Out.patch(\"x\")"),
+        "Out.patch(String) -> patches silence, no crash"
+    );
+    assert!(
+        run_script_ok("Out.patch([1, 2])"),
+        "Out.patch(List) -> patches silence, no crash"
+    );
 }
 
 // ── Poly FM Task 5: end-to-end poly FM ──────────────────────────────────────
@@ -2362,7 +3556,10 @@ fn poly_sine_fm_plays_in_synth() {
         "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)\ns.noteOn(64, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
     assert!(out.iter().any(|f| f.l.abs() > 1e-3), "poly FM sounds");
 }
 
@@ -2375,14 +3572,25 @@ fn fm_index_via_scale_renders_and_scales_depth() {
         "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m.scale(3)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
         &mut out_scaled,
     );
-    assert!(out_scaled.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "scaled bounded/finite");
-    assert!(out_scaled.iter().any(|f| f.l.abs() > 1e-3), "m.scale(3) sounds (no abort)");
+    assert!(
+        out_scaled
+            .iter()
+            .all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "scaled bounded/finite"
+    );
+    assert!(
+        out_scaled.iter().any(|f| f.l.abs() > 1e-3),
+        "m.scale(3) sounds (no abort)"
+    );
     let mut out_unit = [StereoFrame::default(); 64];
     run_and_render(
         "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
         &mut out_unit,
     );
-    let differs = out_scaled.iter().zip(out_unit.iter()).any(|(a, b)| (a.l - b.l).abs() > 1e-4);
+    let differs = out_scaled
+        .iter()
+        .zip(out_unit.iter())
+        .any(|(a, b)| (a.l - b.l).abs() > 1e-4);
     assert!(differs, "index 3 differs from index 1 -> FM depth scaled");
 }
 
@@ -2394,14 +3602,19 @@ fn fm_index_enveloped_renders() {
         "var s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m * Env.adsr(0.001, 0.3, 0.5, 0.2)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "enveloped index sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3),
+        "enveloped index sounds"
+    );
 }
 
 #[test]
 fn scale_two_arg_audio_safe_renders() {
     // The fixed two-arg scale(m,a) must no longer abort on an audio node.
     assert!(
-        run_script_ok("var s = Synth.new { |p|\n  var c = Osc.sine(p).scale(2, 0)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)"),
+        run_script_ok(
+            "var s = Synth.new { |p|\n  var c = Osc.sine(p).scale(2, 0)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)"
+        ),
         "audio.scale(2,0) renders without aborting"
     );
 }
@@ -2413,7 +3626,10 @@ fn poly_sine_fm_feedback_plays() {
         "var s = Synth.new { |p|\n  var c = Osc.sine(p)\n  c.feedback = 0.6\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "feedback sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3),
+        "feedback sounds"
+    );
 }
 
 #[test]
@@ -2423,7 +3639,10 @@ fn poly_wavetable_fm_plays() {
         "var wt = Wavetable.from([0.0, 0.7, 1.0, 0.7, 0.0, -0.7, -1.0, -0.7])\nvar s = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.wavetable(wt, p)\n  c.pm = m\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3), "poly wavetable FM sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite()) && out.iter().any(|f| f.l.abs() > 1e-3),
+        "poly wavetable FM sounds"
+    );
 }
 
 #[test]
@@ -2433,7 +3652,11 @@ fn mono_wavetable_feedback_plays() {
         "var wt = Wavetable.from([0.0, 0.7, 1.0, 0.7, 0.0, -0.7, -1.0, -0.7])\nvar c = Osc.wavetable(wt, 220)\nc.feedback = 0.5\nOut.patch(c)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0) && out.iter().any(|f| f.l.abs() > 1e-3), "mono wavetable feedback bounded + sounds");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0)
+            && out.iter().any(|f| f.l.abs() > 1e-3),
+        "mono wavetable feedback bounded + sounds"
+    );
 }
 
 // Sa-3b slice 4 Task 1 — `Sample.stream(pitch, path)`: a poly streaming
@@ -2455,15 +3678,25 @@ fn sample_stream_emits_streamplayer_and_registers() {
         "var b = Synth.new { |p| Sample.stream(p, \"cello.wav\") * Env.adsr(0.001,0.5,1,0.2) }",
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::StreamPlayer, .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::StreamPlayer,
+                ..
+            }
+        )),
         "expected a NewNode(StreamPlayer): {cmds:?}"
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetParam { param: 0, .. })),
         "expected a SetParam(0) (root): {cmds:?}"
     );
     let (_, path) = registered.expect("Host::stream_register should have been called");
-    assert_eq!(path, "cello.wav", "the registered path must match Sample.stream's second argument");
+    assert_eq!(
+        path, "cello.wav",
+        "the registered path must match Sample.stream's second argument"
+    );
 }
 
 #[test]
@@ -2495,7 +3728,13 @@ fn granular_new_builds_and_emits() {
         "var b = Synth.new { |p| Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.adsr(0.01, 0.3, 0.6, 0.4) }",
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyGranular, .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyGranular,
+                ..
+            }
+        )),
         "expected a NewNode(PolyGranular): {cmds:?}"
     );
     assert!(
@@ -2506,11 +3745,17 @@ fn granular_new_builds_and_emits() {
     // apply until a setter is called) — Env.adsr's own SetParam (sustain) is
     // unrelated and expected, so scope this to the PolyGranular node's id.
     let granular_id = cmds.iter().find_map(|c| match c {
-        Cmd::NewNode { node, kind: Kind::PolyGranular, .. } => Some(*node),
+        Cmd::NewNode {
+            node,
+            kind: Kind::PolyGranular,
+            ..
+        } => Some(*node),
         _ => None,
     });
     assert!(
-        !cmds.iter().any(|c| matches!(c, Cmd::SetParam { node, .. } if Some(*node) == granular_id)),
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::SetParam { node, .. } if Some(*node) == granular_id)),
         "Granular.new itself must not emit a SetParam targeting its own node: {cmds:?}"
     );
 }
@@ -2526,11 +3771,23 @@ fn granular_new_binds_pooled_samplebuffer() {
         "var b = Synth.new { |p| Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5])) * Env.adsr(0.01, 0.3, 0.6, 0.4) }",
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::PolyGranular, .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::PolyGranular,
+                ..
+            }
+        )),
         "expected a NewNode(PolyGranular): {cmds:?}"
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::BindTable { src: TableSrc::Pooled(_), .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::BindTable {
+                src: TableSrc::Pooled(_),
+                ..
+            }
+        )),
         "expected a BindTable{{Pooled}} once the SampleBuffer upload succeeds: {cmds:?}"
     );
 }
@@ -2551,19 +3808,27 @@ fn granular_setters_emit_setparam() {
          }",
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 1, value, .. } if (*value - 0.5).abs() < 1e-6)),
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 1, value, .. } if (*value - 0.5).abs() < 1e-6)
+        ),
         "expected SetParam(1, 0.5) from grainPosition=: {cmds:?}"
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 2, value, .. } if (*value - 20.0).abs() < 1e-6)),
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 2, value, .. } if (*value - 20.0).abs() < 1e-6)
+        ),
         "expected SetParam(2, 20.0) from size=: {cmds:?}"
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 3, value, .. } if (*value - 100.0).abs() < 1e-6)),
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 3, value, .. } if (*value - 100.0).abs() < 1e-6)
+        ),
         "expected SetParam(3, 100.0) from density=: {cmds:?}"
     );
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SetParam { param: 4, value, .. } if (*value - 0.3).abs() < 1e-6)),
+        cmds.iter().any(
+            |c| matches!(c, Cmd::SetParam { param: 4, value, .. } if (*value - 0.3).abs() < 1e-6)
+        ),
         "expected SetParam(4, 0.3) from spray=: {cmds:?}"
     );
 }
@@ -2608,8 +3873,14 @@ fn granular_new_round_trip_renders_finite_nonsilent() {
          }\nOut.patch(g.out)\ng.noteOn(69, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "note-on sounds through a Granular voice");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "note-on sounds through a Granular voice"
+    );
 }
 
 // Sa-4 Task 4 — end-to-end: a poly granular voice driven from a Wren `Synth`,
@@ -2637,8 +3908,14 @@ fn granular_renders_finite_bounded_nonsilent() {
          }\nOut.patch(g.out)\ng.noteOn(60, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite over a long granular render");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "granular voice sounds once grains spawn and Hann windows climb off zero");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite over a long granular render"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "granular voice sounds once grains spawn and Hann windows climb off zero"
+    );
 }
 
 // Two simultaneous note-ons -> two poly grain-cloud lanes fanned out by the
@@ -2659,8 +3936,14 @@ fn granular_polyphonic() {
          }\nOut.patch(g.out)\ng.noteOn(60, 100)\ng.noteOn(67, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite with two simultaneous granular voices");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "two poly granular voices sound");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite with two simultaneous granular voices"
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "two poly granular voices sound"
+    );
 }
 
 // The `grainPosition=`/`spray=` setters (plus `size=`/`density=`) actually
@@ -2686,20 +3969,38 @@ fn granular_setters_change_render() {
          }\nOut.patch(g.out)\ng.noteOn(64, 100)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0), "bounded/finite after grainPosition=/size=/density=/spray=");
-    assert!(out.iter().any(|f| f.l.abs() > 1e-3), "granular voice still sounds after the setters fire");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 8.0),
+        "bounded/finite after grainPosition=/size=/density=/spray="
+    );
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-3),
+        "granular voice still sounds after the setters fire"
+    );
 }
 
 #[test]
 fn out_limit_one_arg_emits_set_master_limit_with_default_release() {
     let cmds = run_and_capture_cmds("Out.limit(0.9)");
-    assert_eq!(cmds, vec![Cmd::SetMasterLimit { ceiling: 0.9, release: 0.05 }]);
+    assert_eq!(
+        cmds,
+        vec![Cmd::SetMasterLimit {
+            ceiling: 0.9,
+            release: 0.05
+        }]
+    );
 }
 
 #[test]
 fn out_limit_two_arg_emits_set_master_limit() {
     let cmds = run_and_capture_cmds("Out.limit(0.5, 0.1)");
-    assert_eq!(cmds, vec![Cmd::SetMasterLimit { ceiling: 0.5, release: 0.1 }]);
+    assert_eq!(
+        cmds,
+        vec![Cmd::SetMasterLimit {
+            ceiling: 0.5,
+            release: 0.1
+        }]
+    );
 }
 
 #[test]
@@ -2717,19 +4018,43 @@ fn out_dcblock_arg_emits_cutoff() {
 #[test]
 fn out_eq_peak_emits_set_master_eq() {
     let cmds = run_and_capture_cmds("Out.eq(1000, 6, 1.0)");
-    assert_eq!(cmds, vec![Cmd::SetMasterEq { freq: 1000.0, gain_db: 6.0, q: 1.0, eq_type: 0 }]);
+    assert_eq!(
+        cmds,
+        vec![Cmd::SetMasterEq {
+            freq: 1000.0,
+            gain_db: 6.0,
+            q: 1.0,
+            eq_type: 0
+        }]
+    );
 }
 
 #[test]
 fn out_eq_low_shelf_emits_type_1() {
     let cmds = run_and_capture_cmds("Out.eqLowShelf(200, -3, 0.7)");
-    assert_eq!(cmds, vec![Cmd::SetMasterEq { freq: 200.0, gain_db: -3.0, q: 0.7, eq_type: 1 }]);
+    assert_eq!(
+        cmds,
+        vec![Cmd::SetMasterEq {
+            freq: 200.0,
+            gain_db: -3.0,
+            q: 0.7,
+            eq_type: 1
+        }]
+    );
 }
 
 #[test]
 fn out_eq_high_shelf_emits_type_2() {
     let cmds = run_and_capture_cmds("Out.eqHighShelf(8000, 4, 0.7)");
-    assert_eq!(cmds, vec![Cmd::SetMasterEq { freq: 8000.0, gain_db: 4.0, q: 0.7, eq_type: 2 }]);
+    assert_eq!(
+        cmds,
+        vec![Cmd::SetMasterEq {
+            freq: 8000.0,
+            gain_db: 4.0,
+            q: 0.7,
+            eq_type: 2
+        }]
+    );
 }
 
 // e2e (Task 4): a saw through Out.eq with a big peak boost on a strong harmonic
@@ -2742,18 +4067,30 @@ fn out_eq_boost_raises_level() {
     let base_peak = base[1024..].iter().fold(0.0f32, |m, f| m.max(f.l.abs()));
 
     let mut eqd = [StereoFrame::default(); 2048];
-    run_and_render("Out.patch(Osc.saw(220) * 0.2)\nOut.eq(880, 18, 4.0)", &mut eqd);
+    run_and_render(
+        "Out.patch(Osc.saw(220) * 0.2)\nOut.eq(880, 18, 4.0)",
+        &mut eqd,
+    );
     let eq_peak = eqd[1024..].iter().fold(0.0f32, |m, f| m.max(f.l.abs()));
 
-    assert!(eqd.iter().all(|f| f.l.is_finite() && f.r.is_finite()), "finite");
-    assert!(eq_peak > base_peak * 1.1, "EQ boost should raise the level: base={} eq={}", base_peak, eq_peak);
+    assert!(
+        eqd.iter().all(|f| f.l.is_finite() && f.r.is_finite()),
+        "finite"
+    );
+    assert!(
+        eq_peak > base_peak * 1.1,
+        "EQ boost should raise the level: base={} eq={}",
+        base_peak,
+        eq_peak
+    );
 }
 
 #[test]
 fn bus_gain_setter_emits_bus_gain() {
     let cmds = run_and_capture_cmds("var m = Bus.new()\nm.gain = 0.5");
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::BusGain { gain, .. } if (*gain - 0.5).abs() < 1e-6)),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::BusGain { gain, .. } if (*gain - 0.5).abs() < 1e-6)),
         "expected a BusGain{{gain:0.5}}, got {:?}",
         cmds
     );
@@ -2764,7 +4101,10 @@ fn bus_gain_setter_emits_bus_gain() {
 #[test]
 fn bus_gain_halves_render() {
     let mut base = [StereoFrame::default(); 64];
-    run_and_render("var m = Bus.new()\nm.write(Osc.saw(110) * 0.4)\nOut.patch(m)", &mut base);
+    run_and_render(
+        "var m = Bus.new()\nm.write(Osc.saw(110) * 0.4)\nOut.patch(m)",
+        &mut base,
+    );
     let base_peak = base.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
 
     let mut half = [StereoFrame::default(); 64];
@@ -2787,7 +4127,8 @@ fn bus_gain_halves_render() {
 fn bus_send_setter_emits_bus_send() {
     let cmds = run_and_capture_cmds("var a = Bus.new()\nvar m = Bus.new()\na.send(m, 0.3)");
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::BusSend { gain, .. } if (*gain - 0.3).abs() < 1e-6)),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::BusSend { gain, .. } if (*gain - 0.3).abs() < 1e-6)),
         "expected a BusSend{{gain:0.3}}, got {:?}",
         cmds
     );
@@ -2810,7 +4151,10 @@ fn bus_send_non_bus_dst_is_noop() {
 #[test]
 fn bus_send_aux_to_master_half_level() {
     let mut direct = [StereoFrame::default(); 64];
-    run_and_render("var m = Bus.new()\nm.write(Osc.saw(110) * 0.4)\nOut.patch(m)", &mut direct);
+    run_and_render(
+        "var m = Bus.new()\nm.write(Osc.saw(110) * 0.4)\nOut.patch(m)",
+        &mut direct,
+    );
     let direct_peak = direct.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
 
     let mut aux = [StereoFrame::default(); 64];
@@ -2835,13 +4179,20 @@ fn bus_send_aux_to_master_half_level() {
 fn aux_reverb_wires_effect_into_target() {
     let cmds = run_and_capture_cmds("var m = Bus.new()\nvar v = Aux.reverb(m, 0.8, 0.4)");
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::NewNode { kind: Kind::Room, .. })),
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::NewNode {
+                kind: Kind::Room,
+                ..
+            }
+        )),
         "Aux.reverb should create a Room node: {:?}",
         cmds
     );
     // The reverb (width-2) is written into the target bus (m = BusId(1)) as two per-side writes.
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::BusWriteGains { bus, .. } if bus.0 == 1)),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::BusWriteGains { bus, .. } if bus.0 == 1)),
         "Aux.reverb should write the effect into the target bus: {:?}",
         cmds
     );
@@ -2868,9 +4219,16 @@ fn aux_reverb_renders_wet() {
         "var m = Bus.new()\nvar v = Aux.reverb(m, 0.8, 0.4)\nv.write(Osc.saw(110) * 0.5)\nOut.patch(m)",
         &mut out,
     );
-    assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite()), "finite");
+    assert!(
+        out.iter().all(|f| f.l.is_finite() && f.r.is_finite()),
+        "finite"
+    );
     let peak = out.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
-    assert!(peak > 0.05, "reverb return should render non-silent wet, peak={}", peak);
+    assert!(
+        peak > 0.05,
+        "reverb return should render non-silent wet, peak={}",
+        peak
+    );
 }
 
 #[test]
@@ -2890,7 +4248,11 @@ fn mixer_channel_gain_is_a_real_fader() {
     );
     let halved_peak = halved.iter().fold(0.0f32, |a, f| a.max(f.l.abs()));
 
-    assert!(unity_peak > 1e-3, "unity channel not silent: {}", unity_peak);
+    assert!(
+        unity_peak > 1e-3,
+        "unity channel not silent: {}",
+        unity_peak
+    );
     assert!(
         (halved_peak - unity_peak * 0.5).abs() < unity_peak * 0.1,
         "ch.gain = 0.5 should ~halve the channel: unity={} halved={}",
@@ -2913,7 +4275,10 @@ fn out_limit_bounds_a_loud_render() {
         assert!(f.l.abs() <= 0.5 + 1e-3, "left over ceiling: {}", f.l);
         assert!(f.r.abs() <= 0.5 + 1e-3, "right over ceiling: {}", f.r);
     }
-    assert!(out.iter().any(|f| f.l.abs() > 1e-4), "limiter must attenuate, not mute");
+    assert!(
+        out.iter().any(|f| f.l.abs() > 1e-4),
+        "limiter must attenuate, not mute"
+    );
 }
 
 // Sanity (Task 4): the same loud patch WITHOUT `Out.limit` still renders
@@ -2935,8 +4300,16 @@ fn out_dcblock_removes_dc_from_a_render() {
     let dc_in = [StereoFrame { l: 0.5, r: 0.5 }; 4096];
     let mut out = [StereoFrame::default(); 4096];
     run_and_render_with_input("Out.patch(In.line())\nOut.dcBlock()", &mut out, &dc_in);
-    assert!(out[4095].l.abs() < 1e-2, "DC not removed (L): {}", out[4095].l);
-    assert!(out[4095].r.abs() < 1e-2, "DC not removed (R): {}", out[4095].r);
+    assert!(
+        out[4095].l.abs() < 1e-2,
+        "DC not removed (L): {}",
+        out[4095].l
+    );
+    assert!(
+        out[4095].r.abs() < 1e-2,
+        "DC not removed (R): {}",
+        out[4095].r
+    );
     // Early samples are non-silent (the DC is present before the HP settles).
     assert!(out[0].l.abs() > 1e-2, "should not be silent at onset");
 }
@@ -2946,5 +4319,9 @@ fn out_without_dcblock_passes_dc() {
     let dc_in = [StereoFrame { l: 0.5, r: 0.5 }; 64];
     let mut out = [StereoFrame::default(); 64];
     run_and_render_with_input("Out.patch(In.line())", &mut out, &dc_in);
-    assert!((out[63].l - 0.5).abs() < 1e-6, "DC should pass unblocked: {}", out[63].l);
+    assert!(
+        (out[63].l - 0.5).abs() < 1e-6,
+        "DC should pass unblocked: {}",
+        out[63].l
+    );
 }

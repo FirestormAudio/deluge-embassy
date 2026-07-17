@@ -44,7 +44,7 @@ pub use layer::{BlendMode, GridCompositor, GridLayer};
 pub use pad::{GRID_COLS, GRID_MAIN_COLS, GRID_ROWS, GRID_SIDE_COLS, Pad};
 pub use widgets::{
     AutomationColor, BipolarAutomationColumn, CellPlaybackState, ClipCellComponent, ClipGridConfig,
-    ClipGridDims, ClipGridEvent, ClipGridState, ClipListEvent, ClipListState, ClipRowData, KeyPress,
-    KeyboardLayout, NoteVelocityColumn, SidebarRow, TextKeyboardComponent, UnipolarAutomationColumn,
-    clip_grid, clip_list, draw_clip_row, draw_waveform, status_sidebar,
+    ClipGridDims, ClipGridEvent, ClipGridState, ClipListEvent, ClipListState, ClipRowData,
+    KeyPress, KeyboardLayout, NoteVelocityColumn, SidebarRow, TextKeyboardComponent,
+    UnipolarAutomationColumn, clip_grid, clip_list, draw_clip_row, draw_waveform, status_sidebar,
 };

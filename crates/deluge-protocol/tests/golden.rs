@@ -24,28 +24,118 @@ fn vectors() -> serde_json::Value {
     }
 
     let to: Vec<(&str, Vec<u8>)> = vec![
-        ("UpdateDisplay", body(ToDeluge::UpdateDisplay(&display).to_frame())),
+        (
+            "UpdateDisplay",
+            body(ToDeluge::UpdateDisplay(&display).to_frame()),
+        ),
         ("ClearDisplay", body(ToDeluge::ClearDisplay.to_frame())),
-        ("SetPadRgb", body(ToDeluge::SetPadRgb { col: 3, row: 4, rgb: [10, 20, 30] }.to_frame())),
+        (
+            "SetPadRgb",
+            body(
+                ToDeluge::SetPadRgb {
+                    col: 3,
+                    row: 4,
+                    rgb: [10, 20, 30],
+                }
+                .to_frame(),
+            ),
+        ),
         ("ClearAllPads", body(ToDeluge::ClearAllPads.to_frame())),
-        ("SetLed", body(ToDeluge::SetLed { index: 35, on: true }.to_frame())),
-        ("SetCv", body(ToDeluge::SetCv { channel: 1, value: 0x1234 }.to_frame())),
-        ("SetGate", body(ToDeluge::SetGate { channel: 2, on: true }.to_frame())),
+        (
+            "SetLed",
+            body(
+                ToDeluge::SetLed {
+                    index: 35,
+                    on: true,
+                }
+                .to_frame(),
+            ),
+        ),
+        (
+            "SetCv",
+            body(
+                ToDeluge::SetCv {
+                    channel: 1,
+                    value: 0x1234,
+                }
+                .to_frame(),
+            ),
+        ),
+        (
+            "SetGate",
+            body(
+                ToDeluge::SetGate {
+                    channel: 2,
+                    on: true,
+                }
+                .to_frame(),
+            ),
+        ),
         ("SetAllPads", body(ToDeluge::SetAllPads(&pads).to_frame())),
-        ("SetKnobIndicator", body(ToDeluge::SetKnobIndicator { which: 2, levels: [1, 2, 3, 4] }.to_frame())),
-        ("SetSyncedLed", body(ToDeluge::SetSyncedLed(true).to_frame())),
+        (
+            "SetKnobIndicator",
+            body(
+                ToDeluge::SetKnobIndicator {
+                    which: 2,
+                    levels: [1, 2, 3, 4],
+                }
+                .to_frame(),
+            ),
+        ),
+        (
+            "SetSyncedLed",
+            body(ToDeluge::SetSyncedLed(true).to_frame()),
+        ),
         ("ClearAllLeds", body(ToDeluge::ClearAllLeds.to_frame())),
-        ("SetBrightness", body(ToDeluge::SetBrightness(200).to_frame())),
+        (
+            "SetBrightness",
+            body(ToDeluge::SetBrightness(200).to_frame()),
+        ),
         ("GetVersion", body(ToDeluge::GetVersion.to_frame())),
         ("Ping", body(ToDeluge::Ping.to_frame())),
     ];
     let from: Vec<(&str, Vec<u8>)> = vec![
-        ("PadPressed", body(FromDeluge::PadPressed { col: 5, row: 2 }.to_frame())),
-        ("PadReleased", body(FromDeluge::PadReleased { col: 5, row: 2 }.to_frame())),
-        ("ButtonPressed", body(FromDeluge::ButtonPressed { id: cdc_button_id(0) }.to_frame())),
-        ("ButtonReleased", body(FromDeluge::ButtonReleased { id: cdc_button_id(35) }.to_frame())),
-        ("EncoderRotated", body(FromDeluge::EncoderRotated { id: 4, delta: -1 }.to_frame())),
-        ("Version", body(FromDeluge::Version { major: 1, minor: 0, patch: 0 }.to_frame())),
+        (
+            "PadPressed",
+            body(FromDeluge::PadPressed { col: 5, row: 2 }.to_frame()),
+        ),
+        (
+            "PadReleased",
+            body(FromDeluge::PadReleased { col: 5, row: 2 }.to_frame()),
+        ),
+        (
+            "ButtonPressed",
+            body(
+                FromDeluge::ButtonPressed {
+                    id: cdc_button_id(0),
+                }
+                .to_frame(),
+            ),
+        ),
+        (
+            "ButtonReleased",
+            body(
+                FromDeluge::ButtonReleased {
+                    id: cdc_button_id(35),
+                }
+                .to_frame(),
+            ),
+        ),
+        (
+            "EncoderRotated",
+            body(FromDeluge::EncoderRotated { id: 4, delta: -1 }.to_frame()),
+        ),
+        (
+            "Version",
+            body(
+                FromDeluge::Version {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                }
+                .to_frame(),
+            ),
+        ),
         ("Pong", body(FromDeluge::Pong.to_frame())),
         ("Ready", body(FromDeluge::Ready.to_frame())),
     ];

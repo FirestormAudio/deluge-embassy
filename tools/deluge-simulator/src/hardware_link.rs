@@ -113,10 +113,12 @@ impl HardwareMirror {
         // If we flood OUT before draining IN, the device never starts reading and
         // our writes time out. Drain IN immediately so its `rx_loop` comes up.
         let rx_alive = alive.clone();
-        thread::Builder::new().name("hw-link-rx".into()).spawn(move || {
-            reader_loop(reader, in_tx);
-            rx_alive.store(false, Ordering::Release);
-        })?;
+        thread::Builder::new()
+            .name("hw-link-rx".into())
+            .spawn(move || {
+                reader_loop(reader, in_tx);
+                rx_alive.store(false, Ordering::Release);
+            })?;
         // Now complete the handshake: the device answers PING with PONG. Sending
         // it after the reader is live means the greeting is being consumed, so the
         // device's `rx_loop` is up to receive this and the illumination that follows.
@@ -125,10 +127,12 @@ impl HardwareMirror {
             Err(e) => warn!("hw: handshake PING write failed: {e}"),
         }
         let tx_alive = alive.clone();
-        thread::Builder::new().name("hw-link-tx".into()).spawn(move || {
-            writer_loop(writer, out_rx);
-            tx_alive.store(false, Ordering::Release);
-        })?;
+        thread::Builder::new()
+            .name("hw-link-tx".into())
+            .spawn(move || {
+                writer_loop(writer, out_rx);
+                tx_alive.store(false, Ordering::Release);
+            })?;
 
         Ok(Self::with_io(panel, in_rx, out_tx, alive))
     }
@@ -160,14 +164,17 @@ impl HardwareMirror {
 
     /// Auto-detect a connected Deluge by its USB VID/PID, returning its port name.
     pub fn detect() -> Option<String> {
-        serialport::available_ports().ok()?.into_iter().find_map(|p| match p.port_type {
-            serialport::SerialPortType::UsbPort(info)
-                if info.vid == DELUGE_VID && info.pid == DELUGE_PID =>
-            {
-                Some(p.port_name)
-            }
-            _ => None,
-        })
+        serialport::available_ports()
+            .ok()?
+            .into_iter()
+            .find_map(|p| match p.port_type {
+                serialport::SerialPortType::UsbPort(info)
+                    if info.vid == DELUGE_VID && info.pid == DELUGE_PID =>
+                {
+                    Some(p.port_name)
+                }
+                _ => None,
+            })
     }
 
     /// Whether both I/O threads are still running (false once the device is
@@ -276,7 +283,10 @@ impl HardwareMirror {
             let leds = panel.leds_snapshot();
             for (index, &on) in leds.iter().enumerate() {
                 if on != self.prev_leds[index] {
-                    if !self.send(ToDeluge::SetLed { index: index as u8, on }) {
+                    if !self.send(ToDeluge::SetLed {
+                        index: index as u8,
+                        on,
+                    }) {
                         return;
                     }
                     self.prev_leds[index] = on;
@@ -284,7 +294,10 @@ impl HardwareMirror {
             }
             let knobs = panel.knobs_snapshot();
             for which in 0..2u8 {
-                if !self.send(ToDeluge::SetKnobIndicator { which, levels: knobs[which as usize] }) {
+                if !self.send(ToDeluge::SetKnobIndicator {
+                    which,
+                    levels: knobs[which as usize],
+                }) {
                     return;
                 }
             }
@@ -298,7 +311,10 @@ impl HardwareMirror {
         if gen_cv != self.seen_cv {
             let cv = panel.cv_snapshot();
             for (channel, &value) in cv.iter().enumerate() {
-                if !self.send(ToDeluge::SetCv { channel: channel as u8, value }) {
+                if !self.send(ToDeluge::SetCv {
+                    channel: channel as u8,
+                    value,
+                }) {
                     return;
                 }
             }
@@ -309,7 +325,10 @@ impl HardwareMirror {
         if gen_gate != self.seen_gate {
             let gate = panel.gate_snapshot();
             for (channel, &on) in gate.iter().enumerate() {
-                if !self.send(ToDeluge::SetGate { channel: channel as u8, on }) {
+                if !self.send(ToDeluge::SetGate {
+                    channel: channel as u8,
+                    on,
+                }) {
                     return;
                 }
             }
@@ -347,7 +366,11 @@ fn reader_loop(mut stream: Box<dyn serialport::SerialPort>, tx: Sender<FromDelug
             Ok(n) => {
                 idle_timeouts = 0;
                 let head = n.min(24);
-                debug!("hw rx: {n} bytes {:02x?}{}", &buf[..head], if n > head { " …" } else { "" });
+                debug!(
+                    "hw rx: {n} bytes {:02x?}{}",
+                    &buf[..head],
+                    if n > head { " …" } else { "" }
+                );
                 dec.push(&buf[..n]);
                 while let Some((type_byte, len)) = dec.pop_frame(&mut payload) {
                     let len = len.min(payload.len());
@@ -402,7 +425,11 @@ mod tests {
         let (in_tx, in_rx) = channel::<FromDeluge>();
         let (out_tx, out_rx) = channel::<Vec<u8>>();
         let alive = Arc::new(AtomicBool::new(true));
-        (HardwareMirror::with_io(panel, in_rx, out_tx, alive), out_rx, in_tx)
+        (
+            HardwareMirror::with_io(panel, in_rx, out_tx, alive),
+            out_rx,
+            in_tx,
+        )
     }
 
     /// Arm the handshake gate the way a real device does — by speaking first.
@@ -433,7 +460,11 @@ mod tests {
         // is state to mirror.
         panel.set_led(1, true);
         hw.mirror();
-        assert_eq!(drain_frames(&out_rx).len(), 0, "must stay silent until handshake");
+        assert_eq!(
+            drain_frames(&out_rx).len(),
+            0,
+            "must stay silent until handshake"
+        );
     }
 
     #[test]
@@ -449,19 +480,34 @@ mod tests {
 
         let frames = drain_frames(&out_rx);
         // First pass force-sends display + all pads.
-        assert!(frames.iter().any(|(t, _)| *t == deluge_protocol::to::UPDATE_DISPLAY));
-        assert!(frames.iter().any(|(t, _)| *t == deluge_protocol::to::SET_ALL_PADS));
+        assert!(
+            frames
+                .iter()
+                .any(|(t, _)| *t == deluge_protocol::to::UPDATE_DISPLAY)
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|(t, _)| *t == deluge_protocol::to::SET_ALL_PADS)
+        );
         // The lit LED is encoded as SetLed{index:5,on:true}.
         let set_led = frames
             .iter()
             .filter_map(|(t, p)| ToDeluge::decode(*t, p))
             .find(|m| matches!(m, ToDeluge::SetLed { index: 5, on: true }));
-        assert!(set_led.is_some(), "expected SetLed{{index:5,on:true}}, got {frames:?}");
+        assert!(
+            set_led.is_some(),
+            "expected SetLed{{index:5,on:true}}, got {frames:?}"
+        );
 
         // A second pass with no further changes emits nothing.
         let n = drain_frames(&out_rx).len();
         hw.mirror();
-        assert_eq!(drain_frames(&out_rx).len(), 0, "idle mirror should be silent (was {n})");
+        assert_eq!(
+            drain_frames(&out_rx).len(),
+            0,
+            "idle mirror should be silent (was {n})"
+        );
     }
 
     #[test]
@@ -504,15 +550,25 @@ mod tests {
         hw.poll_input();
         hw.mirror();
         let frames = drain_frames(&out_rx);
-        assert!(frames.iter().any(|(t, _)| *t == deluge_protocol::to::UPDATE_DISPLAY));
-        assert!(frames.iter().any(|(t, _)| *t == deluge_protocol::to::SET_ALL_PADS));
+        assert!(
+            frames
+                .iter()
+                .any(|(t, _)| *t == deluge_protocol::to::UPDATE_DISPLAY)
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|(t, _)| *t == deluge_protocol::to::SET_ALL_PADS)
+        );
     }
 
     #[test]
     fn poll_input_drains_decoded_events() {
         let panel = SharedPanel::new();
         let (mut hw, _out_rx, in_tx) = test_mirror(panel);
-        in_tx.send(FromDeluge::PadPressed { col: 3, row: 4 }).unwrap();
+        in_tx
+            .send(FromDeluge::PadPressed { col: 3, row: 4 })
+            .unwrap();
         in_tx.send(FromDeluge::ButtonPressed { id: 150 }).unwrap();
         let got = hw.poll_input();
         assert_eq!(got.len(), 2);

@@ -14,8 +14,8 @@ use std::time::Duration;
 use cpal::Sample;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use deluge_sim_link::audio::{
-    BLOCK_FRAMES, Consumer, GuiEnds, HeapCons, HeapProd, HeapRb, Observer, Producer, SAMPLE_RATE_HZ,
-    Split,
+    BLOCK_FRAMES, Consumer, GuiEnds, HeapCons, HeapProd, HeapRb, Observer, Producer,
+    SAMPLE_RATE_HZ, Split,
 };
 
 /// Optional WAV file bridges, from `--audio-in` / `--audio-out` (via the
@@ -187,7 +187,13 @@ impl Recorder {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok((prod, Worker { stop, handle: Some(handle) }))
+        Ok((
+            prod,
+            Worker {
+                stop,
+                handle: Some(handle),
+            },
+        ))
     }
 }
 
@@ -201,7 +207,10 @@ impl Feeder {
         if frames.is_empty() {
             return Err("empty WAV".into());
         }
-        log::info!("simulator audio: feeding input from {path:?} ({} frames, looped)", frames.len());
+        log::info!(
+            "simulator audio: feeding input from {path:?} ({} frames, looped)",
+            frames.len()
+        );
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         let handle = std::thread::Builder::new()
@@ -225,7 +234,10 @@ impl Feeder {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Worker { stop, handle: Some(handle) })
+        Ok(Worker {
+            stop,
+            handle: Some(handle),
+        })
     }
 }
 
@@ -243,10 +255,7 @@ fn load_wav(path: &Path) -> Result<Vec<[f32; 2]>, String> {
     let ch = spec.channels.max(1) as usize;
     // Flatten to interleaved f32 samples regardless of source format.
     let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader
-            .samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect(),
+        hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect(),
         hound::SampleFormat::Int => {
             let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
             reader

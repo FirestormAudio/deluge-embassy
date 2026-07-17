@@ -104,12 +104,20 @@ impl ExpandCollapseAnimation {
             for src_row in self.from_row..=self.to_row {
                 if target_row1[src_row] == out_row {
                     let intensity = intensity1[src_row];
-                    accumulate_row_scaled(&interpolated_rows[src_row], intensity, &mut accumulated_row);
+                    accumulate_row_scaled(
+                        &interpolated_rows[src_row],
+                        intensity,
+                        &mut accumulated_row,
+                    );
                     total_intensity += intensity;
                 }
                 if target_row2[src_row] == out_row {
                     let intensity = intensity2[src_row];
-                    accumulate_row_scaled(&interpolated_rows[src_row], intensity, &mut accumulated_row);
+                    accumulate_row_scaled(
+                        &interpolated_rows[src_row],
+                        intensity,
+                        &mut accumulated_row,
+                    );
                     total_intensity += intensity;
                 }
             }
@@ -133,7 +141,12 @@ impl ExpandCollapseAnimation {
 
     fn interpolate_row(&self, row: usize, progress: f32) -> [Color; 18] {
         let mut result = [Color::BLACK; 18];
-        lerp_slice(&self.from_grid[row], &self.to_grid[row], progress, &mut result);
+        lerp_slice(
+            &self.from_grid[row],
+            &self.to_grid[row],
+            progress,
+            &mut result,
+        );
         result
     }
 }

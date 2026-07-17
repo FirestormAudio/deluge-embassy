@@ -105,7 +105,10 @@ impl PadInput {
 
     /// Record a release (pushes an event and clears the held bit).
     pub fn release(&mut self, pad: Pad) {
-        let _ = self.events.push(PadEvent { pad, pressed: false });
+        let _ = self.events.push(PadEvent {
+            pad,
+            pressed: false,
+        });
         self.held.set(pad, false);
     }
 
@@ -167,7 +170,10 @@ impl Rect {
     }
 
     pub fn contains(&self, pad: Pad) -> bool {
-        pad.row >= self.top && pad.row <= self.bottom && pad.col >= self.left && pad.col <= self.right
+        pad.row >= self.top
+            && pad.row <= self.bottom
+            && pad.col >= self.left
+            && pad.col <= self.right
     }
 }
 
@@ -398,7 +404,8 @@ impl<'a> Frame<'a> {
 
     /// Ask the gate to run again at/after `now_ms + delay_ms` (timed animation).
     pub fn request_repaint_after(&mut self, delay_ms: u32) {
-        self.repaint.request_at(self.now_ms.saturating_add(delay_ms));
+        self.repaint
+            .request_at(self.now_ms.saturating_add(delay_ms));
     }
 }
 
@@ -525,7 +532,9 @@ mod tests {
         let mut input = PadInput::new();
         input.press(Pad::new(2, 3));
         let clicked = ui
-            .run(16, input, |f| f.button(Pad::new(2, 3), Color::RED).clicked())
+            .run(16, input, |f| {
+                f.button(Pad::new(2, 3), Color::RED).clicked()
+            })
             .painted()
             .unwrap();
         assert!(clicked);
@@ -579,15 +588,18 @@ mod tests {
                 let (top, bottom) = f.split_rows(3); // rows 0..3 / 3..8
                 let top_hit = f.region(top, |p| p.interact(Rect::new(0, 0, 2, 17)).clicked());
                 // bottom pane: global row 5 → local row 2 (5 - 3)
-                let bottom_local =
-                    f.region(bottom, |p| p.interact(Rect::new(0, 0, 4, 17)).pressed);
+                let bottom_local = f.region(bottom, |p| p.interact(Rect::new(0, 0, 4, 17)).pressed);
                 (top_hit, bottom_local)
             })
             .painted()
             .unwrap();
 
         assert!(!top_hit, "press must not leak into the top pane");
-        assert_eq!(bottom_local, Some(Pad::new(2, 2)), "press is local to the pane");
+        assert_eq!(
+            bottom_local,
+            Some(Pad::new(2, 2)),
+            "press is local to the pane"
+        );
     }
 
     #[test]

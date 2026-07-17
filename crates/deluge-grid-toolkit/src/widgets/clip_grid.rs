@@ -10,9 +10,9 @@
 //! regions. Ported from spark-grid's `ClipGridComponent` (windowing) and
 //! `SessionView` (the clone/press FSM), decoupled from the engine.
 
+use crate::Pad;
 use crate::imode::{Frame, MAX_PAD_EVENTS};
 use crate::widgets::ClipCellComponent;
-use crate::Pad;
 use heapless::Vec;
 
 /// Maximum sections / tracks (matches the Deluge session model).
@@ -243,8 +243,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::imode::{GridUi, PadInput};
     use crate::Color;
+    use crate::imode::{GridUi, PadInput};
     use uuid::Uuid;
 
     const DIMS: ClipGridDims = ClipGridDims {
@@ -294,7 +294,10 @@ mod tests {
         state.scroll_to(999, 999, DIMS, (8, 16));
         assert_eq!((state.scroll_x, state.scroll_y), (16, 24));
         // smaller-than-window logical grid → clamp to 0
-        let tiny = ClipGridDims { sections: 4, tracks: 8 };
+        let tiny = ClipGridDims {
+            sections: 4,
+            tracks: 8,
+        };
         state.scroll_to(5, 5, tiny, (8, 16));
         assert_eq!((state.scroll_x, state.scroll_y), (0, 0));
     }
@@ -315,19 +318,27 @@ mod tests {
         // the press edge announces itself; the tap follows on release
         assert_eq!(
             evs.as_slice(),
-            &[ClipGridEvent::Press { section: 2, track: 3 }]
+            &[ClipGridEvent::Press {
+                section: 2,
+                track: 3
+            }]
         );
         assert_eq!(state.held(), Some((2, 3)));
 
         let mut input = PadInput::new();
         input.release(Pad::new(2, 3));
         let evs = ui
-            .run(100, input, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty))
+            .run(100, input, |f| {
+                clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+            })
             .painted()
             .unwrap();
         assert_eq!(
             evs.as_slice(),
-            &[ClipGridEvent::Tap { section: 2, track: 3 }]
+            &[ClipGridEvent::Tap {
+                section: 2,
+                track: 3
+            }]
         );
     }
 
@@ -338,7 +349,9 @@ mod tests {
 
         let mut input = PadInput::new();
         input.press(Pad::new(1, 1));
-        ui.run(0, input, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty));
+        ui.run(0, input, |f| {
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+        });
         // the press should have scheduled a wake at the hold threshold
         assert_eq!(ui.next_repaint_at(), Some(SHORT_PRESS_MS));
 
@@ -350,7 +363,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             evs.as_slice(),
-            &[ClipGridEvent::Hold { section: 1, track: 1 }]
+            &[ClipGridEvent::Hold {
+                section: 1,
+                track: 1
+            }]
         );
 
         // a later clean frame must not fire Hold again
@@ -371,18 +387,24 @@ mod tests {
 
         let mut i = PadInput::new();
         i.press(Pad::new(0, 0)); // source
-        ui.run(0, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty));
+        ui.run(0, i, |f| {
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+        });
 
         let mut i = PadInput::new();
         i.press(Pad::new(1, 2)); // target (second finger)
         i.held.set(Pad::new(0, 0), true);
-        ui.run(10, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty));
+        ui.run(10, i, |f| {
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+        });
 
         let mut i = PadInput::new();
         i.release(Pad::new(1, 2));
         i.held.set(Pad::new(0, 0), true);
         let evs = ui
-            .run(20, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty))
+            .run(20, i, |f| {
+                clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+            })
             .painted()
             .unwrap();
         assert_eq!(
@@ -397,7 +419,9 @@ mod tests {
         let mut i = PadInput::new();
         i.release(Pad::new(0, 0));
         let evs = ui
-            .run(30, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty))
+            .run(30, i, |f| {
+                clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+            })
             .painted()
             .unwrap();
         assert!(evs.is_empty());
@@ -412,7 +436,9 @@ mod tests {
         let mut input = PadInput::new();
         input.press(Pad::new(0, 0));
         // now=250 → pulse phase 0.25 so the selection blend is visible
-        ui.run(250, input, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), cf));
+        ui.run(250, input, |f| {
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), cf)
+        });
 
         assert_eq!(state.selected, Some((0, 0)));
         let selected = ui.grid().get_pad(0, 0); // selected RED cell
@@ -456,7 +482,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             evs.as_slice(),
-            &[ClipGridEvent::Press { section: 0, track: 0 }]
+            &[ClipGridEvent::Press {
+                section: 0,
+                track: 0
+            }]
         );
 
         // Second finger while the first is held → its own Press (no Clone), and
@@ -470,7 +499,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             evs.as_slice(),
-            &[ClipGridEvent::Press { section: 1, track: 2 }]
+            &[ClipGridEvent::Press {
+                section: 1,
+                track: 2
+            }]
         );
         assert_eq!(state.held(), Some((1, 2)));
     }

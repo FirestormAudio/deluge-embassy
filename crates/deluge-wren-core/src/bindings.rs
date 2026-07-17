@@ -49,7 +49,12 @@ struct CvCh {
     slew_s: f32,
 }
 impl CvCh {
-    const EMPTY: CvCh = CvCh { current: 0.0, target: 0.0, rate: 0.0, slew_s: 0.0 };
+    const EMPTY: CvCh = CvCh {
+        current: 0.0,
+        target: 0.0,
+        rate: 0.0,
+        slew_s: 0.0,
+    };
 }
 
 /// One metro pool slot.
@@ -79,8 +84,11 @@ struct State {
     metro: [Metro; N_METRO],
 }
 impl State {
-    const EMPTY: State =
-        State { cv: [CvCh::EMPTY; N_CV], gate: [false; N_GATE], metro: [Metro::EMPTY; N_METRO] };
+    const EMPTY: State = State {
+        cv: [CvCh::EMPTY; N_CV],
+        gate: [false; N_GATE],
+        metro: [Metro::EMPTY; N_METRO],
+    };
 }
 
 static mut STATE: State = State::EMPTY;
@@ -235,7 +243,11 @@ unsafe extern "C" fn output_alloc(raw: *mut WrenVM) {
 
 pub(crate) fn output_volts_get_impl<S: SlotApi>(vm: &S) {
     let ch = unsafe { vm.foreign_mut::<OutputObj>(0) }.ch as usize;
-    let v = if ch < N_CV { state().cv[ch].current } else { 0.0 };
+    let v = if ch < N_CV {
+        state().cv[ch].current
+    } else {
+        0.0
+    };
     vm.set_f(0, v as f64);
 }
 #[cfg(feature = "wren-sys-backend")]
@@ -250,7 +262,11 @@ pub(crate) fn output_volts_set_impl<S: SlotApi>(vm: &S) {
     if ch < N_CV {
         let c = &mut state().cv[ch];
         c.target = v;
-        c.rate = if c.slew_s <= 0.0 { 0.0 } else { (v - c.current) / c.slew_s };
+        c.rate = if c.slew_s <= 0.0 {
+            0.0
+        } else {
+            (v - c.current) / c.slew_s
+        };
         if c.slew_s <= 0.0 {
             c.current = v;
         }
@@ -431,7 +447,11 @@ fn status_for(kind: u8, ch_arg: f64) -> u8 {
 }
 
 pub(crate) fn midi_note_on_impl<S: SlotApi>(vm: &S) {
-    tx(status_for(0x90, vm.get_f(1)), vm.get_f(2) as u8, vm.get_f(3) as u8);
+    tx(
+        status_for(0x90, vm.get_f(1)),
+        vm.get_f(2) as u8,
+        vm.get_f(3) as u8,
+    );
 }
 #[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_note_on(raw: *mut WrenVM) {
@@ -440,7 +460,11 @@ unsafe extern "C" fn midi_note_on(raw: *mut WrenVM) {
 }
 
 pub(crate) fn midi_note_off_impl<S: SlotApi>(vm: &S) {
-    tx(status_for(0x80, vm.get_f(1)), vm.get_f(2) as u8, vm.get_f(3) as u8);
+    tx(
+        status_for(0x80, vm.get_f(1)),
+        vm.get_f(2) as u8,
+        vm.get_f(3) as u8,
+    );
 }
 #[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_note_off(raw: *mut WrenVM) {
@@ -449,7 +473,11 @@ unsafe extern "C" fn midi_note_off(raw: *mut WrenVM) {
 }
 
 pub(crate) fn midi_cc_impl<S: SlotApi>(vm: &S) {
-    tx(status_for(0xB0, vm.get_f(1)), vm.get_f(2) as u8, vm.get_f(3) as u8);
+    tx(
+        status_for(0xB0, vm.get_f(1)),
+        vm.get_f(2) as u8,
+        vm.get_f(3) as u8,
+    );
 }
 #[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn midi_cc(raw: *mut WrenVM) {
@@ -630,11 +658,19 @@ pub fn input_dispatch(vm: Vm, kind: u8, a: u8, b: u8) {
 pub fn input_dispatch_impl<S: SlotApi>(vm: &S, kind: u8, a: u8, b: u8) {
     match kind {
         0 | 1 => {
-            let cb = if kind == 0 { ui().on_pad_press } else { ui().on_pad_release };
+            let cb = if kind == 0 {
+                ui().on_pad_press
+            } else {
+                ui().on_pad_release
+            };
             ui_call2(vm, cb, a as f64, b as f64);
         }
         2 | 3 => {
-            let cb = if kind == 2 { ui().on_button_press } else { ui().on_button_release };
+            let cb = if kind == 2 {
+                ui().on_button_press
+            } else {
+                ui().on_button_release
+            };
             ui_call1(vm, cb, a as f64);
         }
         _ => {}
@@ -792,8 +828,20 @@ pub fn register_foreign<S: SlotApi>(
 
     // Output (CV).
     method("main", "Output", false, "volts", output_volts_get_impl::<S>);
-    method("main", "Output", false, "volts=(_)", output_volts_set_impl::<S>);
-    method("main", "Output", false, "slew=(_)", output_slew_set_impl::<S>);
+    method(
+        "main",
+        "Output",
+        false,
+        "volts=(_)",
+        output_volts_set_impl::<S>,
+    );
+    method(
+        "main",
+        "Output",
+        false,
+        "slew=(_)",
+        output_slew_set_impl::<S>,
+    );
     // Gate.
     method("main", "Gate", false, "on=(_)", gate_on_set_impl::<S>);
     // Metro.
@@ -801,18 +849,60 @@ pub fn register_foreign<S: SlotApi>(
     method("main", "Metro", false, "stop()", metro_stop_impl::<S>);
     method("main", "Metro", false, "time=(_)", metro_time_set_impl::<S>);
     // Midi (static).
-    method("main", "Midi", true, "noteOn(_,_,_)", midi_note_on_impl::<S>);
-    method("main", "Midi", true, "noteOff(_,_,_)", midi_note_off_impl::<S>);
+    method(
+        "main",
+        "Midi",
+        true,
+        "noteOn(_,_,_)",
+        midi_note_on_impl::<S>,
+    );
+    method(
+        "main",
+        "Midi",
+        true,
+        "noteOff(_,_,_)",
+        midi_note_off_impl::<S>,
+    );
     method("main", "Midi", true, "cc(_,_,_)", midi_cc_impl::<S>);
     method("main", "Midi", true, "send(_,_,_)", midi_send_impl::<S>);
-    method("main", "Midi", true, "onNoteOn=(_)", midi_set_on_note_on_impl::<S>);
-    method("main", "Midi", true, "onNoteOff=(_)", midi_set_on_note_off_impl::<S>);
+    method(
+        "main",
+        "Midi",
+        true,
+        "onNoteOn=(_)",
+        midi_set_on_note_on_impl::<S>,
+    );
+    method(
+        "main",
+        "Midi",
+        true,
+        "onNoteOff=(_)",
+        midi_set_on_note_off_impl::<S>,
+    );
     method("main", "Midi", true, "onCC=(_)", midi_set_on_cc_impl::<S>);
     // Pads / Buttons / Enc (static input callbacks).
     method("main", "Pads", true, "onPress=(_)", pads_on_press_impl::<S>);
-    method("main", "Pads", true, "onRelease=(_)", pads_on_release_impl::<S>);
-    method("main", "Buttons", true, "onPress=(_)", buttons_on_press_impl::<S>);
-    method("main", "Buttons", true, "onRelease=(_)", buttons_on_release_impl::<S>);
+    method(
+        "main",
+        "Pads",
+        true,
+        "onRelease=(_)",
+        pads_on_release_impl::<S>,
+    );
+    method(
+        "main",
+        "Buttons",
+        true,
+        "onPress=(_)",
+        buttons_on_press_impl::<S>,
+    );
+    method(
+        "main",
+        "Buttons",
+        true,
+        "onRelease=(_)",
+        buttons_on_release_impl::<S>,
+    );
     method("main", "Enc", true, "onTurn=(_)", enc_on_turn_impl::<S>);
     // Led / Oled (static output).
     method("main", "Led", true, "on(_)", led_on_impl::<S>);
@@ -829,9 +919,24 @@ pub fn register_foreign<S: SlotApi>(
 
 #[cfg(feature = "wren-sys-backend")]
 pub static CLASSES: &[ClassEntry] = &[
-    ClassEntry { module: "main", class: "Output", allocate: output_alloc, finalize: None },
-    ClassEntry { module: "main", class: "Gate", allocate: gate_alloc, finalize: None },
-    ClassEntry { module: "main", class: "Metro", allocate: metro_alloc, finalize: None },
+    ClassEntry {
+        module: "main",
+        class: "Output",
+        allocate: output_alloc,
+        finalize: None,
+    },
+    ClassEntry {
+        module: "main",
+        class: "Gate",
+        allocate: gate_alloc,
+        finalize: None,
+    },
+    ClassEntry {
+        module: "main",
+        class: "Metro",
+        allocate: metro_alloc,
+        finalize: None,
+    },
 ];
 
 #[cfg(feature = "wren-sys-backend")]
@@ -886,13 +991,25 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "tb303_(_,_,_)", bindings_audio::node_tb303),
     static_method("Node", "patch_(_)", bindings_audio::node_patch),
     static_method("Node", "reset_()", bindings_audio::node_reset),
-    static_method("Node", "masterLimit_(_,_)", bindings_audio::node_master_limit),
-    static_method("Node", "masterDcBlock_(_)", bindings_audio::node_master_dcblock),
+    static_method(
+        "Node",
+        "masterLimit_(_,_)",
+        bindings_audio::node_master_limit,
+    ),
+    static_method(
+        "Node",
+        "masterDcBlock_(_)",
+        bindings_audio::node_master_dcblock,
+    ),
     static_method("Node", "masterEq_(_,_,_,_)", bindings_audio::node_master_eq),
     static_method("Node", "split_(_)", bindings_audio::node_split),
     static_method("Node", "pan_(_,_)", bindings_audio::node_pan),
     static_method("Node", "wavetable_(_,_)", bindings_audio::node_wavetable),
-    static_method("Node", "wavetable_pooled_(_,_)", bindings_audio::node_wavetable_pooled),
+    static_method(
+        "Node",
+        "wavetable_pooled_(_,_)",
+        bindings_audio::node_wavetable_pooled,
+    ),
     static_method("Node", "player_(_)", bindings_audio::node_player),
     method("Node", "speed=(_)", bindings_audio::node_set_speed),
     method("Node", "semitones=(_)", bindings_audio::node_set_semitones),
@@ -911,25 +1028,49 @@ pub static METHODS: &[MethodEntry] = &[
     method("Node", "tone=(_)", bindings_audio::node_set_tone),
     method("Node", "wet=(_)", bindings_audio::node_set_wet),
     static_method("Node", "comp_(_,_,_,_,_,_,_,_)", bindings_audio::node_comp),
-    method("Node", "compThreshold=(_)", bindings_audio::comp_set_threshold),
+    method(
+        "Node",
+        "compThreshold=(_)",
+        bindings_audio::comp_set_threshold,
+    ),
     method("Node", "compRatio=(_)", bindings_audio::comp_set_ratio),
     method("Node", "compAttack=(_)", bindings_audio::comp_set_attack),
     method("Node", "compRelease=(_)", bindings_audio::comp_set_release),
     method("Node", "compKnee=(_)", bindings_audio::comp_set_knee),
     method("Node", "compMakeup=(_)", bindings_audio::comp_set_makeup),
-    method("Node", "compDetector=(_)", bindings_audio::comp_set_detector),
-    static_method("Node", "gate_(_,_,_,_,_,_,_,_)", bindings_audio::node_gate_kind),
-    method("Node", "gateThreshold=(_)", bindings_audio::gate_set_threshold),
+    method(
+        "Node",
+        "compDetector=(_)",
+        bindings_audio::comp_set_detector,
+    ),
+    static_method(
+        "Node",
+        "gate_(_,_,_,_,_,_,_,_)",
+        bindings_audio::node_gate_kind,
+    ),
+    method(
+        "Node",
+        "gateThreshold=(_)",
+        bindings_audio::gate_set_threshold,
+    ),
     method("Node", "gateRatio=(_)", bindings_audio::gate_set_ratio),
     method("Node", "gateAttack=(_)", bindings_audio::gate_set_attack),
     method("Node", "gateRelease=(_)", bindings_audio::gate_set_release),
     method("Node", "gateHold=(_)", bindings_audio::gate_set_hold),
     method("Node", "gateRange=(_)", bindings_audio::gate_set_range),
-    method("Node", "gateDetector=(_)", bindings_audio::gate_set_detector),
+    method(
+        "Node",
+        "gateDetector=(_)",
+        bindings_audio::gate_set_detector,
+    ),
     static_method("Node", "bitcrush_(_,_)", bindings_audio::node_bitcrush),
     static_method("Node", "decimate_(_,_)", bindings_audio::node_decimate),
     method("Node", "bits=(_)", bindings_audio::node_set_bits),
-    method("Node", "decimateRate=(_)", bindings_audio::node_set_decimate_rate),
+    method(
+        "Node",
+        "decimateRate=(_)",
+        bindings_audio::node_set_decimate_rate,
+    ),
     static_method("Node", "eq_(_,_,_,_,_)", bindings_audio::node_eq),
     method("Node", "hz=(_)", bindings_audio::node_set_hz),
     method("Node", "gain=(_)", bindings_audio::node_set_gain),
@@ -945,9 +1086,17 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "qpitch_(_,_,_)", bindings_audio::node_qpitch),
     static_method("Node", "mtof_(_,_)", bindings_audio::node_mtof),
     static_method("Node", "polyMode_", bindings_audio::node_poly_mode),
-    static_method("Node", "polyGateCount_", bindings_audio::node_poly_gate_count),
+    static_method(
+        "Node",
+        "polyGateCount_",
+        bindings_audio::node_poly_gate_count,
+    ),
     static_method("Node", "polyBegin_()", bindings_audio::node_poly_begin),
-    static_method("Node", "polyVelBegin_()", bindings_audio::node_poly_vel_begin),
+    static_method(
+        "Node",
+        "polyVelBegin_()",
+        bindings_audio::node_poly_vel_begin,
+    ),
     static_method("Node", "polyosc_(_,_)", bindings_audio::node_polyosc),
     static_method("Node", "polysvf_(_,_,_)", bindings_audio::node_polysvf),
     static_method("Node", "polymoog_(_,_,_,_)", bindings_audio::node_polymoog),
@@ -962,12 +1111,24 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "polybrown_()", bindings_audio::node_polybrown),
     static_method("Node", "polysync_(_,_,_)", bindings_audio::node_polysync),
     static_method("Node", "polywt_(_,_)", bindings_audio::node_polywt),
-    static_method("Node", "polywt_pooled_(_,_)", bindings_audio::node_polywt_pooled),
-    static_method("Node", "polysampleplayer_(_,_)", bindings_audio::node_polysampleplayer),
+    static_method(
+        "Node",
+        "polywt_pooled_(_,_)",
+        bindings_audio::node_polywt_pooled,
+    ),
+    static_method(
+        "Node",
+        "polysampleplayer_(_,_)",
+        bindings_audio::node_polysampleplayer,
+    ),
     static_method("Node", "granular_(_,_)", bindings_audio::node_granular),
     static_method("Node", "stream_(_,_)", bindings_audio::node_stream),
     method("Node", "root=(_)", bindings_audio::node_set_root),
-    method("Node", "grainPosition=(_)", bindings_audio::node_set_grain_position),
+    method(
+        "Node",
+        "grainPosition=(_)",
+        bindings_audio::node_set_grain_position,
+    ),
     method("Node", "density=(_)", bindings_audio::node_set_density),
     method("Node", "spray=(_)", bindings_audio::node_set_spray),
     static_method("Node", "polyEnd_(_)", bindings_audio::node_poly_end),
@@ -1000,7 +1161,11 @@ pub static METHODS: &[MethodEntry] = &[
     method("Node", "position=(_)", bindings_audio::node_set_position),
     method("Node", "feedback=(_)", bindings_audio::node_set_feedback),
     method("Node", "structure=(_)", bindings_audio::node_set_structure),
-    method("Node", "brightness=(_)", bindings_audio::node_set_brightness),
+    method(
+        "Node",
+        "brightness=(_)",
+        bindings_audio::node_set_brightness,
+    ),
     method("Node", "strike=(_)", bindings_audio::node_set_strike),
     method("Node", "gate(_)", bindings_audio::node_gate),
     method("Node", "trigger()", bindings_audio::node_trigger),
@@ -1023,7 +1188,13 @@ const fn method(
     signature: &'static str,
     func: unsafe extern "C" fn(*mut WrenVM),
 ) -> MethodEntry {
-    MethodEntry { module: "main", class, is_static: false, signature, func }
+    MethodEntry {
+        module: "main",
+        class,
+        is_static: false,
+        signature,
+        func,
+    }
 }
 
 /// Terse static-`MethodEntry` constructor for the `main` module.
@@ -1033,7 +1204,13 @@ const fn static_method(
     signature: &'static str,
     func: unsafe extern "C" fn(*mut WrenVM),
 ) -> MethodEntry {
-    MethodEntry { module: "main", class, is_static: true, signature, func }
+    MethodEntry {
+        module: "main",
+        class,
+        is_static: true,
+        signature,
+        func,
+    }
 }
 
 // ── Wren prelude (compiled at boot, before user scripts) ─────────────────────

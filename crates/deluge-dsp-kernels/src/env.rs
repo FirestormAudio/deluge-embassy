@@ -49,7 +49,11 @@ impl Ar {
                 self.level += dt / atk;
                 if self.level >= 1.0 {
                     self.level = 1.0;
-                    self.stage = if self.oneshot { Stage::Release } else { Stage::Sustain };
+                    self.stage = if self.oneshot {
+                        Stage::Release
+                    } else {
+                        Stage::Sustain
+                    };
                 }
             }
             Stage::Sustain => self.level = 1.0,
@@ -91,7 +95,11 @@ pub struct Adsr {
 
 impl Adsr {
     pub fn new() -> Adsr {
-        Adsr { level: 0.0, stage: Stage::Idle, sustain: 1.0 }
+        Adsr {
+            level: 0.0,
+            stage: Stage::Idle,
+            sustain: 1.0,
+        }
     }
 
     /// Gate on → attack (then decay → sustain); gate off → release.
@@ -231,19 +239,30 @@ mod adsr_tests {
         e.gate(true);
         // Attack 10ms → reaches ~1.0
         let mut peak = 0.0f32;
-        for _ in 0..(0.02 / dt as f64) as usize { peak = peak.max(e.tick(0.01, 0.05, 0.1, dt)); }
+        for _ in 0..(0.02 / dt as f64) as usize {
+            peak = peak.max(e.tick(0.01, 0.05, 0.1, dt));
+        }
         assert!(peak > 0.99, "attack should reach ~1.0, got {peak}");
         // Decay 50ms → settles to sustain 0.5
         let mut lvl = peak;
-        for _ in 0..(0.1 / dt as f64) as usize { lvl = e.tick(0.01, 0.05, 0.1, dt); }
-        assert!((lvl - 0.5).abs() < 1e-3, "should hold sustain 0.5, got {lvl}");
+        for _ in 0..(0.1 / dt as f64) as usize {
+            lvl = e.tick(0.01, 0.05, 0.1, dt);
+        }
+        assert!(
+            (lvl - 0.5).abs() < 1e-3,
+            "should hold sustain 0.5, got {lvl}"
+        );
         // Sustain holds
-        for _ in 0..100 { lvl = e.tick(0.01, 0.05, 0.1, dt); }
+        for _ in 0..100 {
+            lvl = e.tick(0.01, 0.05, 0.1, dt);
+        }
         assert!((lvl - 0.5).abs() < 1e-3, "sustain must hold, got {lvl}");
         // Release from sustain → 0
         e.gate(false);
         let mut last = lvl;
-        for _ in 0..(0.2 / dt as f64) as usize { last = e.tick(0.01, 0.05, 0.1, dt); }
+        for _ in 0..(0.2 / dt as f64) as usize {
+            last = e.tick(0.01, 0.05, 0.1, dt);
+        }
         assert!(last < 1e-3, "release should reach 0, got {last}");
     }
 
@@ -254,12 +273,17 @@ mod adsr_tests {
         e.set_sustain(0.2);
         e.gate(true);
         // Attack quickly to ~1.0
-        for _ in 0..(0.005 / dt as f64) as usize { e.tick(0.001, 1.0, 0.1, dt); }
+        for _ in 0..(0.005 / dt as f64) as usize {
+            e.tick(0.001, 1.0, 0.1, dt);
+        }
         // Mid-decay (long decay so we're still above sustain), then release
         let mid = e.tick(0.001, 1.0, 0.1, dt);
         e.gate(false);
         let after = e.tick(0.001, 1.0, 0.1, dt);
-        assert!(after < mid, "release must fall from the current level, {after} !< {mid}");
+        assert!(
+            after < mid,
+            "release must fall from the current level, {after} !< {mid}"
+        );
     }
 
     #[test]
@@ -269,7 +293,9 @@ mod adsr_tests {
         e.set_sustain(0.7);
         e.gate(true);
         for i in 0..8192 {
-            if i == 4000 { e.gate(false); }
+            if i == 4000 {
+                e.gate(false);
+            }
             let v = e.tick(0.01, 0.03, 0.05, dt);
             assert!((0.0..=1.0).contains(&v), "env out of [0,1]: {v}");
         }

@@ -64,13 +64,27 @@ impl Comp {
         }
     }
 
-    pub fn set_threshold(&mut self, db: f32) { self.threshold_db = db; }
-    pub fn set_ratio(&mut self, r: f32) { self.ratio = r.max(1.0); }
-    pub fn set_attack(&mut self, s: f32) { self.attack_s = s.max(0.0); }
-    pub fn set_release(&mut self, s: f32) { self.release_s = s.max(0.0); }
-    pub fn set_knee(&mut self, db: f32) { self.knee_db = db.max(0.0); }
-    pub fn set_makeup(&mut self, db: f32) { self.makeup_db = db; }
-    pub fn set_detector(&mut self, d: Detector) { self.detector = d; }
+    pub fn set_threshold(&mut self, db: f32) {
+        self.threshold_db = db;
+    }
+    pub fn set_ratio(&mut self, r: f32) {
+        self.ratio = r.max(1.0);
+    }
+    pub fn set_attack(&mut self, s: f32) {
+        self.attack_s = s.max(0.0);
+    }
+    pub fn set_release(&mut self, s: f32) {
+        self.release_s = s.max(0.0);
+    }
+    pub fn set_knee(&mut self, db: f32) {
+        self.knee_db = db.max(0.0);
+    }
+    pub fn set_makeup(&mut self, db: f32) {
+        self.makeup_db = db;
+    }
+    pub fn set_detector(&mut self, d: Detector) {
+        self.detector = d;
+    }
 
     /// Static gain-reduction curve (dB, >= 0) for a given over-threshold amount.
     #[inline]
@@ -153,13 +167,27 @@ impl Gate {
         }
     }
 
-    pub fn set_threshold(&mut self, db: f32) { self.threshold_db = db; }
-    pub fn set_ratio(&mut self, r: f32) { self.ratio = r.max(1.0); }
-    pub fn set_attack(&mut self, s: f32) { self.attack_s = s.max(0.0); }
-    pub fn set_release(&mut self, s: f32) { self.release_s = s.max(0.0); }
-    pub fn set_hold(&mut self, s: f32) { self.hold_s = s.max(0.0); }
-    pub fn set_range(&mut self, db: f32) { self.range_db = db.max(0.0); }
-    pub fn set_detector(&mut self, d: Detector) { self.detector = d; }
+    pub fn set_threshold(&mut self, db: f32) {
+        self.threshold_db = db;
+    }
+    pub fn set_ratio(&mut self, r: f32) {
+        self.ratio = r.max(1.0);
+    }
+    pub fn set_attack(&mut self, s: f32) {
+        self.attack_s = s.max(0.0);
+    }
+    pub fn set_release(&mut self, s: f32) {
+        self.release_s = s.max(0.0);
+    }
+    pub fn set_hold(&mut self, s: f32) {
+        self.hold_s = s.max(0.0);
+    }
+    pub fn set_range(&mut self, db: f32) {
+        self.range_db = db.max(0.0);
+    }
+    pub fn set_detector(&mut self, d: Detector) {
+        self.detector = d;
+    }
 
     pub fn process(&mut self, input: In, dt: f32, out: &mut [f32]) {
         let atk_c = one_pole_coeff(self.attack_s, dt);
@@ -200,8 +228,12 @@ mod tests {
     extern crate std;
 
     // dB helpers for tests.
-    fn db(x: f32) -> f32 { 20.0 * libm::log10f(x.abs().max(1e-9)) }
-    fn lin(db: f32) -> f32 { libm::powf(10.0, db / 20.0) }
+    fn db(x: f32) -> f32 {
+        20.0 * libm::log10f(x.abs().max(1e-9))
+    }
+    fn lin(db: f32) -> f32 {
+        libm::powf(10.0, db / 20.0)
+    }
 
     // `In::A(&slice)` is the array input accessor (see drive.rs node/kernel
     // tests: `In::A(&input)`). A constant input is a slice of the constant.
@@ -223,7 +255,11 @@ mod tests {
         // threshold -20 dB, ratio 4, no makeup, no knee; input -40 dB (below).
         let mut c = Comp::new(-20.0, 4.0, 0.001, 0.05, 0.0, 0.0, Detector::Peak);
         let g = run_const(&mut c, lin(-40.0), 4096, DT);
-        assert!((db(g)).abs() < 0.2, "below threshold ≈ unity gain, got {} dB", db(g));
+        assert!(
+            (db(g)).abs() < 0.2,
+            "below threshold ≈ unity gain, got {} dB",
+            db(g)
+        );
     }
 
     #[test]
@@ -232,7 +268,11 @@ mod tests {
         let mut c = Comp::new(-20.0, 4.0, 0.001, 0.05, 0.0, 0.0, Detector::Peak);
         let g = run_const(&mut c, lin(-8.0), 8192, DT);
         // applied gain in dB should be ≈ -9 dB (attenuation).
-        assert!((db(g) - (-9.0)).abs() < 0.5, "static curve GR ≈ 9 dB, got {} dB", -db(g));
+        assert!(
+            (db(g) - (-9.0)).abs() < 0.5,
+            "static curve GR ≈ 9 dB, got {} dB",
+            -db(g)
+        );
     }
 
     #[test]
@@ -241,7 +281,11 @@ mod tests {
         let mut c = Comp::new(-10.0, 20.0, 0.001, 0.05, 0.0, 0.0, Detector::Peak);
         let g = run_const(&mut c, lin(0.0), 8192, DT);
         let out_db = db(lin(0.0) * g); // input 0 dB + gain
-        assert!(out_db < -8.5 && out_db > -11.5, "limiter clamps near -10 dB, got {}", out_db);
+        assert!(
+            out_db < -8.5 && out_db > -11.5,
+            "limiter clamps near -10 dB, got {}",
+            out_db
+        );
     }
 
     #[test]
@@ -251,8 +295,16 @@ mod tests {
         let gh = run_const(&mut hard, lin(-20.0), 8192, DT);
         let mut soft = Comp::new(-20.0, 4.0, 0.001, 0.05, 12.0, 0.0, Detector::Peak);
         let gs = run_const(&mut soft, lin(-20.0), 8192, DT);
-        assert!(db(gh).abs() < 0.3, "hard knee at threshold ≈ 0 GR, got {} dB", -db(gh));
-        assert!(-db(gs) > 0.3, "soft knee at threshold has partial GR, got {} dB", -db(gs));
+        assert!(
+            db(gh).abs() < 0.3,
+            "hard knee at threshold ≈ 0 GR, got {} dB",
+            -db(gh)
+        );
+        assert!(
+            -db(gs) > 0.3,
+            "soft knee at threshold has partial GR, got {} dB",
+            -db(gs)
+        );
     }
 
     #[test]
@@ -260,10 +312,16 @@ mod tests {
         // After a step up in input, GR increases (gain drops); after step down, recovers.
         let mut c = Comp::new(-20.0, 8.0, 0.01, 0.05, 0.0, 0.0, Detector::Peak);
         let quiet = run_const(&mut c, lin(-40.0), 2048, DT); // settle quiet → ~unity
-        let loud = run_const(&mut c, lin(0.0), 4096, DT);    // settle loud → strong GR
+        let loud = run_const(&mut c, lin(0.0), 4096, DT); // settle loud → strong GR
         let recovered = run_const(&mut c, lin(-40.0), 8192, DT); // release back
-        assert!(db(loud) < db(quiet) - 1.0, "loud input reduces gain vs quiet");
-        assert!(db(recovered) > db(loud) + 1.0, "release recovers gain after loud");
+        assert!(
+            db(loud) < db(quiet) - 1.0,
+            "loud input reduces gain vs quiet"
+        );
+        assert!(
+            db(recovered) > db(loud) + 1.0,
+            "release recovers gain after loud"
+        );
     }
 
     // Mirror `run_const` for Gate (settle a constant input, return applied gain).
@@ -285,7 +343,11 @@ mod tests {
         // thr -20, input -6 dB (above) → open, ~unity.
         let mut g = Gate::new(-20.0, 2.0, 0.001, 0.05, 0.0, 40.0, Detector::Peak);
         let gain = run_const_gate(&mut g, lin(-6.0), 4096, DT_G);
-        assert!(db(gain).abs() < 0.2, "above threshold ≈ unity, got {} dB", db(gain));
+        assert!(
+            db(gain).abs() < 0.2,
+            "above threshold ≈ unity, got {} dB",
+            db(gain)
+        );
     }
 
     #[test]
@@ -294,7 +356,11 @@ mod tests {
         // GR = min((thr-level)(ratio-1), range) = min(10*1, 40) = 10 dB.
         let mut g = Gate::new(-40.0, 2.0, 0.001, 0.05, 0.0, 40.0, Detector::Peak);
         let gain = run_const_gate(&mut g, lin(-50.0), 8192, DT_G);
-        assert!((db(gain) - (-10.0)).abs() < 0.5, "expansion GR ≈ 10 dB, got {} dB", -db(gain));
+        assert!(
+            (db(gain) - (-10.0)).abs() < 0.5,
+            "expansion GR ≈ 10 dB, got {} dB",
+            -db(gain)
+        );
     }
 
     #[test]
@@ -302,7 +368,11 @@ mod tests {
         // thr -40, ratio 4:1, input -70 dB → raw GR = 30*3 = 90 dB, capped at range 20.
         let mut g = Gate::new(-40.0, 4.0, 0.001, 0.05, 0.0, 20.0, Detector::Peak);
         let gain = run_const_gate(&mut g, lin(-70.0), 32768, DT_G);
-        assert!((db(gain) - (-20.0)).abs() < 0.6, "GR capped at range 20 dB, got {} dB", -db(gain));
+        assert!(
+            (db(gain) - (-20.0)).abs() < 0.6,
+            "GR capped at range 20 dB, got {} dB",
+            -db(gain)
+        );
     }
 
     #[test]
@@ -320,9 +390,17 @@ mod tests {
         let hold_samples = (0.002 / DT_G) as usize; // ≈ 96
         let gain_at = |k: usize| out[k] / quiet;
         // early (well within hold) → still open (~unity)
-        assert!(gain_at(hold_samples / 4).abs() > 0.9, "gain held open early, got {}", gain_at(hold_samples / 4));
+        assert!(
+            gain_at(hold_samples / 4).abs() > 0.9,
+            "gain held open early, got {}",
+            gain_at(hold_samples / 4)
+        );
         // late (well past hold) → closing/closed (attenuated)
-        assert!(gain_at(500).abs() < 0.5, "gate closed after hold, got {}", gain_at(500));
+        assert!(
+            gain_at(500).abs() < 0.5,
+            "gate closed after hold, got {}",
+            gain_at(500)
+        );
     }
 
     #[test]
@@ -330,8 +408,11 @@ mod tests {
         // Open (attack) on loud, close (release) on quiet-past-hold.
         let mut g = Gate::new(-20.0, 8.0, 0.0005, 0.02, 0.0, 60.0, Detector::Peak);
         let closed = run_const_gate(&mut g, lin(-60.0), 4096, DT_G); // settle closed → strong GR
-        let opened = run_const_gate(&mut g, lin(0.0), 4096, DT_G);   // loud → opens → ~unity
-        assert!(db(opened) > db(closed) + 1.0, "loud input opens the gate vs quiet");
+        let opened = run_const_gate(&mut g, lin(0.0), 4096, DT_G); // loud → opens → ~unity
+        assert!(
+            db(opened) > db(closed) + 1.0,
+            "loud input opens the gate vs quiet"
+        );
         assert!(db(opened).abs() < 0.5, "opened ≈ unity");
     }
 }

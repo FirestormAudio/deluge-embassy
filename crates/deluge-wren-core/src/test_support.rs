@@ -65,7 +65,11 @@ struct TestHost {
 }
 impl TestHost {
     const fn new() -> Self {
-        TestHost { now_ms: 0, cv: [0.0; CV_CHANNELS], gate: [false; GATE_CHANNELS] }
+        TestHost {
+            now_ms: 0,
+            cv: [0.0; CV_CHANNELS],
+            gate: [false; GATE_CHANNELS],
+        }
     }
 }
 impl Host for TestHost {
@@ -266,7 +270,11 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
         let n = src.len().min(buf.len() - 1);
         buf[..n].copy_from_slice(&src.as_bytes()[..n]);
         buf[n] = 0;
-        let r = wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char);
+        let r = wren_sys::interpret(
+            vm,
+            c"main".as_ptr(),
+            buf.as_ptr() as *const core::ffi::c_char,
+        );
         assert_eq!(
             r,
             wren_sys::WREN_RESULT_SUCCESS,
@@ -299,7 +307,11 @@ pub struct StreamCaptureHost {
 }
 impl StreamCaptureHost {
     pub fn new() -> Self {
-        StreamCaptureHost { cmds: Vec::new(), pool: deluge_audio_graph::Pool::new(), last_stream_register: None }
+        StreamCaptureHost {
+            cmds: Vec::new(),
+            pool: deluge_audio_graph::Pool::new(),
+            last_stream_register: None,
+        }
     }
 }
 impl Host for StreamCaptureHost {
@@ -320,7 +332,12 @@ impl Host for StreamCaptureHost {
     fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
         self.pool.alloc(len)
     }
-    fn stream_register(&mut self, node: deluge_audio_graph::NodeId, _handle: deluge_audio_graph::PoolHandle, path: &str) {
+    fn stream_register(
+        &mut self,
+        node: deluge_audio_graph::NodeId,
+        _handle: deluge_audio_graph::PoolHandle,
+        path: &str,
+    ) {
         self.last_stream_register = Some((node, path.into()));
     }
 }
@@ -332,7 +349,12 @@ static mut STREAM_CAP_HOST: Option<StreamCaptureHost> = None;
 /// twin for scripts that touch `Sample.stream` (needs a bound `alloc_buffer`,
 /// which the plain [`CmdCaptureHost`] never provides — see
 /// [`StreamCaptureHost`]'s docs).
-pub fn run_and_capture_cmds_stream(src: &str) -> (Vec<crate::Cmd>, Option<(deluge_audio_graph::NodeId, std::string::String)>) {
+pub fn run_and_capture_cmds_stream(
+    src: &str,
+) -> (
+    Vec<crate::Cmd>,
+    Option<(deluge_audio_graph::NodeId, std::string::String)>,
+) {
     // Serialize: shares `crate::set_host`/VM-boot/`reset` process-globals with
     // `run_and_capture_cmds` et al. — see `CAP_LOCK`'s docs.
     let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -340,7 +362,11 @@ pub fn run_and_capture_cmds_stream(src: &str) -> (Vec<crate::Cmd>, Option<(delug
     // freed before return.
     unsafe {
         *core::ptr::addr_of_mut!(STREAM_CAP_HOST) = Some(StreamCaptureHost::new());
-        crate::set_host((*core::ptr::addr_of_mut!(STREAM_CAP_HOST)).as_mut().unwrap());
+        crate::set_host(
+            (*core::ptr::addr_of_mut!(STREAM_CAP_HOST))
+                .as_mut()
+                .unwrap(),
+        );
         let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
         assert!(!vm.is_null(), "VM boot failed");
         let r = wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr());
@@ -349,14 +375,20 @@ pub fn run_and_capture_cmds_stream(src: &str) -> (Vec<crate::Cmd>, Option<(delug
         let n = src.len().min(buf.len() - 1);
         buf[..n].copy_from_slice(&src.as_bytes()[..n]);
         buf[n] = 0;
-        let r = wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char);
+        let r = wren_sys::interpret(
+            vm,
+            c"main".as_ptr(),
+            buf.as_ptr() as *const core::ffi::c_char,
+        );
         assert_eq!(
             r,
             wren_sys::WREN_RESULT_SUCCESS,
             "script failed (line {})",
             LAST_ERR_LINE.load(Ordering::Relaxed)
         );
-        let host = (*core::ptr::addr_of_mut!(STREAM_CAP_HOST)).as_ref().unwrap();
+        let host = (*core::ptr::addr_of_mut!(STREAM_CAP_HOST))
+            .as_ref()
+            .unwrap();
         let out = (host.cmds.clone(), host.last_stream_register.clone());
         wren_sys::wrenFreeVM(vm);
         crate::reset();
@@ -390,7 +422,11 @@ pub fn run_midi_capture_cmds(setup: &str, status: u8, d1: u8, d2: u8) -> Vec<cra
         buf[..n].copy_from_slice(&setup.as_bytes()[..n]);
         buf[n] = 0;
         assert_eq!(
-            wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char),
+            wren_sys::interpret(
+                vm,
+                c"main".as_ptr(),
+                buf.as_ptr() as *const core::ffi::c_char
+            ),
             wren_sys::WREN_RESULT_SUCCESS,
             "setup failed"
         );
@@ -421,7 +457,11 @@ pub fn run_script_ok(src: &str) -> bool {
         let n = src.len().min(buf.len() - 1);
         buf[..n].copy_from_slice(&src.as_bytes()[..n]);
         buf[n] = 0;
-        let r = wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char);
+        let r = wren_sys::interpret(
+            vm,
+            c"main".as_ptr(),
+            buf.as_ptr() as *const core::ffi::c_char,
+        );
         wren_sys::wrenFreeVM(vm);
         crate::reset();
         r == wren_sys::WREN_RESULT_SUCCESS
@@ -445,7 +485,10 @@ pub struct EngineHost {
 impl EngineHost {
     /// Construct a fresh host with its own engine, sampling at `sample_rate`.
     pub fn new(sample_rate: f32) -> Self {
-        EngineHost { eng: TestEng::new(sample_rate), input_block: Vec::new() }
+        EngineHost {
+            eng: TestEng::new(sample_rate),
+            input_block: Vec::new(),
+        }
     }
 
     /// Borrow the underlying engine (e.g. to read back pooled memory a test
@@ -490,7 +533,9 @@ impl Host for EngineHost {
         if nframes == 0 {
             return None;
         }
-        let h = self.eng.pool_alloc(nframes.checked_mul(crate::PYRAMID_LEN)?)?;
+        let h = self
+            .eng
+            .pool_alloc(nframes.checked_mul(crate::PYRAMID_LEN)?)?;
         for f in 0..nframes {
             let mut base = [0.0f32; crate::BASE_LEN];
             fill_frame(f, &mut base);
@@ -556,8 +601,14 @@ pub fn run_and_render_with_input<const N: usize>(
         // whole function) so the borrow checker can infer the `'static`
         // lifetime `crate::set_host` requires without the borrows
         // overlapping — same shape as `run_and_capture_cmds` above.
-        *core::ptr::addr_of_mut!(ENGINE_HOST) = Some(EngineHost { eng: TestEng::new(44_100.0), input_block: Vec::new() });
-        (*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap().set_input(input);
+        *core::ptr::addr_of_mut!(ENGINE_HOST) = Some(EngineHost {
+            eng: TestEng::new(44_100.0),
+            input_block: Vec::new(),
+        });
+        (*core::ptr::addr_of_mut!(ENGINE_HOST))
+            .as_mut()
+            .unwrap()
+            .set_input(input);
         crate::set_host((*core::ptr::addr_of_mut!(ENGINE_HOST)).as_mut().unwrap());
         let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
         assert!(!vm.is_null(), "VM boot failed");
@@ -571,7 +622,11 @@ pub fn run_and_render_with_input<const N: usize>(
         buf[..n].copy_from_slice(&src.as_bytes()[..n]);
         buf[n] = 0;
         assert_eq!(
-            wren_sys::interpret(vm, c"main".as_ptr(), buf.as_ptr() as *const core::ffi::c_char),
+            wren_sys::interpret(
+                vm,
+                c"main".as_ptr(),
+                buf.as_ptr() as *const core::ffi::c_char
+            ),
             wren_sys::WREN_RESULT_SUCCESS,
             "script failed (line {})",
             LAST_ERR_LINE.load(Ordering::Relaxed)

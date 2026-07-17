@@ -193,7 +193,10 @@ impl InstrumentRack {
             push(&mut self.cv_hist[ch], norm);
         }
         for ch in 0..GATE_CHANNELS {
-            push(&mut self.gate_hist[ch], if self.gate[ch] { 0.9 } else { -0.9 });
+            push(
+                &mut self.gate_hist[ch],
+                if self.gate[ch] { 0.9 } else { -0.9 },
+            );
         }
         self.midi_in_level *= MIDI_DECAY;
         self.midi_out_level *= MIDI_DECAY;
@@ -228,7 +231,10 @@ impl canvas::Program<SimulatorMessage> for InstrumentRack {
             frame.fill(&Path::rectangle(Point::ORIGIN, bounds.size()), BG);
             // Seam line along the bottom, where the strip meets the faceplate edge.
             frame.stroke(
-                &Path::line(Point::new(0.0, bounds.height), Point::new(bounds.width, bounds.height)),
+                &Path::line(
+                    Point::new(0.0, bounds.height),
+                    Point::new(bounds.width, bounds.height),
+                ),
                 Stroke::default().with_color(BORDER).with_width(1.0),
             );
 
@@ -251,7 +257,13 @@ impl canvas::Program<SimulatorMessage> for InstrumentRack {
                 let cx = CV_X[ch] * scale;
                 if self.expanded {
                     let area = well_at(cx, well_top, SCOPE_W, well_h);
-                    scope::draw_trace(frame, area, slice(&self.cv_hist[ch]).as_slice(), CV_COLOR, false);
+                    scope::draw_trace(
+                        frame,
+                        area,
+                        slice(&self.cv_hist[ch]).as_slice(),
+                        CV_COLOR,
+                        false,
+                    );
                 } else {
                     draw_cv_meter(frame, well_at(cx, well_top, METER_W, well_h), self.cv[ch]);
                 }
@@ -261,7 +273,13 @@ impl canvas::Program<SimulatorMessage> for InstrumentRack {
                 let cx = GATE_X[ch] * scale;
                 if self.expanded {
                     let area = well_at(cx, well_top, SCOPE_W, well_h);
-                    scope::draw_trace(frame, area, slice(&self.gate_hist[ch]).as_slice(), GATE_COLOR, false);
+                    scope::draw_trace(
+                        frame,
+                        area,
+                        slice(&self.gate_hist[ch]).as_slice(),
+                        GATE_COLOR,
+                        false,
+                    );
                 } else {
                     let r = (well_h * 0.30).min(13.0);
                     draw_gate_dot(frame, Point::new(cx, baseline - r), r, self.gate[ch]);
@@ -285,8 +303,18 @@ impl canvas::Program<SimulatorMessage> for InstrumentRack {
 
             // MIDI IN / OUT activity indicators, over the MIDI ports.
             let dot_r = (well_h * 0.28).min(11.0);
-            draw_midi_dot(frame, Point::new(MIDI_IN_X * scale, baseline - dot_r), dot_r, self.midi_in_level);
-            draw_midi_dot(frame, Point::new(MIDI_OUT_X * scale, baseline - dot_r), dot_r, self.midi_out_level);
+            draw_midi_dot(
+                frame,
+                Point::new(MIDI_IN_X * scale, baseline - dot_r),
+                dot_r,
+                self.midi_in_level,
+            );
+            draw_midi_dot(
+                frame,
+                Point::new(MIDI_OUT_X * scale, baseline - dot_r),
+                dot_r,
+                self.midi_out_level,
+            );
 
             // Collapse handle (triangle points up = collapse), bottom-left.
             draw_handle(frame, bounds, true);

@@ -227,10 +227,10 @@ impl FrameBuffer {
 #[cfg(feature = "embedded-graphics")]
 mod eg {
     use super::{FrameBuffer, HEIGHT, WIDTH};
+    use embedded_graphics_core::Pixel;
     use embedded_graphics_core::draw_target::DrawTarget;
     use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
     use embedded_graphics_core::pixelcolor::BinaryColor;
-    use embedded_graphics_core::Pixel;
 
     impl OriginDimensions for FrameBuffer {
         #[inline]
@@ -831,10 +831,10 @@ mod tests {
     #[cfg(feature = "embedded-graphics")]
     #[test]
     fn draw_target_writes_page_major() {
+        use embedded_graphics_core::Pixel;
         use embedded_graphics_core::draw_target::DrawTarget;
         use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
         use embedded_graphics_core::pixelcolor::BinaryColor;
-        use embedded_graphics_core::Pixel;
 
         let mut fb = FrameBuffer::new();
         assert_eq!(fb.size(), Size::new(WIDTH as u32, HEIGHT as u32));

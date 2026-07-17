@@ -204,7 +204,10 @@ mod tests {
         // Energy at 2 harmonics above the cutoff should be ~silent.
         let above = spec.level_at(cutoff_hz + 2.0 * f0);
         let fund = spec.level_at(f0);
-        assert!(above < 1e-3 * fund, "band-limited: above={above} fund={fund}");
+        assert!(
+            above < 1e-3 * fund,
+            "band-limited: above={above} fund={fund}"
+        );
     }
 
     /// A 3-partial tone with deliberately arbitrary, non-0/π per-harmonic
@@ -262,7 +265,10 @@ mod tests {
         {
             let mut spec = [Complex { re: 0.0, im: 0.0 }; N / 2 + 1];
             RealFft::<N, 4>::process(&base, &mut spec);
-            let mut h2 = Harmonics { amp: h.amp, phase: h.phase };
+            let mut h2 = Harmonics {
+                amp: h.amp,
+                phase: h.phase,
+            };
             for (k, c) in spec.iter().enumerate() {
                 h2.phase[k] = libm::atan2f(-c.im, c.re);
             }
@@ -362,8 +368,8 @@ mod tests {
         for (i, s) in base.iter_mut().enumerate() {
             let t = i as f32 / N as f32;
             *s = libm::sinf(core::f32::consts::TAU * t + 0.7)
-               + 0.5 * libm::sinf(core::f32::consts::TAU * 3.0 * t + 2.3)
-               + 0.25 * libm::sinf(core::f32::consts::TAU * 5.0 * t - 1.1);
+                + 0.5 * libm::sinf(core::f32::consts::TAU * 3.0 * t + 2.3)
+                + 0.25 * libm::sinf(core::f32::consts::TAU * 5.0 * t - 1.1);
         }
         let mut add = [[0.0f32; N]; LEVELS];
         let mut ift = [[0.0f32; N]; LEVELS];
@@ -371,8 +377,12 @@ mod tests {
         build_all_ifft(&base, &mut ift);
         for level in 0..LEVELS {
             for i in 0..N {
-                assert!((add[level][i] - ift[level][i]).abs() < 1e-3,
-                    "level {level} i {i}: additive {} vs ifft {}", add[level][i], ift[level][i]);
+                assert!(
+                    (add[level][i] - ift[level][i]).abs() < 1e-3,
+                    "level {level} i {i}: additive {} vs ifft {}",
+                    add[level][i],
+                    ift[level][i]
+                );
             }
         }
     }
@@ -380,23 +390,32 @@ mod tests {
     #[test]
     fn ifft_level_is_band_limited() {
         let mut base = [0.0f32; N];
-        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / N as f32) - 1.0;
+        }
         let mut ift = [[0.0f32; N]; LEVELS];
         build_all_ifft(&base, &mut ift);
         let sr = 48_000.0f32;
         let f0 = sr / N as f32;
         let mut buf = [0.0f32; deluge_dsp_test::FFT_N];
-        for (i, s) in buf.iter_mut().enumerate() { *s = ift[3][i % N]; }
+        for (i, s) in buf.iter_mut().enumerate() {
+            *s = ift[3][i % N];
+        }
         let spec = deluge_dsp_test::spectrum::analyze_buf(sr, &buf);
         let above = spec.level_at(max_harmonic(3) as f32 * f0 + 2.0 * f0);
         let fund = spec.level_at(f0);
-        assert!(above < 1e-3 * fund, "ifft band-limited: above={above} fund={fund}");
+        assert!(
+            above < 1e-3 * fund,
+            "ifft band-limited: above={above} fund={fund}"
+        );
     }
 
     #[test]
     fn build_pyramid_flat_matches_build_all_ifft() {
         let mut base = [0.0f32; N];
-        for (i, s) in base.iter_mut().enumerate() { *s = 2.0 * (i as f32 / N as f32) - 1.0; }
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / N as f32) - 1.0;
+        }
         let mut nested = [[0.0f32; N]; LEVELS];
         build_all_ifft(&base, &mut nested);
         let mut flat = [0.0f32; N * LEVELS];

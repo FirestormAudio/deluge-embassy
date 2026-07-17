@@ -52,7 +52,10 @@ pub fn start(panel: SharedPanel) -> MidiBridge {
     // Output: drain the app's MIDI-out and forward to a virtual output port.
     let out = midir::MidiOutput::new("deluge-sim")
         .map_err(|e| e.to_string())
-        .and_then(|mo| mo.create_virtual("Deluge Sim Out").map_err(|e| e.to_string()));
+        .and_then(|mo| {
+            mo.create_virtual("Deluge Sim Out")
+                .map_err(|e| e.to_string())
+        });
     match out {
         Ok(mut conn) => {
             log::info!("MIDI bridge: virtual output port 'Deluge Sim Out' ready");

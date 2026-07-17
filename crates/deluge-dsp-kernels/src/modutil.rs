@@ -17,7 +17,10 @@ pub struct SampleHold {
 }
 impl SampleHold {
     pub fn new() -> SampleHold {
-        SampleHold { held: 0.0, prev_clock: 0.0 }
+        SampleHold {
+            held: 0.0,
+            prev_clock: 0.0,
+        }
     }
     pub fn process(&mut self, input: In, clock: In, out: &mut [f32]) {
         for i in 0..out.len() {
@@ -71,7 +74,13 @@ pub struct Steps {
 }
 impl Steps {
     pub fn new() -> Steps {
-        Steps { values: [0.0; MAX_STEPS], len: 1, idx: 0, prev_clock: 0.0, first: true }
+        Steps {
+            values: [0.0; MAX_STEPS],
+            len: 1,
+            idx: 0,
+            prev_clock: 0.0,
+            first: true,
+        }
     }
     pub fn set_len(&mut self, n: u8) {
         self.len = (n as usize).clamp(1, MAX_STEPS);
@@ -130,9 +139,15 @@ mod tests {
         let mut out = std::vec![0.0f32; n];
         sh.process(In::A(&input), In::A(&clock), &mut out);
         assert!(out[5].abs() < 1e-6, "before any edge: initial held 0");
-        assert!((out[15] - 0.10).abs() < 1e-6, "latched input at edge 10 (0.10)");
+        assert!(
+            (out[15] - 0.10).abs() < 1e-6,
+            "latched input at edge 10 (0.10)"
+        );
         assert!((out[19] - 0.10).abs() < 1e-6, "holds between edges");
-        assert!((out[25] - 0.20).abs() < 1e-6, "latched input at edge 20 (0.20)");
+        assert!(
+            (out[25] - 0.20).abs() < 1e-6,
+            "latched input at edge 20 (0.20)"
+        );
     }
 
     #[test]
@@ -144,7 +159,11 @@ mod tests {
         let mut s = Slew::new();
         let mut out = std::vec![0.0f32; n];
         s.process(In::A(&input), In::A(&time), dt, &mut out);
-        assert!(out[0] > 0.0 && out[0] < 0.1, "starts rising from 0: {}", out[0]);
+        assert!(
+            out[0] > 0.0 && out[0] < 0.1,
+            "starts rising from 0: {}",
+            out[0]
+        );
         assert!(out[1] > out[0], "monotonic rise");
         assert!(out[n - 1] > 0.99, "converges to the step: {}", out[n - 1]);
     }

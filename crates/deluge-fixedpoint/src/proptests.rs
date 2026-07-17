@@ -23,7 +23,11 @@ fn q16_float() -> impl Strategy<Value = f32> {
 // rather than reusing the crate's own expression.
 fn ref_q31_div(a_raw: i32, b_raw: i32) -> i32 {
     if b_raw == 0 {
-        return if a_raw >= 0 { Q31::MAX.raw() } else { Q31::MIN.raw() };
+        return if a_raw >= 0 {
+            Q31::MAX.raw()
+        } else {
+            Q31::MIN.raw()
+        };
     }
     let dividend = (a_raw as i64) << 31;
     (dividend / b_raw as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32
