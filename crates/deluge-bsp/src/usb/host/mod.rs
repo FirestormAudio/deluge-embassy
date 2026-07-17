@@ -13,6 +13,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 
 pub mod midi;
+pub mod uac;
 
 #[cfg(all(test, not(target_os = "none")))]
 pub(crate) mod mock;
