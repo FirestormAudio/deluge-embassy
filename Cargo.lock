@@ -1357,6 +1357,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "critical-section",
+ "embassy-executor",
  "embassy-futures",
  "embassy-sync",
  "embassy-time",
@@ -1365,6 +1366,7 @@ dependencies = [
  "embassy-usb-host",
  "embedded-graphics-core",
  "embedded-sdmmc",
+ "heapless 0.9.3",
  "log",
  "rza1l-hal",
 ]

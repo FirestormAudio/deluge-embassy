@@ -547,32 +547,54 @@ mod ready_signal {
 }
 
 /// Host/QEMU stand-in for [`ready_signal`]: `embassy-time` isn't linked into
-/// non-test host builds (it's a dev-dependency there), so this polls via
-/// `AtomicWaker` (like [`crate::oled`]'s redraw signal) instead of a timer.
+/// non-test host builds (it's a dev-dependency there), so this polls via a
+/// waker (like [`crate::oled`]'s redraw signal) instead of a timer.
 /// [`init`]'s host stand-in calls [`signal`] synchronously before returning,
 /// so [`wait`] resolves immediately once `init` has run.
+///
+/// Uses [`MultiWakerRegistration`] rather than the single-slot `AtomicWaker`
+/// `crate::oled`'s redraw signal uses: unlike that one-shot, single-consumer
+/// signal, `wait_ready()` is awaited *concurrently* by multiple tasks (at
+/// minimum `pad_render` and `oled_render`, both on `deluge-bsp-rust`). An
+/// `AtomicWaker` holds only one registration at a time, so a second
+/// concurrent waiter's `register()` silently clobbers the first's — the
+/// clobbered task is never woken and parks forever. This was caught for real
+/// (not just in review) by `deluge-bsp-rust`'s M3 host boot smoke: with
+/// `pad_render` and `oled_render` both parked in `wait_ready()` before
+/// `pic_pump` signals, whichever task happened to be polled last "won" the
+/// single waker slot and the other hung past the smoke's watchdog deadline.
 #[cfg(not(target_os = "none"))]
 mod ready_signal {
+    use core::cell::RefCell;
     use core::future::poll_fn;
     use core::sync::atomic::{AtomicBool, Ordering};
     use core::task::Poll;
-    use embassy_sync::waitqueue::AtomicWaker;
+    use embassy_sync::blocking_mutex::Mutex;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::waitqueue::MultiWakerRegistration;
 
     static READY_FLAG: AtomicBool = AtomicBool::new(false);
-    static WAKER: AtomicWaker = AtomicWaker::new();
+    /// Up to 4 concurrent waiters (today: `pad_render` + `oled_render`, with
+    /// headroom for future tasks that gate on the PIC handshake). If ever
+    /// exceeded, `register()` mass-wakes everything registered so far rather
+    /// than losing a registration — see its doc comment.
+    static WAKERS: Mutex<CriticalSectionRawMutex, RefCell<MultiWakerRegistration<4>>> =
+        Mutex::new(RefCell::new(MultiWakerRegistration::new()));
 
     /// Called once by the host `init()` stand-in.
     pub fn signal() {
         READY_FLAG.store(true, Ordering::Release);
-        WAKER.wake();
+        WAKERS.lock(|w| w.borrow_mut().wake());
     }
 
     /// Suspend until `signal()` has been called. Returns immediately if it
-    /// already has (safe to call multiple times, from any number of tasks —
-    /// unlike [`crate::oled`]'s one-shot redraw flag, this is never consumed).
+    /// already has (safe to call multiple times, from any number of
+    /// concurrently-awaiting tasks — unlike [`crate::oled`]'s one-shot redraw
+    /// flag, this is never consumed). Registers before checking the flag so a
+    /// `signal()` landing between the check and registration can't be missed.
     pub async fn wait() {
         poll_fn(|cx| {
-            WAKER.register(cx.waker());
+            WAKERS.lock(|w| w.borrow_mut().register(cx.waker()));
             if READY_FLAG.load(Ordering::Acquire) {
                 Poll::Ready(())
             } else {
