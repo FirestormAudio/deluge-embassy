@@ -46,6 +46,7 @@
 //! | 245  | REQUEST_FIRMWARE_VERSION   | —                               |
 //! | 247  | ENABLE_OLED                | —                               |
 
+#[cfg(target_os = "none")]
 use rza1l_hal::uart;
 
 #[cfg(target_os = "none")]
@@ -280,6 +281,15 @@ pub async fn init() {
     ready_signal::signal();
 }
 
+/// Host/QEMU stand-in for [`init`]: no PIC32/UART hardware to bring up, so
+/// this just signals ready — mirroring the device's final step, "signal that
+/// init is complete" — and returns. Resolves without ever suspending.
+#[cfg(not(target_os = "none"))]
+pub async fn init() {
+    log::debug!("pic(host): init (no-op)");
+    ready_signal::signal();
+}
+
 // ── Transport serialization ───────────────────────────────────────────────────
 //
 // The PIC link is a flat byte stream with no framing (see the module docs), and
@@ -304,10 +314,18 @@ static PIC_TX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 ///
 /// All outbound helpers below funnel through here; do not call
 /// `uart::write_bytes(UART_CH, …)` directly.
+#[cfg(target_os = "none")]
 async fn tx(bytes: &[u8]) {
-    #[cfg(target_os = "none")]
     let _guard = PIC_TX.lock().await;
     uart::write_bytes(UART_CH, bytes).await;
+}
+
+/// Host/QEMU stand-in for [`tx`]: no PIC UART to drive off-target, so every
+/// outbound helper (which all funnel through here) logs and drops its bytes.
+/// Resolves without ever suspending.
+#[cfg(not(target_os = "none"))]
+async fn tx(bytes: &[u8]) {
+    log::debug!("pic(host): tx {:?} (dropped, no PIC UART)", bytes);
 }
 
 // ── Outbound helpers ──────────────────────────────────────────────────────────
@@ -512,12 +530,48 @@ mod ready_signal {
     }
 }
 
+/// Host/QEMU stand-in for [`ready_signal`]: `embassy-time` isn't linked into
+/// non-test host builds (it's a dev-dependency there), so this polls via
+/// `AtomicWaker` (like [`crate::oled`]'s redraw signal) instead of a timer.
+/// [`init`]'s host stand-in calls [`signal`] synchronously before returning,
+/// so [`wait`] resolves immediately once `init` has run.
+#[cfg(not(target_os = "none"))]
+mod ready_signal {
+    use core::future::poll_fn;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::task::Poll;
+    use embassy_sync::waitqueue::AtomicWaker;
+
+    static READY_FLAG: AtomicBool = AtomicBool::new(false);
+    static WAKER: AtomicWaker = AtomicWaker::new();
+
+    /// Called once by the host `init()` stand-in.
+    pub fn signal() {
+        READY_FLAG.store(true, Ordering::Release);
+        WAKER.wake();
+    }
+
+    /// Suspend until `signal()` has been called. Returns immediately if it
+    /// already has (safe to call multiple times, from any number of tasks —
+    /// unlike [`crate::oled`]'s one-shot redraw flag, this is never consumed).
+    pub async fn wait() {
+        poll_fn(|cx| {
+            WAKER.register(cx.waker());
+            if READY_FLAG.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
 /// Suspend until [`init()`] has completed on this PIC channel.
 ///
 /// Call this at the start of any task that issues PIC UART commands, to
 /// ensure the baud-rate handshake and initial configuration have already
 /// finished.  Returns immediately if `init()` has already run.
-#[cfg(target_os = "none")]
 #[inline]
 pub async fn wait_ready() {
     ready_signal::wait().await;
@@ -721,5 +775,28 @@ mod tests {
         // 4_000_000 / 200_000 - 1 = 19
         let d = (PIC_CLK_HZ / BAUD_FAST).saturating_sub(1) as u8;
         assert_eq!(d, 19);
+    }
+
+    // ---- Host stand-ins -------------------------------------------------------
+
+    /// `init()` and a couple of outbound commands (which all funnel through the
+    /// host `tx` log-and-drop stand-in) must not panic — there is no PIC UART
+    /// off-target to crash against.
+    #[test]
+    fn init_and_outbound_commands_do_not_panic_on_host() {
+        embassy_futures::block_on(init());
+        embassy_futures::block_on(led_on(0));
+        embassy_futures::block_on(led_off(0));
+        embassy_futures::block_on(oled_select());
+        embassy_futures::block_on(oled_deselect());
+        embassy_futures::block_on(set_refresh_time(23));
+    }
+
+    /// `wait_ready()` resolves once host `init()` has signalled — it must not
+    /// hang (no `embassy-time` polling loop is reachable off-target).
+    #[test]
+    fn wait_ready_resolves_after_host_init() {
+        embassy_futures::block_on(init());
+        embassy_futures::block_on(wait_ready());
     }
 }
