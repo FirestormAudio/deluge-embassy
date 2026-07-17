@@ -22,7 +22,7 @@
 
 use super::regs::{
     FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK,
-    FIFOSEL_MBW_MASK, FIFOSEL_MBW_SHIFT, MBW_8, MBW_32, Rusb1Regs, rd, rd32, wr, wr32,
+    FIFOSEL_MBW_MASK, FIFOSEL_MBW_SHIFT, MBW_32, Rusb1Regs, rd, rd32, wr, wr32,
 };
 
 /// Hardware FIFO port: data register + SEL register + CTR register.
@@ -214,35 +214,28 @@ pub unsafe fn fifo_bval(fifo: &FifoPort) {
 
 /// Copy `len` bytes from `buf` into the hardware FIFO.
 ///
-/// Writes 16-bit words, narrowing to MBW=8 for an odd-byte tail.
-///
-/// MBW is **not** (re)written for the 16-bit body: the caller already selected
-/// the pipe with `CURPIPE | MBW=16` in a single store via [`fifo_select_pipe`],
-/// and after [`fifo_is_ready`] has confirmed FRDY, issuing a second `set_mbw`
-/// here re-writes `DnFIFOSEL` and re-triggers the RZA1 FIFO port-switch state
-/// machine — dropping FRDY so the following `wr32` stores are ignored.  The
-/// buffer is then committed empty (BVAL), and the device transmits a
-/// zero-length packet: the host ACKs it and the toggle advances normally, but
-/// the application receives no bytes.  The reference `sw_to_hw_fifo` documents
-/// the same: "MBW is already set by the CURPIPE select write — no initial
-/// fifo_set_mbw needed."  Narrowing to MBW=8 for the final odd byte is fine
-/// (the reference does it too).
+/// Uses 32-bit FIFO access throughout: the 4-byte body via native `u32` stores
+/// and the 1-3 byte tail via 8-bit lane stores (MBW stays 32 — it is never
+/// narrowed).  This mirrors the proven Linux `renesas_usbhs` PIO push, which is
+/// the ground-truth reference for the RZ/A1L (the TinyUSB `dcd_rusb1.c` this was
+/// originally modeled on was never validated on silicon and got the tail lane
+/// wrong).
 ///
 /// # Safety
 /// - `fifo.data` / `fifo.sel` must be valid.
-/// - The FIFO must have been selected via [`fifo_select_pipe`] (CURPIPE + MBW=16)
+/// - The FIFO must have been selected via [`fifo_select_pipe`] (CURPIPE + MBW=32)
 ///   before calling.
 pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
     unsafe {
-        // Use 32-bit FIFO access for the body.  With BIGEND=0 (the reset/default,
+        // 32-bit FIFO access for the body.  With BIGEND=0 (the reset default,
         // never overridden) Table 28.7 maps byte N+0 → bits[7:0], i.e. little
         // endian matching the ARM, so a native `u32` write emits bytes in order
-        // with no swap.  This quarters the MMIO write count vs byte access and
-        // halves it vs 16-bit — the dominant cost of the device→host (READ) path.
+        // with no swap.  This quarters the MMIO write count vs byte access.
         //
-        // Self-contained: we set MBW here rather than relying on the caller's
-        // pipe-select width, so every transmit caller (control, bulk, host) gets
-        // 32-bit access without a contract change.
+        // Self-contained: we (re)assert MBW=32 here rather than relying on the
+        // caller's pipe-select width, so every transmit caller (control, bulk,
+        // host) gets 32-bit access.  Callers already select CURPIPE | MBW=32, so
+        // this is a same-value write and does not re-trigger the port switch.
         set_mbw(fifo.sel, MBW_32);
         let mut p = buf;
         let mut rem = len;
@@ -253,15 +246,25 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
             rem -= 4;
         }
 
-        // 1-3 byte tail: narrow to 8-bit and emit the remaining bytes.  Only
-        // non-multiple-of-4 transfers reach here (e.g. a 13-byte CSW); block
-        // data is always 512-byte aligned.
+        // 1-3 byte tail.  Only non-multiple-of-4 transfers reach here (e.g. a
+        // 13-byte CSW); block data is always 512-byte aligned.
+        //
+        // Do NOT narrow MBW: leave it at 32 and emit each remaining byte as an
+        // 8-bit store to the correct byte lane.  Per TRM Table 28.9 (8-bit
+        // access, BIGEND=0) the valid byte for the RZ/A1L sits on bits[31:24],
+        // i.e. CPU byte-address `base + 3`.  Matching the proven Linux
+        // `renesas_usbhs` PIO push (cfifo_byte_addr=0 → `addr + (3 - (i & 3))`),
+        // byte `i` of the tail goes to lane `3 - (i & 3)`.  A prior version set
+        // MBW=8 and did a 32-bit store with the byte in bits[7:0]; the hardware
+        // then latched bits[31:24] (= 0), transmitting the tail as zero bytes.
         if rem > 0 {
-            set_mbw(fifo.sel, MBW_8);
+            let base = fifo.data as *mut u8;
+            let mut i = 0usize;
             while rem > 0 {
-                wr32(fifo.data, *p as u32);
+                core::ptr::write_volatile(base.add(3 - (i & 3)), *p);
                 p = p.add(1);
                 rem -= 1;
+                i += 1;
             }
         }
     }
@@ -374,6 +377,31 @@ mod tests {
                 sw_to_hw_fifo(&fifo, src.as_ptr(), len);
             }
         }
+    }
+
+    #[test]
+    fn sw_to_hw_tail_uses_bigend0_lanes() {
+        // TRM Table 28.9 (8-bit access, BIGEND=0): the valid byte lane for the
+        // RZ/A1L is bits[31:24] = CPU byte-address base+3, and tail byte `i`
+        // lands on lane `3 - (i & 3)` (matching Linux renesas_usbhs,
+        // cfifo_byte_addr=0).  Use a 4-byte scratch word as the mock FIFO data
+        // register and write a pure 3-byte tail (no 4-byte body).
+        let word_store = 0u32;
+        let mut sel = (MBW_32 << FIFOSEL_MBW_SHIFT) as u16;
+        let fifo = FifoPort {
+            data: &word_store as *const u32 as *mut u32,
+            sel: &mut sel as *mut u16,
+            ctr: &mut 0u16 as *mut u16,
+        };
+        let src = [0xAAu8, 0xBB, 0xCC];
+        unsafe { sw_to_hw_fifo(&fifo, src.as_ptr(), 3) };
+        // Bytes of the mock register in memory order (little-endian): index k is
+        // CPU byte-address base+k.  src[0]→lane3, src[1]→lane2, src[2]→lane1.
+        let bytes = word_store.to_le_bytes();
+        assert_eq!(bytes[3], 0xAA, "tail byte 0 must land on lane 3 (bits[31:24])");
+        assert_eq!(bytes[2], 0xBB, "tail byte 1 must land on lane 2");
+        assert_eq!(bytes[1], 0xCC, "tail byte 2 must land on lane 1");
+        assert_eq!(bytes[0], 0x00, "lane 0 (bits[7:0]) is the prohibited lane, untouched");
     }
 
     #[test]

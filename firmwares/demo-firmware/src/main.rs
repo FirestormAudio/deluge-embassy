@@ -61,7 +61,7 @@ static mut USB_BOS_DESC: [u8; 64] = [0; 64];
 static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 /// Backing storage for the UAC2 `AudioClass` handler (must be `'static`).
-static mut AUDIO_CLASS_BUF: core::mem::MaybeUninit<deluge_bsp::usb::classes::audio::AudioClass<8>> =
+static mut AUDIO_CLASS_BUF: core::mem::MaybeUninit<deluge_bsp::usb::classes::audio::AudioClass<2>> =
     core::mem::MaybeUninit::uninit();
 
 // ---------------------------------------------------------------------------
@@ -178,9 +178,14 @@ async fn main(dlg: Deluge) {
             );
 
             // Allocate the UAC2 speaker + mic interfaces.
-            // CAPTURE_CH=8: 8-channel ISO IN. ISO OUT is always stereo.
+            // CAPTURE_CH=2: stereo ISO IN, matching the stereo SSI codec and the
+            // stereo packing in uac2_mic_task.  (Was 8, which both mis-declared
+            // the channel count and made the ISO IN maxpacket 49*8*3=1176 B —
+            // over the 1024 B high-speed ISO limit, so the host rejected/clamped
+            // it and capture failed.  Stereo → 49*2*3=294 B, valid.)  ISO OUT is
+            // always stereo.
             let (audio_instance, ep_out, ep_in) =
-                deluge_bsp::usb::classes::audio::AudioClass::<8>::new(&mut builder, 288);
+                deluge_bsp::usb::classes::audio::AudioClass::<2>::new(&mut builder, 288);
             // Store in a `'static` slot so the `&'static mut` reference satisfies
             // `builder.handler`'s `'d` lifetime (= `'static` here).
             let audio_ref = (&mut *core::ptr::addr_of_mut!(AUDIO_CLASS_BUF)).write(audio_instance);

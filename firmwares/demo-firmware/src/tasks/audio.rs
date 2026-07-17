@@ -1,6 +1,5 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use deluge_bsp::scux_dvu_path;
-use embassy_usb::driver::{Endpoint as _, EndpointIn as _};
 use log::info;
 use rza1l_hal::ssi;
 
@@ -273,80 +272,111 @@ pub(crate) async fn uac2_task(ep_out: rza1l_hal::usb::Rusb1EndpointOut) {
     }
 }
 
-/// UAC2 microphone capture task — reads from SSI RX and sends over ISO IN.
+// ── ISO IN (mic) continuous-hook state ─────────────────────────────────────
+/// SSI RX read position carried across hook calls (mirrors `HOOK_WRITE_PTR`).
+static mut MIC_READ_PTR: *const i32 = core::ptr::null();
+/// False until the first packet of a capture stream anchors `MIC_READ_PTR`; the
+/// supervisor clears it when packet activity stops so the next stream re-anchors.
+static MIC_STREAMING: AtomicBool = AtomicBool::new(false);
+/// Bumped once per ISO IN packet — the supervisor watches it for activity.
+static MIC_PACKET_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// Fill the next ISO IN (mic) packet from the SSI RX ring, MSB-aligned i32 →
+/// USB PCM (stereo 16- or 24-bit LE, per the active capture alt).  Returns the
+/// packet length in bytes.
 ///
-/// The ISO IN packet cadence provides **implicit feedback** for the speaker
-/// stream: the host observes the IN packet rate and adapts how much data it
-/// sends per SOF, correcting long-term clock drift without a separate feedback
-/// endpoint.
-#[embassy_executor::task]
-pub(crate) async fn uac2_mic_task(mut ep_in: rza1l_hal::usb::Rusb1EndpointIn) {
-    info!("uac2_mic_task: waiting for capture enable");
-    ep_in.wait_enabled().await;
-    info!("uac2_mic_task: capture enabled");
-
-    let rx_start = ssi::rx_buf_start();
-    let rx_len = ssi::RX_BUF_LEN;
-    let mut read_ptr = ssi::rx_current_ptr();
-
-    let mut pkt = [0u8; 288];
-
-    loop {
-        // Compute how many stereo frames the SSI RX DMA has captured since we
-        // last sent.  This ties the implicit feedback signal directly to the
-        // hardware AUDIO_X1 crystal clock rather than an assumed call rate,
-        // so the host adapts its OUT rate to exactly match the SSI regardless
-        // of async executor scheduling jitter.
-        //
-        // Over any long interval: total IN frames sent = total SSI frames
-        // captured = 44 100 Hz.  Host converges to sending 44 100 frames/sec
-        // OUT, eliminating the systematic rate mismatch that caused underruns.
+/// Registered as the ISO IN hook and called from the BRDY ISR each time a
+/// transmit buffer frees up (and once at enable, to prime the first buffer) —
+/// the continuous-BUF equivalent of the OUT-side [`iso_out_to_ssi`].
+///
+/// # Safety
+/// Called from the BRDY ISR (single producer, IRQs disabled) and once at enable
+/// from task context.  Integer arithmetic only — no VFP state to preserve.
+unsafe fn iso_in_from_ssi(buf: *mut u8, max: usize) -> usize {
+    unsafe {
+        let rx_start = ssi::rx_buf_start();
+        let rx_len = ssi::RX_BUF_LEN;
         let bytes_per_sample = (USB_CAPTURE_BITS_PER_SAMPLE.load(Ordering::Relaxed) / 8) as usize;
-        let max_frames = pkt.len() / (2 * bytes_per_sample);
-        let rx_hw_off = unsafe { (ssi::rx_current_ptr().offset_from(rx_start) as usize) % rx_len };
-        let read_off = unsafe { read_ptr.offset_from(rx_start) as usize };
+        if bytes_per_sample == 0 {
+            return 0;
+        }
+        let max_frames = max / (2 * bytes_per_sample);
+
+        // First packet of a (re)started stream: anchor at the current DMA write
+        // head.  captured_mono then grows as the DMA advances; the read pointer
+        // only ever consumes what the DMA has already written, so it can never
+        // overtake the writer.
+        let mut read_ptr = MIC_READ_PTR;
+        if read_ptr.is_null() || !MIC_STREAMING.load(Ordering::Acquire) {
+            read_ptr = ssi::rx_current_ptr();
+            MIC_STREAMING.store(true, Ordering::Release);
+        }
+
+        // Stereo frames captured since the last packet (ties the implicit-feedback
+        // cadence to the SSI crystal clock).
+        let rx_hw_off = (ssi::rx_current_ptr().offset_from(rx_start) as usize) % rx_len;
+        let read_off = (read_ptr.offset_from(rx_start) as usize) % rx_len;
         let captured_mono = (rx_hw_off + rx_len - read_off) % rx_len;
-        // Integer divide by 2 for stereo frames; capped so we never exceed the
-        // packet buffer.  The fractional remainder carries naturally into the
-        // next call via the unchanged read_ptr, giving correct Bresenham-style
-        // alternating 5/6 frame packets averaging exactly 44 100 Hz.
         let frames = (captured_mono / 2).min(max_frames);
 
-        // Read `frames` stereo pairs from SSI RX; convert MSB-aligned i32 → USB PCM.
-        // Format matches the active capture alt setting (16-bit or 24-bit LE).
-        let nbytes = frames * 2 * bytes_per_sample;
         for i in 0..frames * 2 {
-            let sample = unsafe { read_ptr.read_volatile() };
+            let sample = read_ptr.read_volatile();
             // SSI audio is in bits [31:8]; shift right to get the significant bits.
             let off = i * bytes_per_sample;
             if bytes_per_sample == 3 {
                 let val = (sample >> 8) as u32;
-                pkt[off] = (val & 0xFF) as u8;
-                pkt[off + 1] = ((val >> 8) & 0xFF) as u8;
-                pkt[off + 2] = ((val >> 16) & 0xFF) as u8;
+                *buf.add(off) = (val & 0xFF) as u8;
+                *buf.add(off + 1) = ((val >> 8) & 0xFF) as u8;
+                *buf.add(off + 2) = ((val >> 16) & 0xFF) as u8;
             } else {
-                // 16-bit: keep the top 16 bits of the MSB-aligned sample
                 let val = (sample >> 16) as u16;
-                pkt[off] = (val & 0xFF) as u8;
-                pkt[off + 1] = ((val >> 8) & 0xFF) as u8;
+                *buf.add(off) = (val & 0xFF) as u8;
+                *buf.add(off + 1) = ((val >> 8) & 0xFF) as u8;
             }
-            unsafe {
-                read_ptr = read_ptr.add(1);
-                if read_ptr >= rx_start.add(rx_len) {
-                    read_ptr = rx_start;
-                }
+            read_ptr = read_ptr.add(1);
+            if read_ptr >= rx_start.add(rx_len) {
+                read_ptr = rx_start;
             }
         }
 
-        match ep_in.write(&pkt[..nbytes]).await {
-            Ok(()) => {}
-            Err(_) => {
-                info!("uac2_mic_task: capture stopped");
-                ep_in.wait_enabled().await;
-                info!("uac2_mic_task: capture re-enabled");
-                // Re-anchor behind current DMA write position.
-                read_ptr = ssi::rx_current_ptr();
-            }
+        MIC_READ_PTR = read_ptr;
+        MIC_PACKET_SEQ.fetch_add(1, Ordering::Relaxed);
+        frames * 2 * bytes_per_sample
+    }
+}
+
+/// UAC2 microphone capture task — installs the ISO IN hook and supervises.
+///
+/// The ISO IN packet cadence provides **implicit feedback** for the speaker
+/// stream (the host observes the IN packet rate and adapts its OUT rate).  The
+/// packets are staged in the BRDY ISR by [`iso_in_from_ssi`] (continuous BUF
+/// mode), so a busy executor can never stall servicing — the blocking
+/// per-packet `write()` model couldn't keep up with the microframe cadence and
+/// the host reset the capture interface before it settled.
+#[embassy_executor::task]
+pub(crate) async fn uac2_mic_task(ep_in: rza1l_hal::usb::Rusb1EndpointIn) {
+    let mps = ep_in.info.max_packet_size as usize;
+    // Register before the host enables capture; `endpoint_set_enabled` arms BRDY
+    // + primes the first buffer for the hook pipe.
+    unsafe {
+        rza1l_hal::usb::pipe::register_iso_in_hook(ep_in.pipe as usize, mps, iso_in_from_ssi);
+    }
+    info!(
+        "uac2_mic_task: ISO IN hook installed (pipe={}, mps={})",
+        ep_in.pipe, mps
+    );
+
+    // Supervise: when packets stop flowing (host closed the stream), clear
+    // MIC_STREAMING so the next stream re-anchors the read pointer.  Mirrors the
+    // OUT-side uac2_task supervisor.
+    let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_millis(25));
+    let mut last_seq = MIC_PACKET_SEQ.load(Ordering::Relaxed);
+    loop {
+        ticker.next().await;
+        let seq = MIC_PACKET_SEQ.load(Ordering::Relaxed);
+        if seq == last_seq {
+            MIC_STREAMING.store(false, Ordering::Release);
         }
+        last_seq = seq;
     }
 }
