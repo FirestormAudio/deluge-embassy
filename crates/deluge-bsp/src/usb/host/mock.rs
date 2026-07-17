@@ -51,6 +51,12 @@ pub struct MockState {
     pub allocs: RefCell<Vec<AllocRecord, 8>>,
     /// When set, `alloc_pipe` fails with this error (simulates exhaustion).
     pub alloc_err: RefCell<Option<HostError>>,
+    /// Responses returned by successive `control_in` calls (front popped).
+    pub control_reads: RefCell<Vec<Vec<u8, 64>, 8>>,
+    /// Every SETUP packet seen by `control_in` / `control_out`, in order.
+    pub setups: RefCell<Vec<[u8; 8], 16>>,
+    /// Concatenated data-stage bytes from `control_out`.
+    pub control_out_data: RefCell<Vec<u8, 256>>,
 }
 
 impl MockState {
@@ -67,6 +73,9 @@ impl MockState {
             }),
             allocs: RefCell::new(Vec::new()),
             alloc_err: RefCell::new(None),
+            control_reads: RefCell::new(Vec::new()),
+            setups: RefCell::new(Vec::new()),
+            control_out_data: RefCell::new(Vec::new()),
         }
     }
 
@@ -132,19 +141,33 @@ impl<'d> UsbHostAllocator<'d> for MockAlloc {
 }
 
 impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for MockPipe<T, D> {
-    async fn control_in(&mut self, _setup: &[u8; 8], _buf: &mut [u8]) -> Result<usize, PipeError>
+    async fn control_in(&mut self, setup: &[u8; 8], buf: &mut [u8]) -> Result<usize, PipeError>
     where
         T: pipe::IsControl,
         D: pipe::IsIn,
     {
-        Ok(0)
+        self.inner.setups.borrow_mut().push(*setup).ok();
+        let mut reads = self.inner.control_reads.borrow_mut();
+        if reads.is_empty() {
+            return Ok(0);
+        }
+        let data = reads.remove(0);
+        let n = data.len().min(buf.len());
+        buf[..n].copy_from_slice(&data[..n]);
+        Ok(n)
     }
 
-    async fn control_out(&mut self, _setup: &[u8; 8], _buf: &[u8]) -> Result<(), PipeError>
+    async fn control_out(&mut self, setup: &[u8; 8], buf: &[u8]) -> Result<(), PipeError>
     where
         T: pipe::IsControl,
         D: pipe::IsOut,
     {
+        self.inner.setups.borrow_mut().push(*setup).ok();
+        self.inner
+            .control_out_data
+            .borrow_mut()
+            .extend_from_slice(buf)
+            .map_err(|_| PipeError::BufferOverflow)?;
         Ok(())
     }
 
@@ -212,5 +235,54 @@ mod tests {
         assert_eq!(allocs.len(), 1);
         assert_eq!(allocs[0].ep_addr, 0x81);
         assert_eq!(allocs[0].addr, 1);
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod control_mock_tests {
+    use super::*;
+    use embassy_usb_driver::host::{pipe, UsbHostAllocator, UsbPipe};
+    use embassy_usb_driver::EndpointType;
+
+    #[test]
+    fn control_in_pops_scripted_response_and_logs_setup() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&[0x44, 0xAC, 0x00, 0x00]).unwrap())
+            .unwrap();
+        let alloc = MockAlloc::new(state);
+        let mut pipe = alloc
+            .alloc_pipe::<pipe::Control, pipe::InOut>(
+                1,
+                &EndpointInfo { addr: 0u8.into(), ep_type: EndpointType::Control, max_packet_size: 64, interval_ms: 0 },
+                None,
+            )
+            .unwrap();
+
+        let setup = [0xA1, 0x01, 0x00, 0x01, 0x00, 0x00, 0x04, 0x00];
+        let mut buf = [0u8; 4];
+        let n = embassy_futures::block_on(pipe.control_in(&setup, &mut buf)).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(u32::from_le_bytes(buf), 44_100);
+        assert_eq!(state.setups.borrow()[0], setup);
+    }
+
+    #[test]
+    fn control_out_records_setup_and_data() {
+        let state = MockState::leak();
+        let alloc = MockAlloc::new(state);
+        let mut pipe = alloc
+            .alloc_pipe::<pipe::Control, pipe::InOut>(
+                1,
+                &EndpointInfo { addr: 0u8.into(), ep_type: EndpointType::Control, max_packet_size: 64, interval_ms: 0 },
+                None,
+            )
+            .unwrap();
+        let setup = [0x21, 0x01, 0x00, 0x01, 0x00, 0x01, 0x04, 0x00];
+        embassy_futures::block_on(pipe.control_out(&setup, &44_100u32.to_le_bytes())).unwrap();
+        assert_eq!(state.setups.borrow()[0], setup);
+        assert_eq!(&state.control_out_data.borrow()[..], &44_100u32.to_le_bytes());
     }
 }
