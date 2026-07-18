@@ -186,7 +186,7 @@ async fn receive(rx: Receiver<'static, Rusb1Driver>) -> ! {
         let len = u32::from_le_bytes([tail[2], tail[3], tail[4], tail[5]]);
         let expect_crc = u32::from_le_bytes([tail[6], tail[7], tail[8], tail[9]]);
 
-        if version != VERSION || len == 0 || len > MAX_UPLOAD {
+        if version != VERSION || len < 52 || len > MAX_UPLOAD {
             warn!("devupload: bad header (version={version}, len={len}); resyncing");
             continue;
         }
@@ -208,7 +208,16 @@ async fn receive(rx: Receiver<'static, Rusb1Driver>) -> ! {
             ui::UPLOAD_ACTIVE.store(false, Ordering::Release);
             continue;
         }
-        let header_end = e_phoff as usize + e_phnum * 32;
+        let header_end = match (e_phoff as usize).checked_add(e_phnum * 32) {
+            Some(h) => h,
+            None => {
+                warn!("devupload: header offset overflow (e_phoff={e_phoff})");
+                ui::show_message(b"UPLOAD ERROR", b"BAD LAYOUT").await;
+                Timer::after(Duration::from_secs(2)).await;
+                ui::UPLOAD_ACTIVE.store(false, Ordering::Release);
+                continue;
+            }
+        };
         if header_end > HEADER_BUF || header_end as u32 > len {
             warn!("devupload: phdr table outside header window (header_end={header_end})");
             ui::show_message(b"UPLOAD ERROR", b"BAD LAYOUT").await;
