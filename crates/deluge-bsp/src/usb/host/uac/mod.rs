@@ -453,18 +453,20 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
     /// Underrun is silence (handled in `PlaybackResampler`); a failed OUT
     /// transfer is logged + absorbed (detach is governed by the capture side).
     async fn send_playback(&mut self, frames: usize) {
-        let step = if self.r > 0.0 { 1.0 / self.r } else { 1.0 };
-        if frames == 0 {
+        if frames == 0 || self.playback.is_none() {
             return;
         }
-        let Some(pb) = self.playback.as_mut() else {
-            return;
-        };
+        let step = if self.r > 0.0 { 1.0 / self.r } else { 1.0 };
+        let pb = self.playback.as_mut().unwrap();
         let ch = pb.channels as usize;
         let frame_bytes = ch * 3;
         let mut buf = [0u8; 1024];
         let max_by_buf = buf.len() / frame_bytes;
         let max_by_pkt = (pb.max_packet as usize) / frame_bytes;
+        // Clamped to one OUT packet: "emit == captured frame count" holds while
+        // `frames <= max_by_pkt`. If capture ever delivers more frames than one
+        // playback packet holds, staging backs up and `playback_write` applies
+        // backpressure (short write) — it never overflows.
         let to_send = frames.min(max_by_buf).min(max_by_pkt);
         let mut w = 0usize;
         pb.resampler.produce(&mut pb.ring, step, to_send, |frame| {
@@ -591,7 +593,8 @@ pub(crate) mod shared {
     pub(crate) fn begin(channels: u8) {
         CAPTURE.lock(|c| {
             let mut c = c.borrow_mut();
-            c.ring.reset(channels.clamp(1, MAX_CHANNELS as u8) as usize);
+            let channels = channels.clamp(1, MAX_CHANNELS as u8);
+            c.ring.reset(channels as usize);
             c.channels = channels;
             c.active = true;
         });
@@ -651,7 +654,8 @@ pub(crate) mod shared {
     pub(crate) fn playback_begin(channels: u8) {
         PLAYBACK.lock(|c| {
             let mut c = c.borrow_mut();
-            c.ring.reset(channels.clamp(1, MAX_CHANNELS as u8) as usize);
+            let channels = channels.clamp(1, MAX_CHANNELS as u8);
+            c.ring.reset(channels as usize);
             c.channels = channels;
             c.active = true;
         });
@@ -778,6 +782,15 @@ mod tests {
     #[test]
     fn capture_only_device_has_no_playback() {
         let raw = uac2_mic_cfg(3, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        assert!(find_uac_playback(&cfg).is_none());
+    }
+
+    #[test]
+    fn rejects_oversized_playback_channels() {
+        // 9 > MAX_CHANNELS: rejecting here is what keeps the fixed
+        // `[f32; MAX_CHANNELS]` playback buffers panic-free downstream.
+        let raw = uac2_full_duplex_cfg(3, 2, 9);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
         assert!(find_uac_playback(&cfg).is_none());
     }
