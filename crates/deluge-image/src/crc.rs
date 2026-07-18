@@ -8,8 +8,8 @@
 //! reused verbatim on the device (settings record + USB upload framing).
 
 /// Incremental CRC-32 (IEEE) accumulator, so a stream can be checksummed without
-/// buffering it: `Crc32::new().update(a).update(b).finalize()` equals
-/// `crc32(a followed by b)`.
+/// buffering it: `let mut c = Crc32::new(); c.update(a); c.update(b);` then
+/// `c.finalize()` equals `crc32(a followed by b)`.
 #[derive(Clone, Copy)]
 pub struct Crc32(u32);
 

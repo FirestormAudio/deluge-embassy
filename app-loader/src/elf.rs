@@ -124,7 +124,7 @@ fn read_exact(
 /// # Safety
 /// Writes to physical RAM derived from ELF program headers.  Each
 /// destination is validated before any write, but the caller must ensure no
-/// live data occupies the SDRAM staging window (`0x0F000000–0x0F2FFFFF`).
+/// live data occupies the SDRAM staging window (`0x0FD20000–0x0FFFFFFF`).
 pub async unsafe fn load_from_sd_with_progress<F, Fut>(
     vm: &mut fat::DelugeVolumeManager,
     file: RawFile,
@@ -318,7 +318,7 @@ pub struct FlashStage {
 /// the slot (see [`crate::flashboot::store_image_to_slot`]).
 ///
 /// # Safety
-/// Writes the SDRAM staging window (`0x0F000000+`); the caller must ensure no
+/// Writes the SDRAM staging window (`0x0FD20000+`); the caller must ensure no
 /// live data occupies it (true during the boot menu, like the SD ELF loader).
 pub async unsafe fn flatten_to_flash_staging<F, Fut>(
     vm: &mut fat::DelugeVolumeManager,

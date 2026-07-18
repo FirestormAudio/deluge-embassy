@@ -17,7 +17,7 @@
 //! the bootloader in flight.  The solution is a two-phase approach:
 //!
 //! 1. [`crate::elf::load_from_sd`] stages SRAM-targeting segments in SDRAM
-//!    (`0x0F000000+`) and returns per-segment [`SramSegDesc`] descriptors.
+//!    (`0x0FD20000+`) and returns per-segment [`SramSegDesc`] descriptors.
 //!
 //! 2. [`launch_via_trampoline`] copies a small PIC trampoline blob +
 //!    the descriptor table into the data-retention RAM region
