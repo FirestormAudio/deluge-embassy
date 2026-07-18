@@ -339,7 +339,120 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
     pub fn fill_frames(&self) -> usize {
         self.ring.fill_frames()
     }
+
+    /// Like [`Self::pump_once`], but publishes to the process-wide capture
+    /// bridge so a different task (the engine) can `capture_read`. Used by the
+    /// host task.
+    #[cfg(target_os = "none")]
+    pub async fn pump_once_shared(&mut self) -> Result<(), UacError> {
+        let ch = self.num_channels as usize;
+        let mut buf = [0u8; 1024];
+        let cap = self.max_packet as usize;
+        let n = match self.iso_in.request_in(&mut buf[..cap]).await {
+            Ok(n) => n,
+            Err(e) => {
+                // Lost packet: the shared ring absorbs it; keep streaming.
+                log::warn!("uac: iso IN transfer failed ({:?}), absorbing gap", e);
+                self.r = self.pi.update(shared::fill_frames() as f32);
+                return Ok(());
+            }
+        };
+        let frame_bytes = ch * 3;
+        let mut frame = [0.0f32; MAX_CHANNELS];
+        let mut out = [0.0f32; MAX_CHANNELS];
+        for chunk in buf[..n].chunks_exact(frame_bytes) {
+            for c in 0..ch {
+                frame[c] = decode_s24le(&chunk[c * 3..c * 3 + 3]);
+            }
+            let mut emit = |o: &[f32]| {
+                out[..o.len()].copy_from_slice(o);
+                shared::push(&out[..o.len()], ch);
+            };
+            self.resampler.feed(&frame[..ch], self.r, &mut emit);
+        }
+        // Single source of truth: the shared ring the app actually drains.
+        self.r = self.pi.update(shared::fill_frames() as f32);
+        Ok(())
+    }
 }
+
+/// Cross-task capture bridge: the app-facing static that
+/// [`UacIn::pump_once_shared`] publishes into and [`capture_read`] drains.
+///
+/// Device-only: it uses a `CriticalSectionRawMutex` static, which only makes
+/// sense once there is a real interrupt-driven executor. Host tests exercise
+/// the correctness reference (`pump_once` + `self.ring`) directly instead.
+#[cfg(target_os = "none")]
+pub(crate) mod shared {
+    use core::cell::RefCell;
+
+    use embassy_sync::blocking_mutex::Mutex;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
+    use super::MAX_CHANNELS;
+    use super::ring::SampleRing;
+
+    struct Capture {
+        ring: SampleRing,
+        channels: u8,
+        active: bool,
+    }
+
+    static CAPTURE: Mutex<CriticalSectionRawMutex, RefCell<Capture>> =
+        Mutex::new(RefCell::new(Capture {
+            ring: SampleRing::new(),
+            channels: 0,
+            active: false,
+        }));
+
+    /// Called by the capture task when a device is registered.
+    pub(crate) fn begin(channels: u8) {
+        CAPTURE.lock(|c| {
+            let mut c = c.borrow_mut();
+            c.ring.reset(channels.clamp(1, MAX_CHANNELS as u8) as usize);
+            c.channels = channels;
+            c.active = true;
+        });
+    }
+
+    /// Called by the capture task on detach.
+    pub(crate) fn end() {
+        CAPTURE.lock(|c| {
+            let mut c = c.borrow_mut();
+            c.active = false;
+            c.channels = 0;
+            c.ring.reset(1);
+        });
+    }
+
+    /// Push captured interleaved frames from the task.
+    pub(crate) fn push(samples: &[f32], channels: usize) {
+        CAPTURE.lock(|c| {
+            let mut c = c.borrow_mut();
+            for frame in samples.chunks_exact(channels) {
+                c.ring.push_frame(frame);
+            }
+        });
+    }
+
+    /// Frames currently buffered — the PI controller's single source of truth.
+    pub(crate) fn fill_frames() -> usize {
+        CAPTURE.lock(|c| c.borrow().ring.fill_frames())
+    }
+
+    /// App-facing drain. Short return = underrun; never blocks.
+    pub fn capture_read(out: &mut [f32]) -> usize {
+        CAPTURE.lock(|c| c.borrow_mut().ring.read(out))
+    }
+
+    /// Channels the hosted device declared, or 0 if none.
+    pub fn capture_channels() -> u8 {
+        CAPTURE.lock(|c| c.borrow().channels)
+    }
+}
+
+#[cfg(target_os = "none")]
+pub use shared::{capture_channels, capture_read};
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {

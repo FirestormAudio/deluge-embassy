@@ -218,6 +218,67 @@ mod runtime {
         }
     }
 
+    /// Bind an enumerated device's UAC2 capture interface and spawn its task.
+    ///
+    /// Returns `true` if the device was claimed. On `false` the caller owns
+    /// freeing the address. Mirrors [`bind_midi`]: registration is synchronous
+    /// (via `block_on`) because `try_register`'s control transfers are short
+    /// and the supervisor is already the enumeration owner.
+    fn bind_uac(
+        handle: &HostAlloc,
+        spawner: Spawner,
+        dev_info: &embassy_usb_host::handler::EnumerationInfo,
+        cfg: &ConfigurationDescriptor<'_>,
+    ) -> bool {
+        use crate::usb::host::uac::UacIn;
+
+        let addr = dev_info.device_address;
+        match embassy_futures::block_on(UacIn::try_register(handle, addr, dev_info.split(), cfg)) {
+            Ok(host) => {
+                info!(
+                    "usb_host: UAC capture device VID={:04x} PID={:04x} addr={} channels={}",
+                    dev_info.device_desc.vendor_id,
+                    dev_info.device_desc.product_id,
+                    addr,
+                    host.channels()
+                );
+                super::uac::shared::begin(host.channels());
+                match uac_capture_task(host) {
+                    Ok(token) => {
+                        spawner.spawn(token);
+                        true
+                    }
+                    Err(_) => {
+                        error!("usb_host: could not spawn UAC capture task");
+                        super::uac::shared::end();
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("usb_host: unsupported UAC device: {:?}", e);
+                false
+            }
+        }
+    }
+
+    /// Services one hosted UAC2 capture device until it errors or detaches.
+    ///
+    /// Owns the pipes, so they drop — and the hardware pipes free — the moment
+    /// this exits. Publishes decoded frames into [`super::uac::shared`], the
+    /// cross-task bridge the engine drains via `capture_read`.
+    #[embassy_executor::task]
+    async fn uac_capture_task(mut host: crate::usb::host::uac::UacIn<'static, HostAlloc>) {
+        loop {
+            if host.pump_once_shared().await.is_err() {
+                // Only a fatal invariant break exits; iso errors are absorbed.
+                break;
+            }
+        }
+        super::uac::shared::end();
+        // `host` drops here → pipes freed → address reclaimed (MIDI precedent).
+    }
+
     /// Owns a hub: services port changes and enumerates devices behind it.
     ///
     /// Enumeration lives here rather than in the supervisor because
@@ -381,9 +442,17 @@ mod runtime {
                         }
                     }
                     Err(RegisterError::NoSupportedInterface) => {
-                        // Not a hub — fall through to the MIDI matcher.
+                        // Not a hub — fall through to the MIDI matcher, then
+                        // UAC, so a composite audio+MIDI device gets both
+                        // considered.
                         match ConfigurationDescriptor::try_from_slice(&config_buf) {
-                            Ok(cfg) => bind_midi(&handle, spawner, &dev_info, &cfg),
+                            Ok(cfg) => {
+                                if !bind_midi(&handle, spawner, &dev_info, &cfg) {
+                                    bind_uac(&handle, spawner, &dev_info, &cfg)
+                                } else {
+                                    true
+                                }
+                            }
                             Err(e) => {
                                 error!("usb_host: bad config descriptor: {:?}", e);
                                 false
