@@ -154,6 +154,51 @@ pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureM
     Err(UacError::NoInputInterface)
 }
 
+/// A matched UAC2 playback (host->device) streaming interface.
+#[derive(Clone, Copy, Debug)]
+pub struct UacPlaybackMatch {
+    /// AudioStreaming interface number (target of SET_INTERFACE).
+    pub streaming_interface: u8,
+    /// Alternate setting carrying the stream.
+    pub alternate_setting: u8,
+    /// The isochronous OUT data endpoint.
+    pub endpoint: EndpointDescriptor,
+    /// Channels the device declares for playback (independent of capture).
+    pub num_channels: u8,
+}
+
+/// Find the first usable UAC2 playback interface (Direction::Out, Type-I
+/// 24-bit) in `cfg`. Returns `None` if the device has no playback interface
+/// (capture-only devices are valid) or it isn't 24-bit Type-I within bounds.
+pub fn find_uac_playback(cfg: &ConfigurationDescriptor<'_>) -> Option<UacPlaybackMatch> {
+    let coll = AudioInterfaceCollection::try_from_configuration(cfg).ok()?;
+    for asi in coll.audio_streaming_interfaces.iter() {
+        let ep = match asi.endpoint_descriptor {
+            Some(ep) if ep.ep_dir() == Direction::Out => ep,
+            _ => continue,
+        };
+        match &asi.format_type_descriptor {
+            Some(FormatTypeDescriptor::I(f)) if f.subslot_size == 3 => {}
+            _ => continue,
+        }
+        let channels = asi.class_descriptor.num_channels;
+        if channels == 0 || channels as usize > MAX_CHANNELS || ep.max_packet_size as usize > 1024 {
+            continue;
+        }
+        let alt = asi
+            .interface_descriptors
+            .iter()
+            .max_by_key(|i| i.num_endpoints)?;
+        return Some(UacPlaybackMatch {
+            streaming_interface: alt.interface_number,
+            alternate_setting: alt.alternate_setting,
+            endpoint: ep,
+            num_channels: channels,
+        });
+    }
+    None
+}
+
 /// USB standard SET_INTERFACE request code (USB 2.0 §9.4).
 const REQ_SET_INTERFACE: u8 = 11;
 
@@ -501,6 +546,69 @@ mod tests {
 
     fn uac2_mic_cfg(subslot: u8, channels: u8) -> Vec<u8, 256> {
         uac2_mic_cfg_mps(subslot, channels, 0x0126) // 294, the real HS iso mps
+    }
+
+    /// Full-duplex UAC2 device: capture AS interface (IN 0x81) + playback AS
+    /// interface (OUT 0x02), sharing one clock source.
+    fn uac2_full_duplex_cfg(subslot: u8, cap_channels: u8, play_channels: u8) -> Vec<u8, 256> {
+        let mut b: Vec<u8, 256> = Vec::new();
+        let push = |s: &[u8], b: &mut Vec<u8, 256>| b.extend_from_slice(s).unwrap();
+
+        // IAD: first iface 0, count 3 (AC + capture AS + playback AS).
+        push(&[8, 0x0B, 0, 3, 0x01, 0x00, 0x20, 0], &mut b);
+        // Std AC interface 0.
+        push(&[9, 0x04, 0, 0, 0, 0x01, 0x01, 0x20, 0], &mut b);
+        // CS AC header.
+        push(&[9, 0x24, 0x01, 0x00, 0x02, 30, 0, 0x00, 0x00], &mut b);
+        // CS Clock Source id 0x09.
+        push(&[8, 0x24, 0x0A, 0x09, 0x01, 0x07, 0x00, 0x00], &mut b);
+        // CS Input Terminal id 0x01, clock 0x09, cap_channels.
+        #[rustfmt::skip]
+        push(&[17, 0x24, 0x02, 0x01, 0x01, 0x02, 0, 0x09, cap_channels, 0, 0, 0, 0, 0, 0, 0, 0], &mut b);
+
+        // Capture AS interface 1 (iso IN 0x81).
+        push(&[9, 0x04, 1, 0, 0, 0x01, 0x02, 0x20, 0], &mut b);
+        push(&[9, 0x04, 1, 1, 1, 0x01, 0x02, 0x20, 0], &mut b);
+        #[rustfmt::skip]
+        push(&[16, 0x24, 0x01, 0x01, 0x00, 0x01, 0x01, 0, 0, 0, cap_channels, 0, 0, 0, 0, 0], &mut b);
+        push(&[6, 0x24, 0x02, 0x01, subslot, subslot * 8], &mut b);
+        push(&[7, 0x05, 0x81, 0x01, 0x26, 0x01, 0x04], &mut b);
+        push(&[8, 0x25, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00], &mut b);
+
+        // Playback AS interface 2 (iso OUT 0x02).
+        push(&[9, 0x04, 2, 0, 0, 0x01, 0x02, 0x20, 0], &mut b);
+        push(&[9, 0x04, 2, 1, 1, 0x01, 0x02, 0x20, 0], &mut b);
+        #[rustfmt::skip]
+        push(&[16, 0x24, 0x01, 0x01, 0x00, 0x01, 0x01, 0, 0, 0, play_channels, 0, 0, 0, 0, 0], &mut b);
+        push(&[6, 0x24, 0x02, 0x01, subslot, subslot * 8], &mut b);
+        push(&[7, 0x05, 0x02, 0x01, 0x26, 0x01, 0x04], &mut b);
+        push(&[8, 0x25, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00], &mut b);
+
+        let total = (9 + b.len()) as u16;
+        let mut cfg: Vec<u8, 256> = Vec::new();
+        cfg.extend_from_slice(&[9, 0x02, total as u8, (total >> 8) as u8, 3, 1, 0, 0x80, 50])
+            .unwrap();
+        cfg.extend_from_slice(&b).unwrap();
+        cfg
+    }
+
+    #[test]
+    fn matches_full_duplex_playback_interface() {
+        let raw = uac2_full_duplex_cfg(3, 2, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let p = find_uac_playback(&cfg).expect("playback interface should match");
+        assert_eq!(p.num_channels, 2);
+        assert_eq!(p.endpoint.ep_dir(), Direction::Out);
+        assert_eq!(p.endpoint.endpoint_address, 0x02);
+        // Capture still matches independently.
+        assert!(find_uac_capture(&cfg).is_ok());
+    }
+
+    #[test]
+    fn capture_only_device_has_no_playback() {
+        let raw = uac2_mic_cfg(3, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        assert!(find_uac_playback(&cfg).is_none());
     }
 
     fn uac2_mic_cfg_mps(subslot: u8, channels: u8, mps: u16) -> Vec<u8, 256> {
