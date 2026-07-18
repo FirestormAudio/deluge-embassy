@@ -84,6 +84,7 @@ impl From<PlanError> for ElfError {
             // A truncated image / short program-header table is an I/O-shaped
             // failure the slice loader maps to its EOF variant.
             PlanError::Truncated => ElfError::UnexpectedEof,
+            PlanError::Unordered => ElfError::Unstreamable,
         }
     }
 }

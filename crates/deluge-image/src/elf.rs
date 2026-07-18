@@ -215,6 +215,177 @@ pub fn place_segment(p_paddr: u32, p_memsz: u32) -> Result<SegmentPlacement, Bad
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BadLoadAddress;
 
+// --- Streaming load router (USB dev-upload path) ----------------------------
+
+/// One `PT_LOAD` segment resolved for streaming: where its file bytes sit in the
+/// upload and where they are written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RoutedSeg {
+    /// File offset of the segment's first byte (`p_offset`).
+    pub file_start: u32,
+    /// File offset one past the segment's last file byte (`p_offset + p_filesz`).
+    pub file_end: u32,
+    /// Address the loader copies the file bytes to now: the final SDRAM address,
+    /// or the SDRAM staging address for an SRAM-targeting segment.
+    pub write_addr: u32,
+    /// Final runtime address (`p_paddr`) — the SRAM destination for a staged
+    /// segment; equals `write_addr` for an SDRAM segment.
+    pub final_dst: u32,
+    /// In-memory size (`p_memsz`); `memsz - (file_end - file_start)` bytes are
+    /// zeroed after the copy.
+    pub memsz: u32,
+    /// `true` if staged in SDRAM for later SRAM relocation.
+    pub sram: bool,
+}
+
+/// How the streaming loader treats the upload byte at a given file offset: copy
+/// it (and the following `run` bytes, up to the next segment boundary) to `dst`,
+/// or discard them when `dst` is `None`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RouteStep {
+    /// `Some(addr)` to copy the run to `addr`; `None` to discard it.
+    pub dst: Option<u32>,
+    /// Bytes until the next routing boundary. `u32::MAX` past the last segment.
+    pub run: u32,
+}
+
+/// A validated, streamable plan for a USB-uploaded ELF: the ordered `PT_LOAD`
+/// segments plus the entry point, built from the image's front matter (ELF header
+/// + program-header table). The device routes the byte stream through
+/// [`StreamRouter::route_at`] without ever seeking backward — the host-testable
+/// core of the streaming dev-upload loader.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StreamRouter {
+    entry: u32,
+    header_end: u32,
+    segs: [RoutedSeg; MAX_PHDRS],
+    n_segs: usize,
+}
+
+impl StreamRouter {
+    /// Parse and validate the front matter (`buf` must hold at least the 52-byte
+    /// ELF header and the whole program-header table). Produces the ordered,
+    /// non-overlapping route table, or a [`PlanError`].
+    pub fn new(buf: &[u8]) -> Result<StreamRouter, PlanError> {
+        validate_header(buf)?;
+
+        let entry = le32(buf, 24);
+        let e_phoff = le32(buf, 28);
+        let e_phentsize = le16(buf, 42) as usize;
+        let e_phnum = le16(buf, 44) as usize;
+
+        if e_phentsize != 32 || e_phnum > MAX_PHDRS || e_phoff < 52 {
+            return Err(PlanError::WrongFormat);
+        }
+        let header_end = e_phoff
+            .checked_add(
+                (e_phnum as u32)
+                    .checked_mul(32)
+                    .ok_or(PlanError::WrongFormat)?,
+            )
+            .ok_or(PlanError::WrongFormat)?;
+        if header_end as usize > buf.len() {
+            return Err(PlanError::Truncated);
+        }
+
+        let mut segs = [RoutedSeg {
+            file_start: 0,
+            file_end: 0,
+            write_addr: 0,
+            final_dst: 0,
+            memsz: 0,
+            sram: false,
+        }; MAX_PHDRS];
+        let mut n_segs = 0usize;
+        let mut prev_file_end = 0u32;
+
+        for i in 0..e_phnum {
+            let ph = &buf[e_phoff as usize + i * 32..][..32];
+            if le32(ph, 0) != PT_LOAD {
+                continue;
+            }
+            let p_offset = le32(ph, 4);
+            let p_paddr = le32(ph, 12);
+            let p_filesz = le32(ph, 16);
+            let p_memsz = le32(ph, 20);
+
+            if p_filesz > p_memsz {
+                return Err(PlanError::WrongFormat);
+            }
+            let file_end = p_offset.checked_add(p_filesz).ok_or(PlanError::WrongFormat)?;
+
+            // Streaming cannot seek backward: segments must arrive in
+            // non-decreasing, non-overlapping file order.
+            if p_offset < prev_file_end {
+                return Err(PlanError::Unordered);
+            }
+            prev_file_end = file_end;
+
+            match place_segment(p_paddr, p_memsz).map_err(|_| PlanError::BadLoadAddress)? {
+                SegmentPlacement::Skip => continue,
+                SegmentPlacement::Write { write_addr, sram } => {
+                    segs[n_segs] = RoutedSeg {
+                        file_start: p_offset,
+                        file_end,
+                        write_addr,
+                        final_dst: p_paddr,
+                        memsz: p_memsz,
+                        sram,
+                    };
+                    n_segs += 1;
+                }
+            }
+        }
+
+        Ok(StreamRouter {
+            entry,
+            header_end,
+            segs,
+            n_segs,
+        })
+    }
+
+    /// Application entry point (`e_entry`).
+    pub fn entry(&self) -> u32 {
+        self.entry
+    }
+
+    /// Bytes of front matter (ELF header + program-header table) the caller must
+    /// buffer to build this router.
+    pub fn header_end(&self) -> u32 {
+        self.header_end
+    }
+
+    /// The resolved segments, in file order.
+    pub fn segments(&self) -> &[RoutedSeg] {
+        &self.segs[..self.n_segs]
+    }
+
+    /// Route the upload byte at file offset `off`: the address it (and the next
+    /// `run` bytes, up to a segment boundary) copies to, or discard if `dst` is
+    /// `None`. The caller advances `off` by `min(run, chunk_remaining)`.
+    pub fn route_at(&self, off: u32) -> RouteStep {
+        for seg in &self.segs[..self.n_segs] {
+            if off < seg.file_start {
+                return RouteStep {
+                    dst: None,
+                    run: seg.file_start - off,
+                };
+            }
+            if off < seg.file_end {
+                return RouteStep {
+                    dst: Some(seg.write_addr + (off - seg.file_start)),
+                    run: seg.file_end - off,
+                };
+            }
+        }
+        RouteStep {
+            dst: None,
+            run: u32::MAX,
+        }
+    }
+}
+
 // --- Slice-sourced load plan (USB dev-upload path) -------------------------
 
 /// One copy operation in a [`LoadPlan`]: copy `filesz` bytes from offset
@@ -264,6 +435,9 @@ pub enum PlanError {
     BadLoadAddress,
     /// A program header or a segment's file range runs past the end of the slice.
     Truncated,
+    /// `PT_LOAD` segments are not in non-decreasing, non-overlapping file order,
+    /// so the streaming loader cannot place them without seeking backward.
+    Unordered,
 }
 
 impl From<HeaderError> for PlanError {
@@ -762,6 +936,93 @@ mod tests {
     fn place_rejects_out_of_region() {
         assert_eq!(place_segment(0x0800_0000, 0x10), Err(BadLoadAddress));
         assert_eq!(place_segment(SRAM_HI - 4, 0x100), Err(BadLoadAddress));
+    }
+
+    // --- StreamRouter ---------------------------------------------------------
+
+    /// Build an ELF32 header + program-header table (no segment bodies) for router
+    /// tests. Each phdr tuple is `(p_type, p_offset, p_paddr, p_filesz, p_memsz)`.
+    fn elf_front(entry: u32, phdrs: &[(u32, u32, u32, u32, u32)]) -> Vec<u8> {
+        let e_phoff = 52u32;
+        let mut buf = vec![0u8; 52 + phdrs.len() * 32];
+        buf[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+        buf[4] = 1; // ELFCLASS32
+        buf[5] = 1; // ELFDATA2LSB
+        buf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        buf[18..20].copy_from_slice(&0x28u16.to_le_bytes()); // EM_ARM
+        buf[24..28].copy_from_slice(&entry.to_le_bytes());
+        buf[28..32].copy_from_slice(&e_phoff.to_le_bytes());
+        buf[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
+        buf[44..46].copy_from_slice(&(phdrs.len() as u16).to_le_bytes());
+        for (i, &(t, off, paddr, filesz, memsz)) in phdrs.iter().enumerate() {
+            let p = 52 + i * 32;
+            buf[p..p + 4].copy_from_slice(&t.to_le_bytes());
+            buf[p + 4..p + 8].copy_from_slice(&off.to_le_bytes());
+            buf[p + 12..p + 16].copy_from_slice(&paddr.to_le_bytes());
+            buf[p + 16..p + 20].copy_from_slice(&filesz.to_le_bytes());
+            buf[p + 20..p + 24].copy_from_slice(&memsz.to_le_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn router_routes_sdram_and_stages_sram() {
+        // One SDRAM segment (p_offset 0, covering the header) and one SRAM segment.
+        let front = elf_front(
+            SDRAM_LO,
+            &[
+                (PT_LOAD, 0, SDRAM_LO, 0x200, 0x200),
+                (PT_LOAD, 0x200, SRAM_LOAD_ORIGIN, 0x40, 0x80),
+            ],
+        );
+        let r = StreamRouter::new(&front).unwrap();
+        assert_eq!(r.entry(), SDRAM_LO);
+        assert_eq!(r.header_end(), 52 + 2 * 32);
+
+        // A byte at file offset 0 lands at the SDRAM segment's paddr.
+        assert_eq!(r.route_at(0), RouteStep { dst: Some(SDRAM_LO), run: 0x200 });
+        // Offset 0x100 is 0x100 into that segment.
+        assert_eq!(r.route_at(0x100), RouteStep { dst: Some(SDRAM_LO + 0x100), run: 0x100 });
+        // The SRAM segment routes to the staging window, not its final SRAM address.
+        assert_eq!(
+            r.route_at(0x200),
+            RouteStep { dst: Some(sram_stage_addr(SRAM_LOAD_ORIGIN)), run: 0x40 }
+        );
+        // Its recorded final destination is the SRAM address for the trampoline.
+        let sram = r.segments().iter().find(|s| s.sram).unwrap();
+        assert_eq!(sram.final_dst, SRAM_LOAD_ORIGIN);
+        assert_eq!(sram.memsz, 0x80);
+        // Past the last file byte: discard to the end.
+        assert_eq!(r.route_at(0x240), RouteStep { dst: None, run: u32::MAX });
+    }
+
+    #[test]
+    fn router_discards_gaps_between_segments() {
+        let front = elf_front(
+            SDRAM_LO,
+            &[
+                (PT_LOAD, 0x100, SDRAM_LO, 0x40, 0x40),
+                (PT_LOAD, 0x200, SDRAM_LO + 0x1000, 0x40, 0x40),
+            ],
+        );
+        let r = StreamRouter::new(&front).unwrap();
+        // Header/gap before the first segment is discarded up to its start.
+        assert_eq!(r.route_at(0), RouteStep { dst: None, run: 0x100 });
+        // Gap between the two segments (0x140..0x200) is discarded.
+        assert_eq!(r.route_at(0x140), RouteStep { dst: None, run: 0x0C0 });
+    }
+
+    #[test]
+    fn router_rejects_backward_segments() {
+        // Second segment starts before the first one's file bytes end.
+        let front = elf_front(
+            SDRAM_LO,
+            &[
+                (PT_LOAD, 0x200, SDRAM_LO, 0x80, 0x80),
+                (PT_LOAD, 0x100, SDRAM_LO + 0x1000, 0x40, 0x40),
+            ],
+        );
+        assert_eq!(StreamRouter::new(&front), Err(PlanError::Unordered));
     }
 
     // --- parse_load_plan ----------------------------------------------------
