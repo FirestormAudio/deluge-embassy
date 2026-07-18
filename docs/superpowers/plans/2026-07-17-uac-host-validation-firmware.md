@@ -398,8 +398,13 @@ pub(crate) async fn loopback_task() {
         CAP_CH.store(cap_ch as u8, Ordering::Relaxed);
         PLAY_CH.store(play_ch as u8, Ordering::Relaxed);
 
-        // Drain whole frames that fit the scratch budget.
-        let budget = (SCRATCH / cap_ch) * cap_ch;
+        // Bound the read so both the input (`scratch`) and remap's output
+        // (`frames * play_ch`, into `out`) stay within SCRATCH. Whole cap-frames
+        // only, so the read stays frame-aligned. Capture-only (`play_ch == 0`)
+        // skips remap/playback below, so clamp it to 1 just for this sizing.
+        let out_ch = play_ch.max(1);
+        let max_frames = (SCRATCH / cap_ch).min(SCRATCH / out_ch);
+        let budget = max_frames * cap_ch;
         let n = uac::capture_read(&mut scratch[..budget]);
         if n > 0 {
             let p = peak_milli(&scratch[..n]);
