@@ -38,6 +38,8 @@ build-fw-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins
 build-controller-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-controller -- -O binary target/armv7a-none-eabihf/release/deluge-controller.bin"
 build-msc            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p msc-firmware"
 build-msc-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p msc-firmware -- -O binary target/armv7a-none-eabihf/release/msc-firmware.bin"
+build-uac            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p uac-host-firmware"
+build-uac-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p uac-host-firmware -- -O binary target/armv7a-none-eabihf/release/uac-host-firmware.bin"
 build-app-loader     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p app-loader"
 build-app-loader-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p app-loader -- -O binary target/armv7a-none-eabihf/release/app-loader.bin"
 # Host-side ELF -> Deluge-SSB UF2 converter (tools/elf2uf2). The explicit

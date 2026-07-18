@@ -1,0 +1,26 @@
+[package]
+publish = false
+name = "uac-host-firmware"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "uac-host-firmware"
+test = false
+
+[dependencies]
+rza1l-hal = { path = "../../crates/rza1l-hal" }
+deluge-bsp = { path = "../../crates/deluge-bsp" }
+deluge-alloc = { path = "../../crates/deluge-alloc" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+log = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+
+[features]
+default = ["rtt"]
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]
