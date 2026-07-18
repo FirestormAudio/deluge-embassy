@@ -728,6 +728,38 @@ pub async fn wait_redraw() {
     redraw_signal::wait().await;
 }
 
+/// Deluge droplet boot logo — the 24-point `logoPixels` from
+/// DelugeBootloader `src/oled_init.c`, each entry an `(x, y)` cell on an 11×10
+/// grid. Drawn scaled ×3 and centered in the visible (non-bezel) area. Used by
+/// the app-loader as the frame the panel holds while a launched image boots.
+const BOOT_LOGO: [(usize, usize); 25] = [
+    (1, 0), (2, 1), (3, 2), (4, 3),
+    (4, 0), (5, 1), (6, 2), (7, 3),
+    (0, 2), (1, 3), (2, 4), (3, 5),
+    (5, 5), (6, 6), (7, 7),
+    (1, 6), (2, 7), (3, 8), (4, 9),
+    (8, 5), (9, 6), (10, 7),
+    (5, 7), (6, 8), (7, 9),
+];
+const BOOT_LOGO_W: usize = 11;
+const BOOT_LOGO_H: usize = 10;
+const BOOT_LOGO_SCALE: usize = 3;
+
+/// Build a frame showing the Deluge droplet centered in the visible area.
+pub fn boot_logo() -> FrameBuffer {
+    let mut fb = FrameBuffer::new();
+    let x0 = (WIDTH - BOOT_LOGO_W * BOOT_LOGO_SCALE) / 2;
+    let y0 = VISIBLE_TOP + (VISIBLE_HEIGHT - BOOT_LOGO_H * BOOT_LOGO_SCALE) / 2;
+    for &(gx, gy) in BOOT_LOGO.iter() {
+        for sy in 0..BOOT_LOGO_SCALE {
+            for sx in 0..BOOT_LOGO_SCALE {
+                fb.set_pixel(x0 + gx * BOOT_LOGO_SCALE + sx, y0 + gy * BOOT_LOGO_SCALE + sy, true);
+            }
+        }
+    }
+    fb
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, not(target_os = "none")))]
@@ -806,6 +838,31 @@ mod tests {
     fn as_bytes_length() {
         let fb = FrameBuffer::new();
         assert_eq!(fb.as_bytes().len(), FRAME_BYTES);
+    }
+
+    #[test]
+    fn boot_logo_pixels_centered_and_scaled() {
+        let fb = boot_logo();
+        // 25 grid points × 3×3 block, none overlapping = 225 lit pixels.
+        let lit = (0..WIDTH)
+            .flat_map(|x| (0..HEIGHT).map(move |y| (x, y)))
+            .filter(|&(x, y)| fb.get_pixel(x, y))
+            .count();
+        assert_eq!(lit, 25 * 9);
+
+        // Centering: x0=47, y0=11 (VISIBLE_TOP + (VISIBLE_HEIGHT-30)/2).
+        // First grid point is (1,0) -> block top-left at (47+3, 11) = (50, 11).
+        assert!(fb.get_pixel(50, 11));
+        assert!(fb.get_pixel(52, 13)); // bottom-right of that 3×3 block
+        // Nothing bleeds into the hidden bezel rows (y < VISIBLE_TOP).
+        for x in 0..WIDTH {
+            for y in 0..VISIBLE_TOP {
+                assert!(!fb.get_pixel(x, y), "bezel row {y} col {x} lit");
+            }
+        }
+        // Corners stay dark.
+        assert!(!fb.get_pixel(0, VISIBLE_TOP));
+        assert!(!fb.get_pixel(WIDTH - 1, HEIGHT - 1));
     }
 
     #[test]
