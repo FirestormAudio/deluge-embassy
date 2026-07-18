@@ -28,8 +28,7 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
     // Strip everything the on-device loader never reads (it parses only the ELF
     // program headers + entry point) before sending.  A debug build is mostly
     // `.debug_*`/symbol sections that never become a PT_LOAD segment, so they
-    // bloat the transfer — and can overflow the loader's upload scratch window —
-    // for zero on-device benefit.  `--no-strip` opts out.
+    // bloat the transfer for zero on-device benefit.  `--no-strip` opts out.
     let upload_elf = if args.iter().any(|a| a == "--no-strip") {
         elf.clone()
     } else {
