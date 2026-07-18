@@ -38,9 +38,9 @@ const KEYBOARD_CHARS: [[[char; 11]; 5]; 4] = [
     // QWERTY
     [
         ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-'],
-        ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '\0'],
-        ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', '\0', '\''],
-        ['Z', 'X', 'C', 'V', 'B', 'N', 'M', ',', '.', '\0', '\0'],
+        ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '/'],   // col10: '/'
+        ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', '\''],  // col9: ';'
+        ['Z', 'X', 'C', 'V', 'B', 'N', 'M', ',', '.', '\\', '\0'], // col9: '\'
         ['\0', '\0', ' ', ' ', ' ', ' ', ' ', ' ', '\0', '\0', '\0'],
     ],
     // AZERTY
@@ -68,6 +68,34 @@ const KEYBOARD_CHARS: [[[char; 11]; 5]; 4] = [
         ['\0', '\0', ' ', ' ', ' ', ' ', ' ', ' ', '\0', '\0', '\0'],
     ],
 ];
+
+/// Map a base (unshifted) char to its shifted form on the US-QWERTY layout.
+fn shifted(base: char) -> char {
+    match base {
+        '1' => '!', '2' => '@', '3' => '#', '4' => '$', '5' => '%',
+        '6' => '^', '7' => '&', '8' => '*', '9' => '(', '0' => ')',
+        '-' => '_', '\'' => '"', ',' => '<', '.' => '>',
+        '/' => '?', ';' => ':', '\\' => '|',
+        c if c.is_ascii_lowercase() => c.to_ascii_uppercase(),
+        other => other,
+    }
+}
+
+/// Resolve a physical key's label char to the character it emits, given shift.
+/// Letters are lower-case unshifted; `shift` upper-cases letters and applies
+/// the shifted-symbol map.
+fn resolve(base: char, shift: bool) -> char {
+    let lower = if base.is_ascii_uppercase() {
+        base.to_ascii_lowercase()
+    } else {
+        base
+    };
+    if shift {
+        shifted(lower)
+    } else {
+        lower
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TextKeyboardComponent {
@@ -178,6 +206,11 @@ impl TextKeyboardComponent {
             f.paint(Pad::new(QWERTY_HOME_ROW + 1, x), RGB::new(0, 0, 255));
         }
 
+        // New symbol keys filling previously-empty QWERTY slots. '(HOME, 12)'
+        // (';') is already lit by the home-row loop; these two are not.
+        f.paint(Pad::new(QWERTY_HOME_ROW - 1, 13), RGB::new(10, 10, 10)); // '/'
+        f.paint(Pad::new(QWERTY_HOME_ROW + 1, 12), RGB::new(10, 10, 10)); // '\'
+
         if shift_held {
             for x in 1..3 {
                 f.paint(Pad::new(QWERTY_HOME_ROW + 1, x), RGB::new(100, 100, 255));
@@ -198,7 +231,7 @@ impl TextKeyboardComponent {
             }
             let (x, y) = (ev.pad.col, ev.pad.row);
             if let Some(ch) = self.char_at(x, y) {
-                return Some(KeyPress::Char(ch));
+                return Some(KeyPress::Char(resolve(ch, shift_held)));
             }
             if self.is_backspace(x, y) {
                 return Some(KeyPress::Backspace);
@@ -246,6 +279,40 @@ mod tests {
     }
 
     #[test]
+    fn resolve_toggles_letter_case() {
+        assert_eq!(resolve('A', false), 'a');
+        assert_eq!(resolve('A', true), 'A');
+        assert_eq!(resolve('z', false), 'z');
+    }
+
+    #[test]
+    fn resolve_shifted_symbols() {
+        assert_eq!(resolve('1', true), '!');
+        assert_eq!(resolve('7', true), '&');
+        assert_eq!(resolve('-', true), '_');
+        assert_eq!(resolve(',', true), '<');
+        assert_eq!(resolve('.', true), '>');
+        assert_eq!(resolve('\'', true), '"');
+        assert_eq!(resolve('/', true), '?');
+        assert_eq!(resolve(';', true), ':');
+        assert_eq!(resolve('\\', true), '|');
+    }
+
+    #[test]
+    fn new_qwerty_symbol_keys_present() {
+        let kb = TextKeyboardComponent::new(KeyboardLayout::Qwerty);
+        assert_eq!(kb.char_at(13, QWERTY_HOME_ROW - 1), Some('/')); // char row1 col10
+        assert_eq!(kb.char_at(12, QWERTY_HOME_ROW), Some(';'));     // char row2 col9
+        assert_eq!(kb.char_at(12, QWERTY_HOME_ROW + 1), Some('\\')); // char row3 col9
+    }
+
+    #[test]
+    fn space_stays_space() {
+        assert_eq!(resolve(' ', false), ' ');
+        assert_eq!(resolve(' ', true), ' ');
+    }
+
+    #[test]
     fn draws_and_reports_keypress() {
         use crate::imode::{GridUi, PadInput};
         let kb = TextKeyboardComponent::new(KeyboardLayout::Qwerty);
@@ -255,10 +322,11 @@ mod tests {
         // Enter key (green) at the home row, col 14.
         assert_eq!(ui.grid().get_pad(QWERTY_HOME_ROW, 14), RGB::new(0, 255, 0));
 
-        // `show` reads input: pressing the home-row col-3 pad yields 'A'.
+        // `show` reads input: pressing the home-row col-3 pad yields 'a'
+        // (unshifted output is now lower-case; see `resolve`).
         let mut input = PadInput::new();
         input.press(Pad::new(QWERTY_HOME_ROW, 3));
         let pressed = ui.run(16, input, |f| kb.show(f, false)).painted().unwrap();
-        assert_eq!(pressed, Some(KeyPress::Char('A')));
+        assert_eq!(pressed, Some(KeyPress::Char('a')));
     }
 }

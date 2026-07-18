@@ -181,6 +181,8 @@ pub unsafe fn channel_start(ch: u8) {
 
 /// Stop a DMA channel immediately: clear its enable bit, then software-reset
 /// it so any in-flight (including circular/peripheral-driven) transfer ceases.
+/// Also clears the channel's DMARS resource selector, releasing its
+/// peripheral-request route.
 ///
 /// Intended for use before handing the SoC to another program — a circular
 /// channel such as the SCIF RX DMA keeps writing to its buffer forever and is
@@ -188,14 +190,19 @@ pub unsafe fn channel_start(ch: u8) {
 /// it will corrupt the next program's memory.
 ///
 /// # Safety
-/// Writes the channel's `CHCTRL` register.
+/// Writes the channel's `CHCTRL` and DMARS registers.
 pub unsafe fn stop(ch: u8) {
     unsafe {
-        let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_CLREN);
+        let chctrl = ch_reg(ch, OFF_CHCTRL) as usize;
+        crate::mmio::write32(chctrl, CHCTRL_CLREN);
         #[cfg(target_os = "none")]
         core::arch::asm!("dsb", options(nostack));
-        chctrl.write_volatile(CHCTRL_SWRST);
+        crate::mmio::write32(chctrl, CHCTRL_SWRST);
+        // Release the peripheral request route too: SWRST resets CHCTRL but not
+        // DMARS, so a latched route (e.g. SCIF1-RX = 0x66) would keep claiming
+        // its request line and starve the next program's channel. Clearing it
+        // here is the teardown U-Boot's deluge_reset_dmac() used to do.
+        crate::mmio::write32(dmars_reg(ch) as usize, 0);
     }
 }
 
@@ -699,5 +706,24 @@ mod tests {
             0x00E2_00E1,
             "odd in high, even preserved"
         );
+    }
+
+    /// `stop` must both software-reset the channel and release its DMARS
+    /// request route, so a latched peripheral route (e.g. SCIF1-RX = 0x66)
+    /// cannot keep claiming its request line after handoff.
+    #[test]
+    fn stop_clears_chctrl_and_dmars() {
+        crate::mmio::test::reset();
+        let ch = 5u8;
+        // Seed a live channel-control value and a latched SCIF1-RX route.
+        crate::mmio::test::poke32(ch_reg(ch, OFF_CHCTRL) as usize, CHCTRL_SETEN);
+        crate::mmio::test::poke32(dmars_reg(ch) as usize, 0x0000_0066);
+        unsafe { stop(ch) };
+        // Last CHCTRL write is the software reset; DMARS is released.
+        assert_eq!(
+            crate::mmio::test::peek32(ch_reg(ch, OFF_CHCTRL) as usize),
+            CHCTRL_SWRST
+        );
+        assert_eq!(crate::mmio::test::peek32(dmars_reg(ch) as usize), 0);
     }
 }

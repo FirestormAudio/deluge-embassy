@@ -180,7 +180,10 @@ async fn pic_rx_task() {
 /// receive DMA — see the call site.
 pub(crate) unsafe fn quiesce_for_handoff() {
     unsafe {
-        // Stop every DMA channel (covers PIC RX/TX, SD, and OLED channels).
+        // Stop + software-reset every DMA channel and clear its DMARS request
+        // route (covers PIC RX/TX, SD, and OLED channels). Clearing DMARS here
+        // is what lets Linux's rz-dmac claim SCIF1-RX cleanly — previously
+        // U-Boot's deluge_reset_dmac() had to do it after us.
         for ch in 0..16u8 {
             rza1l_hal::dmac::stop(ch);
         }
@@ -192,15 +195,16 @@ pub(crate) unsafe fn quiesce_for_handoff() {
     }
 }
 
-/// Blank the OLED right before handing off to a launched image, so it starts on
-/// a clean panel instead of inheriting the loader's menu — even if the image
-/// never touches the display.
+/// Draw the Deluge droplet right before handing off to a launched image, so the
+/// panel holds the boot logo (not the loader's menu) all the way through U-Boot
+/// and early kernel until the image's own display code takes over. Replaces the
+/// former blank so early boot is never a dark panel.
 ///
 /// Must be called while interrupts, the executor, and `pic_rx_task` are still
 /// live: `send_frame` awaits the OLED DMA-completion IRQ and the PIC chip-select
 /// echo, so it cannot complete once the machine has been quiesced for handoff.
-pub(crate) async fn blank_oled() {
-    oled::send_frame(&oled::FrameBuffer::new()).await;
+pub(crate) async fn show_boot_logo() {
+    oled::send_frame(&oled::boot_logo()).await;
 }
 
 /// Write `byte` as two uppercase hex digits into `out[..2]` (for on-OLED
@@ -579,9 +583,9 @@ async fn boot_task(spawner: Spawner) {
             );
             ui::show_message(b"BOOTING", b"FLASH FW").await;
 
-            // Blank the OLED so the launched image starts on a clean panel.
-            // Must run before interrupts/DMA are quiesced (see blank_oled).
-            blank_oled().await;
+            // Draw the boot droplet so the panel shows it through handoff.
+            // Must run before interrupts/DMA are quiesced (see show_boot_logo).
+            show_boot_logo().await;
 
             // Close FAT handles and quiesce, then copy from flash into SRAM via
             // the trampoline (single descriptor) like the SD ELF path.
@@ -653,10 +657,10 @@ async fn boot_task(spawner: Spawner) {
             load_result.entry, load_result.n_sram
         );
 
-        // Blank the OLED so the launched app starts on a clean panel — even if
-        // it never uses the display. Must run before interrupts/DMA are quiesced
-        // (see blank_oled).
-        blank_oled().await;
+        // Draw the boot droplet so the panel shows it through handoff — even if
+        // the launched app never uses the display. Must run before interrupts/DMA
+        // are quiesced (see show_boot_logo).
+        show_boot_logo().await;
 
         // Disable interrupts and close FAT handles before we hand off.
         cortex_ar::interrupt::disable();
