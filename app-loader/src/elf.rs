@@ -55,8 +55,8 @@ pub enum ElfError {
     /// A `PT_LOAD` segment's physical address is outside the permitted regions.
     BadLoadAddress,
     /// The uploaded ELF cannot be stream-loaded: its `PT_LOAD` segments are not
-    /// in non-decreasing, non-overlapping file order, or its program-header
-    /// table is not within the streamed header prefix.
+    /// in non-decreasing, non-overlapping file order, so the loader would have
+    /// to seek backward to place them.
     Unstreamable,
     /// SD card / FAT read or seek error.
     Io(#[allow(dead_code)] FatError),
