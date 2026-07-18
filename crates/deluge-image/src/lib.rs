@@ -18,4 +18,4 @@ pub mod crc;
 pub mod elf;
 pub mod settings;
 
-pub use crc::crc32;
+pub use crc::{Crc32, crc32};
