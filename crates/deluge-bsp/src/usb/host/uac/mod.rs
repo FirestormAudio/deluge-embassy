@@ -7,6 +7,7 @@
 //!
 //! Playback (iso OUT) is Phase 2 (`out.rs`) and not present yet.
 
+pub mod out;
 pub mod resample;
 pub mod ring;
 
