@@ -91,7 +91,12 @@ pub struct UacCaptureMatch {
 pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureMatch, UacError> {
     let coll =
         AudioInterfaceCollection::try_from_configuration(cfg).map_err(|_| UacError::BadDescriptors)?;
-    let ac_interface = coll.control_interface.interface_descriptors[0].interface_number;
+    let ac_interface = coll
+        .control_interface
+        .interface_descriptors
+        .first()
+        .ok_or(UacError::BadDescriptors)?
+        .interface_number;
 
     for asi in coll.audio_streaming_interfaces.iter() {
         let ep = match asi.endpoint_descriptor {
@@ -127,6 +132,12 @@ pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureM
         // `[f32; MAX_CHANNELS]` frame buffer. 0 panics on `chunks_exact`;
         // > MAX_CHANNELS panics on out-of-bounds indexing.
         if num_channels == 0 || num_channels as usize > MAX_CHANNELS {
+            return Err(UacError::UnsupportedFormat);
+        }
+        // Reject at the source: both pumps do `buf[..cap]` against a fixed
+        // `[0u8; 1024]` scratch buffer sized for any real HS iso mps. A
+        // descriptor declaring a larger `wMaxPacketSize` would slice-panic.
+        if ep.max_packet_size as usize > 1024 {
             return Err(UacError::UnsupportedFormat);
         }
 
@@ -314,7 +325,7 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
     pub async fn pump_once(&mut self) -> Result<(), UacError> {
         let ch = self.num_channels as usize;
         let mut buf = [0u8; 1024]; // >= any HS iso mps
-        let cap = self.max_packet as usize;
+        let cap = (self.max_packet as usize).min(buf.len());
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
             Err(PipeError::BadResponse) => {
@@ -365,7 +376,7 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
     pub async fn pump_once_shared(&mut self) -> Result<(), UacError> {
         let ch = self.num_channels as usize;
         let mut buf = [0u8; 1024];
-        let cap = self.max_packet as usize;
+        let cap = (self.max_packet as usize).min(buf.len());
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
             Err(PipeError::BadResponse) => {
@@ -488,6 +499,10 @@ mod tests {
     // FORMAT_TYPE descriptor; num_channels in the AS general descriptor.
 
     fn uac2_mic_cfg(subslot: u8, channels: u8) -> Vec<u8, 256> {
+        uac2_mic_cfg_mps(subslot, channels, 0x0126) // 294, the real HS iso mps
+    }
+
+    fn uac2_mic_cfg_mps(subslot: u8, channels: u8, mps: u16) -> Vec<u8, 256> {
         let mut b: Vec<u8, 256> = Vec::new();
         let push = |s: &[u8], b: &mut Vec<u8, 256>| b.extend_from_slice(s).unwrap();
 
@@ -511,8 +526,8 @@ mod tests {
         push(&[16, 0x24, 0x01, 0x01, 0x00, 0x01, 0x01, 0, 0, 0, channels, 0, 0, 0, 0, 0], &mut b);
         // CS AS FORMAT_TYPE (subtype 0x02): FORMAT_TYPE_I=1, subslot, bit_res.
         push(&[6, 0x24, 0x02, 0x01, subslot, subslot * 8], &mut b);
-        // Std iso IN endpoint 0x81, iso(0x01) async, mps 294, interval 4.
-        push(&[7, 0x05, 0x81, 0x01, 0x26, 0x01, 0x04], &mut b);
+        // Std iso IN endpoint 0x81, iso(0x01) async, mps, interval 4.
+        push(&[7, 0x05, 0x81, 0x01, mps as u8, (mps >> 8) as u8, 0x04], &mut b);
         // CS AS iso endpoint (0x25): general, attrs, controls, lock delay units/val.
         push(&[8, 0x25, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00], &mut b);
 
@@ -563,6 +578,16 @@ mod tests {
         let raw0 = uac2_mic_cfg(3, 0);
         let cfg0 = ConfigurationDescriptor::try_from_slice(&raw0).unwrap();
         assert!(matches!(find_uac_capture(&cfg0), Err(UacError::UnsupportedFormat)));
+    }
+
+    #[test]
+    fn rejects_oversized_max_packet() {
+        // Both pumps do `buf[..cap]` against a fixed `[0u8; 1024]` scratch
+        // buffer. A descriptor declaring `wMaxPacketSize > 1024` must be
+        // rejected here rather than allowed through to slice-panic later.
+        let raw = uac2_mic_cfg_mps(3, 2, 2048);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
     }
 
     // --- UacIn::try_register negotiation ---

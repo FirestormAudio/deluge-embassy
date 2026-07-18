@@ -461,8 +461,11 @@ mod runtime {
                     }
                     Err(RegisterError::NoSupportedInterface) => {
                         // Not a hub — fall through to the MIDI matcher, then
-                        // UAC, so a composite audio+MIDI device gets both
-                        // considered.
+                        // UAC. MIDI binding takes precedence: a composite
+                        // audio+MIDI device that binds as MIDI will not have
+                        // its audio captured in Phase 1. Pure UAC audio
+                        // devices fail `bind_midi` and fall through to
+                        // `bind_uac`.
                         match ConfigurationDescriptor::try_from_slice(&config_buf) {
                             Ok(cfg) => {
                                 if !bind_midi(&handle, spawner, &dev_info, &cfg) {
