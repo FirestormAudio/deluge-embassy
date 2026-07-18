@@ -4,6 +4,7 @@ members = [
   "firmwares/controller-firmware",
   "firmwares/msc-firmware",
   "firmwares/wp-probe",
+  "firmwares/vbus-probe",
   "firmwares/uac-host-firmware",
   "crates/rza1l-hal",
   "crates/deluge-alloc",

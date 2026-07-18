@@ -1,0 +1,27 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "vbus-probe"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "vbus-probe"
+test = false
+
+[dependencies]
+rza1l-hal = { path = "../../crates/rza1l-hal" }
+deluge-alloc = { path = "../../crates/deluge-alloc" }
+deluge-bsp = { path = "../../crates/deluge-bsp" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+log = { workspace = true }
+
+[features]
+## Enable RTT (SEGGER Real-Time Transfer) debug logging.
+default = []
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]
