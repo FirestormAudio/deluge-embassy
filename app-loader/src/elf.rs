@@ -54,6 +54,10 @@ pub enum ElfError {
     WrongFormat,
     /// A `PT_LOAD` segment's physical address is outside the permitted regions.
     BadLoadAddress,
+    /// The uploaded ELF cannot be stream-loaded: its `PT_LOAD` segments are not
+    /// in non-decreasing, non-overlapping file order, or its program-header
+    /// table is not within the streamed header prefix.
+    Unstreamable,
     /// SD card / FAT read or seek error.
     Io(#[allow(dead_code)] FatError),
     /// `read` returned 0 before the segment was fully copied.

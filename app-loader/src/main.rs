@@ -639,6 +639,7 @@ async fn boot_task(spawner: Spawner) {
                     elf::ElfError::BadMagic => b"BAD MAGIC",
                     elf::ElfError::WrongFormat => b"WRONG FORMAT",
                     elf::ElfError::BadLoadAddress => b"BAD LOAD ADDR",
+                    elf::ElfError::Unstreamable => b"BAD LAYOUT",
                     _ => b"SEE LOG",
                 };
                 error!("ELF load error: {:?}", e);

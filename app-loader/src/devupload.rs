@@ -198,6 +198,7 @@ async fn receive(rx: Receiver<'static, Rusb1Driver>) -> ! {
                     elf::ElfError::BadMagic => b"BAD MAGIC",
                     elf::ElfError::WrongFormat => b"WRONG FORMAT",
                     elf::ElfError::BadLoadAddress => b"BAD LOAD ADDR",
+                    elf::ElfError::Unstreamable => b"BAD LAYOUT",
                     elf::ElfError::UnexpectedEof => b"TRUNCATED",
                     _ => b"SEE LOG",
                 };
