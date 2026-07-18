@@ -230,10 +230,10 @@ mod runtime {
         dev_info: &embassy_usb_host::handler::EnumerationInfo,
         cfg: &ConfigurationDescriptor<'_>,
     ) -> bool {
-        use crate::usb::host::uac::UacIn;
+        use crate::usb::host::uac::Uac;
 
         let addr = dev_info.device_address;
-        match embassy_futures::block_on(UacIn::try_register(handle, addr, dev_info.split(), cfg)) {
+        match embassy_futures::block_on(Uac::try_register(handle, addr, dev_info.split(), cfg)) {
             Ok(host) => {
                 info!(
                     "usb_host: UAC capture device VID={:04x} PID={:04x} addr={} channels={}",
@@ -250,10 +250,14 @@ mod runtime {
                 // FIRST device that is still streaming — with no rollback,
                 // since nothing was mutated on this path in the first place.
                 let ch = host.channels();
+                let play_ch = host.playback_channels();
                 match uac_capture_task(host) {
                     Ok(token) => {
                         spawner.spawn(token);
                         super::uac::shared::begin(ch);
+                        if play_ch > 0 {
+                            super::uac::shared::playback_begin(play_ch);
+                        }
                         true
                     }
                     Err(_) => {
@@ -275,7 +279,7 @@ mod runtime {
     /// this exits. Publishes decoded frames into [`super::uac::shared`], the
     /// cross-task bridge the engine drains via `capture_read`.
     #[embassy_executor::task]
-    async fn uac_capture_task(mut host: crate::usb::host::uac::UacIn<'static, HostAlloc>) {
+    async fn uac_capture_task(mut host: crate::usb::host::uac::Uac<'static, HostAlloc>) {
         // BadResponse is the HAL's detach signal AND a transient iso-fault signal.
         // Absorb transient faults; treat only sustained failure as a real detach.
         // 24 consecutive microframe failures ~= 3 ms of no data, far beyond any
@@ -294,6 +298,7 @@ mod runtime {
             }
         }
         super::uac::shared::end();
+        super::uac::shared::playback_end();
         // `host` drops here → pipes drop → address reclaimed.
     }
 
