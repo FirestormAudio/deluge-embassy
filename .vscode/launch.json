@@ -470,6 +470,76 @@
     "runToEntryPoint": "main",          // now resolves to the APP's main
     "rttConfig": { "enabled": true, "address": "auto",
                    "decoders": [{ "type": "console", "port": 0 }] }
-  }
+  },
+    {
+      // USB **host** validation firmware: brings USB0 up in host mode, binds the
+      // host UAC driver on connect, and loops captured audio back to playback.
+      // Build first: `cargo build-uac` (debug, RTT). Plug a class-compliant
+      // full-duplex USB audio interface into the Deluge's USB port; watch the
+      // OLED / rtt-uac.log for enumeration, negotiated format, and loopback stats.
+      "name": "uac-host-firmware (debug)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/uac-host-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-uac.log"
+          }
+        ]
+      },
+    },
+    {
+      // Release build (no RTT): `cargo build-fw-rel -p uac-host-firmware`.
+      "name": "uac-host-firmware (release)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/release/uac-host-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    }
   ]
 }
