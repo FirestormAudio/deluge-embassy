@@ -242,15 +242,22 @@ mod runtime {
                     addr,
                     host.channels()
                 );
-                super::uac::shared::begin(host.channels());
+                // Capture the channel count before `host` moves into the
+                // task, and only call `shared::begin` once the spawn actually
+                // succeeds. If a 2nd concurrent UAC device hits a full task
+                // pool, `begin` must not run: it resets the shared ring and
+                // overwrites `channels`, which would corrupt state for a
+                // FIRST device that is still streaming — with no rollback,
+                // since nothing was mutated on this path in the first place.
+                let ch = host.channels();
                 match uac_capture_task(host) {
                     Ok(token) => {
                         spawner.spawn(token);
+                        super::uac::shared::begin(ch);
                         true
                     }
                     Err(_) => {
                         error!("usb_host: could not spawn UAC capture task");
-                        super::uac::shared::end();
                         false
                     }
                 }

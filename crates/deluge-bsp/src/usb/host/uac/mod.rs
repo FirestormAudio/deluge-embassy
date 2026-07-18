@@ -300,14 +300,28 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
     /// the drift ratio from the new ring fill.
     ///
     /// Iso has no retries: a failed or empty transfer logs and returns `Ok`
-    /// (the ring absorbs the gap). Only a channel/format invariant break is an
-    /// error.
+    /// (the ring absorbs the gap) — EXCEPT [`PipeError::BadResponse`], which
+    /// this returns as `Err` to end the stream. That's not a design choice
+    /// about protocol errors specifically; it's what the RUSB1 HAL's DTCH
+    /// (detach) handler produces: it force-sets NRDY on every pipe to unstick
+    /// any in-flight transfer (`rza1l-hal/src/usb/host.rs`, the `INTSTS1_DTCH`
+    /// arm of `hcd_int_handler`), and `poll_pipe` maps NRDY to
+    /// `PipeError::BadResponse` unconditionally (there is no
+    /// `PipeError::Disconnected` anywhere in this HAL). Without this, the
+    /// caller's loop absorbs the detach error, calls in again, and the next
+    /// `request_in` awaits a pipe the (now UACT=0, idle) bus will never
+    /// service — the task hangs forever, its pipes/address never freed.
     pub async fn pump_once(&mut self) -> Result<(), UacError> {
         let ch = self.num_channels as usize;
         let mut buf = [0u8; 1024]; // >= any HS iso mps
         let cap = self.max_packet as usize;
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
+            Err(PipeError::BadResponse) => {
+                // Detach (see doc comment above): propagate so the caller's
+                // loop exits and drops the pipes.
+                return Err(PipeError::BadResponse.into());
+            }
             Err(e) => {
                 // Lost packet: ring absorbs it. Do not tear down the stream.
                 log::warn!("uac: iso IN transfer failed ({:?}), absorbing gap", e);
@@ -343,6 +357,10 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
     /// Like [`Self::pump_once`], but publishes to the process-wide capture
     /// bridge so a different task (the engine) can `capture_read`. Used by the
     /// host task.
+    ///
+    /// Same detach handling as [`Self::pump_once`]: see its doc comment for
+    /// why [`PipeError::BadResponse`] specifically propagates as `Err` while
+    /// every other iso error is absorbed.
     #[cfg(target_os = "none")]
     pub async fn pump_once_shared(&mut self) -> Result<(), UacError> {
         let ch = self.num_channels as usize;
@@ -350,6 +368,11 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
         let cap = self.max_packet as usize;
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
+            Err(PipeError::BadResponse) => {
+                // Detach: propagate so the capture task exits and drops the
+                // pipes (see `pump_once`'s doc comment).
+                return Err(PipeError::BadResponse.into());
+            }
             Err(e) => {
                 // Lost packet: the shared ring absorbs it; keep streaming.
                 log::warn!("uac: iso IN transfer failed ({:?}), absorbing gap", e);
@@ -649,6 +672,32 @@ mod tests {
 
         // A failed iso transfer must NOT error out — the stream survives.
         block_on(host.pump_once()).expect("iso error is absorbed, not fatal");
+    }
+
+    #[test]
+    fn pump_propagates_on_detach() {
+        // `PipeError::BadResponse` is what the RUSB1 HAL's DTCH handler
+        // forces on every pipe on physical detach (see the doc comment on
+        // `pump_once`). Unlike a transient error (`Timeout`, tested above),
+        // this must come back as `Err` so `uac_capture_task`'s loop can
+        // `break`, drop `host`, and free the pipes/address.
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        *state.script.borrow_mut() = crate::usb::host::mock::Script {
+            reads: Default::default(),
+            read_err: Some(embassy_usb_driver::host::PipeError::BadResponse),
+        };
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+
+        let err = block_on(host.pump_once()).expect_err("detach must be propagated, not absorbed");
+        assert!(matches!(err, UacError::Transfer(PipeError::BadResponse)));
     }
 
     #[test]
