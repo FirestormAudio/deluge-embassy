@@ -15,9 +15,9 @@
 //! magic b"DLUP" | version u8 | flags u8 | len u32 | crc32 u32 | <len ELF bytes>
 //! ```
 //! `crc32` is the shared [`deluge_image::crc32`] of the `len` ELF bytes.  The
-//! image is streamed into a high-SDRAM scratch window (clear of both the SDRAM
-//! load region and the SRAM staging window the loader uses), validated, then
-//! handed to [`crate::elf::load_from_slice`].
+//! image is streamed straight to each `PT_LOAD` segment's load / SRAM-staging
+//! address as it arrives, checksummed incrementally, and launched once the CRC
+//! verifies.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -28,6 +28,9 @@ use log::{info, warn};
 
 use rza1l_hal::gic;
 use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, disconnect, init_device_mode};
+
+use deluge_image::Crc32;
+use deluge_image::elf::{MAX_PHDRS, SDRAM_HI, SDRAM_LO, StreamRouter};
 
 use crate::{elf, launcher, ui};
 
@@ -45,17 +48,18 @@ const HEADER_TAIL: usize = 1 + 1 + 4 + 4;
 /// `usb_debug` / MSC paths).
 const MAX_PACKET: u16 = 512;
 
-// ── SDRAM scratch window for the received ELF ─────────────────────────────────
+// ── Streaming loader window ───────────────────────────────────────────────────
 //
-// The 64 MB SDRAM runs 0x0C000000..0x10000000.  The loader uses 0x0C000000..
-// 0x0F000000 for direct SDRAM segment loads and 0x0F000000..~0x0F2E0000 as the
-// SRAM staging window.  We stage the *raw uploaded ELF* above all of that so the
-// later `load_from_slice` copies never overlap their own source.
-/// Base of the raw-upload scratch window (above the SRAM staging window).
-const SCRATCH_ADDR: u32 = 0x0F30_0000;
-/// Length of the scratch window (`0x0F300000..0x0FF00000`, 12 MB, well inside
-/// the 64 MB SDRAM).  Uploads larger than this are rejected.
-const SCRATCH_LEN: u32 = 0x00C0_0000;
+// The upload is routed straight to each segment's load / SRAM-staging address as
+// it arrives — there is no whole-image scratch buffer. Only the front matter
+// (ELF header + program-header table) is buffered, and the app-segment ceiling
+// bounds a sane maximum upload length.
+/// Bytes of front matter buffered to build the [`StreamRouter`]: ELF header plus
+/// the largest program-header table.
+const HEADER_BUF: usize = 52 + MAX_PHDRS * 32;
+/// Largest upload accepted (the SDRAM app-region span). Per-segment placement is
+/// still validated; this only rejects absurd lengths early.
+const MAX_UPLOAD: u32 = SDRAM_HI - SDRAM_LO;
 
 // ── USB descriptor / class `'static` backing storage ──────────────────────────
 
@@ -148,6 +152,25 @@ unsafe fn build_usb() -> (
     }
 }
 
+/// Copy a contiguous run of upload bytes starting at file offset `off` to their
+/// segment destinations, discarding bytes that fall in gaps.
+///
+/// # Safety
+/// Writes physical RAM at addresses the [`StreamRouter`] validated via
+/// `place_segment`; the caller must ensure no live data occupies those regions
+/// (true during the boot menu, like the SD loader).
+unsafe fn route_bytes(router: &StreamRouter, mut off: u32, mut data: &[u8]) {
+    while !data.is_empty() {
+        let step = router.route_at(off);
+        let take = (step.run as usize).min(data.len());
+        if let Some(dst) = step.dst {
+            unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, take) };
+        }
+        off += take as u32;
+        data = &data[take..];
+    }
+}
+
 /// Receive framed uploads forever.  Returns only by loading and launching an
 /// image (so the return type is `!`); a malformed/short/CRC-bad frame is logged,
 /// reported on the OLED, and listening resumes.
@@ -163,51 +186,122 @@ async fn receive(rx: Receiver<'static, Rusb1Driver>) -> ! {
         let len = u32::from_le_bytes([tail[2], tail[3], tail[4], tail[5]]);
         let expect_crc = u32::from_le_bytes([tail[6], tail[7], tail[8], tail[9]]);
 
-        if version != VERSION || len == 0 || len > SCRATCH_LEN {
+        if version != VERSION || len == 0 || len > MAX_UPLOAD {
             warn!("devupload: bad header (version={version}, len={len}); resyncing");
-            // Header looked plausible enough to reach here but is unusable; the
-            // body bytes (if any) will be resynced past as non-magic noise.
             continue;
         }
 
-        // A header has arrived: take the OLED from the menu selector and show
-        // receive progress.
         ui::UPLOAD_ACTIVE.store(true, Ordering::Release);
-        info!("devupload: receiving {len} byte image");
+        info!("devupload: streaming {len} byte image");
 
-        let dst = SCRATCH_ADDR as *mut u8;
-        reader.read_to_ptr(dst, len).await;
+        let mut crc = Crc32::new();
 
-        let image = unsafe { core::slice::from_raw_parts(dst as *const u8, len as usize) };
-        let crc = deluge_image::crc32(image);
-        if crc != expect_crc {
-            warn!("devupload: CRC mismatch (got {crc:#010x}, want {expect_crc:#010x})");
-            ui::show_message(b"UPLOAD ERROR", b"BAD CRC").await;
+        // 1. Buffer + CRC the front matter (ELF header + program headers).
+        let mut prefix = [0u8; HEADER_BUF];
+        reader.read_exact(&mut prefix[..52]).await;
+        let e_phoff = deluge_image::elf::le32(&prefix, 28);
+        let e_phnum = deluge_image::elf::le16(&prefix, 44) as usize;
+        if e_phoff < 52 || e_phnum > MAX_PHDRS {
+            warn!("devupload: bad phdr table (e_phoff={e_phoff}, e_phnum={e_phnum})");
+            ui::show_message(b"UPLOAD ERROR", b"BAD LAYOUT").await;
             Timer::after(Duration::from_secs(2)).await;
             ui::UPLOAD_ACTIVE.store(false, Ordering::Release);
             continue;
         }
+        let header_end = e_phoff as usize + e_phnum * 32;
+        if header_end > HEADER_BUF || header_end as u32 > len {
+            warn!("devupload: phdr table outside header window (header_end={header_end})");
+            ui::show_message(b"UPLOAD ERROR", b"BAD LAYOUT").await;
+            Timer::after(Duration::from_secs(2)).await;
+            ui::UPLOAD_ACTIVE.store(false, Ordering::Release);
+            continue;
+        }
+        if header_end > 52 {
+            reader.read_exact(&mut prefix[52..header_end]).await;
+        }
+        crc.update(&prefix[..header_end]);
 
-        match unsafe { elf::load_from_slice(image) } {
-            Ok(result) => {
-                info!("devupload: image loaded, entry={:#010x}", result.entry);
-                handoff(result).await
-            }
+        // 2. Build + validate the route plan.
+        let router = match StreamRouter::new(&prefix[..header_end]) {
+            Ok(r) => r,
             Err(e) => {
-                let line2: &[u8] = match e {
+                let line2: &[u8] = match elf::ElfError::from(e) {
                     elf::ElfError::BadMagic => b"BAD MAGIC",
                     elf::ElfError::WrongFormat => b"WRONG FORMAT",
                     elf::ElfError::BadLoadAddress => b"BAD LOAD ADDR",
                     elf::ElfError::Unstreamable => b"BAD LAYOUT",
-                    elf::ElfError::UnexpectedEof => b"TRUNCATED",
                     _ => b"SEE LOG",
                 };
                 warn!("devupload: image rejected: {e:?}");
                 ui::show_message(b"UPLOAD ERROR", line2).await;
                 Timer::after(Duration::from_secs(2)).await;
                 ui::UPLOAD_ACTIVE.store(false, Ordering::Release);
+                continue;
+            }
+        };
+
+        // 3. Replay the buffered front matter through the router (handles a
+        //    first segment whose p_offset is 0), then stream the remainder.
+        unsafe { route_bytes(&router, 0, &prefix[..header_end]) };
+        let total = len as usize;
+        let mut off = header_end as u32;
+        let mut remaining = total - header_end;
+        let mut last_pct = u8::MAX;
+        while remaining > 0 {
+            let chunk = reader.next_chunk(remaining).await;
+            crc.update(chunk);
+            unsafe { route_bytes(&router, off, chunk) };
+            off += chunk.len() as u32;
+            remaining -= chunk.len();
+            let pct = (((total - remaining) as u64) * 100 / total as u64) as u8;
+            if pct != last_pct {
+                ui::show_progress(b"RECEIVING", pct).await;
+                last_pct = pct;
             }
         }
+
+        // 4. Verify integrity before anything irreversible.
+        if crc.finalize() != expect_crc {
+            warn!("devupload: CRC mismatch");
+            ui::show_message(b"UPLOAD ERROR", b"BAD CRC").await;
+            Timer::after(Duration::from_secs(2)).await;
+            ui::UPLOAD_ACTIVE.store(false, Ordering::Release);
+            continue;
+        }
+
+        // 5. Zero-extend BSS tails and collect SRAM descriptors for handoff.
+        let mut sram_descs = [elf::SramSegDesc::default(); MAX_PHDRS];
+        let mut n_sram = 0usize;
+        for seg in router.segments() {
+            let filesz = seg.file_end - seg.file_start;
+            let zero_extra = seg.memsz - filesz;
+            if zero_extra > 0 {
+                unsafe {
+                    core::ptr::write_bytes(
+                        (seg.write_addr + filesz) as *mut u8,
+                        0,
+                        zero_extra as usize,
+                    )
+                };
+            }
+            if seg.sram {
+                sram_descs[n_sram] = elf::SramSegDesc {
+                    src: seg.write_addr,
+                    dst: seg.final_dst,
+                    filesz,
+                    zero_extra,
+                };
+                n_sram += 1;
+            }
+        }
+
+        let result = elf::LoadResult {
+            entry: router.entry(),
+            sram_descs,
+            n_sram,
+        };
+        info!("devupload: image loaded, entry={:#010x}", result.entry);
+        handoff(result).await
     }
 }
 
@@ -317,35 +411,16 @@ impl PacketReader {
         }
     }
 
-    /// Stream exactly `len` bytes into the raw destination at `dst`, updating the
-    /// OLED progress bar as it goes.
-    ///
-    /// # Safety-ish
-    /// `dst` must point at `len` writable bytes (the SDRAM scratch window).
-    async fn read_to_ptr(&mut self, dst: *mut u8, len: u32) {
-        let len = len as usize;
-        let mut received = 0usize;
-        let mut last_pct = u8::MAX;
-        while received < len {
-            if self.pos >= self.fill {
-                self.refill().await;
-            }
-            let take = (self.fill - self.pos).min(len - received);
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.buf.as_ptr().add(self.pos),
-                    dst.add(received),
-                    take,
-                );
-            }
-            self.pos += take;
-            received += take;
-
-            let pct = ((received as u64) * 100 / len as u64) as u8;
-            if pct != last_pct {
-                ui::show_progress(b"RECEIVING", pct).await;
-                last_pct = pct;
-            }
+    /// Borrow the next run of received bytes (up to `remaining`), refilling from
+    /// USB as needed. Never returns empty until the caller has taken `remaining`
+    /// bytes across calls.
+    async fn next_chunk(&mut self, remaining: usize) -> &[u8] {
+        if self.pos >= self.fill {
+            self.refill().await;
         }
+        let take = (self.fill - self.pos).min(remaining);
+        let chunk = &self.buf[self.pos..self.pos + take];
+        self.pos += take;
+        chunk
     }
 }
