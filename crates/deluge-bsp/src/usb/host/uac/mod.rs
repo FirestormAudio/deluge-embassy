@@ -704,10 +704,15 @@ pub(crate) mod shared {
             n
         })
     }
+
+    /// Playback channels the hosted device declared, or 0 if none / capture-only.
+    pub fn playback_channels() -> u8 {
+        PLAYBACK.lock(|c| c.borrow().channels)
+    }
 }
 
 #[cfg(target_os = "none")]
-pub use shared::{capture_channels, capture_read, playback_write};
+pub use shared::{capture_channels, capture_read, playback_channels, playback_write};
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
