@@ -42,8 +42,8 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
         fs::read(&upload_elf).map_err(|e| format!("reading {}: {e}", upload_elf.display()))?;
     if bytes.len() > MAX_UPLOAD_BYTES {
         return Err(format!(
-            "image is {} bytes, larger than the loader's {MAX_UPLOAD_BYTES}-byte upload window \
-             — even after stripping it won't fit in RAM.  Build with --release, or trim the app.",
+            "image is {} bytes, larger than the SDRAM app region ({MAX_UPLOAD_BYTES} bytes) \
+             — build with --release, or trim the app.",
             bytes.len(),
         ));
     }
@@ -76,11 +76,12 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The loader's upload-scratch window (`devupload::SCRATCH_LEN`): the device
-/// stages the whole ELF here before parsing it and rejects anything larger, so
-/// catch an oversized image locally with a useful message instead of shipping
-/// 12 MB only for the device to drop it.
-const MAX_UPLOAD_BYTES: usize = 0x00C0_0000; // 12 MiB
+/// The device streams uploads straight to each segment's load address — there is
+/// no whole-image scratch window anymore — so the only real bound is that the
+/// segments fit in the SDRAM app region (`SDRAM_LO..SDRAM_HI`, `0x0C000000..
+/// 0x0FD20000`). Catch an absurd image locally with a useful message instead of
+/// streaming megabytes only for the device to reject a segment.
+const MAX_UPLOAD_BYTES: usize = 0x0FD2_0000 - 0x0C00_0000; // SDRAM app-region span
 
 /// Strip the ELF down to what the loader reads (PT_LOAD segments + entry point)
 /// with the toolchain's `llvm-objcopy --strip-all`, writing a `.stripped`
