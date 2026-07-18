@@ -250,10 +250,14 @@ mod runtime {
                 // FIRST device that is still streaming — with no rollback,
                 // since nothing was mutated on this path in the first place.
                 let ch = host.channels();
+                let play_ch = host.playback_channels();
                 match uac_capture_task(host) {
                     Ok(token) => {
                         spawner.spawn(token);
                         super::uac::shared::begin(ch);
+                        if play_ch > 0 {
+                            super::uac::shared::playback_begin(play_ch);
+                        }
                         true
                     }
                     Err(_) => {
@@ -294,6 +298,7 @@ mod runtime {
             }
         }
         super::uac::shared::end();
+        super::uac::shared::playback_end();
         // `host` drops here → pipes drop → address reclaimed.
     }
 

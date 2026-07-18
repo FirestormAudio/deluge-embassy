@@ -537,10 +537,12 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         }
         // Single source of truth: the shared ring the app actually drains.
         self.r = self.pi.update(shared::fill_frames() as f32);
-        // Full-duplex playback: emit this cycle's device-frame count. The
-        // shared->staging drain that feeds it is wired in the shared-bridge
-        // step; until then this plays silence (staging empty), and it is a
-        // no-op on a capture-only device.
+        // Full-duplex playback: move app-written frames into staging (one short
+        // lock), then emit this cycle's device-frame count. No-op on a
+        // capture-only device.
+        if let Some(pb) = self.playback.as_mut() {
+            shared::playback_drain(&mut pb.ring);
+        }
         let frames = n / frame_bytes;
         self.send_playback(frames).await;
         Ok(())
@@ -629,10 +631,79 @@ pub(crate) mod shared {
     pub fn capture_channels() -> u8 {
         CAPTURE.lock(|c| c.borrow().channels)
     }
+
+    // --- Playback (host->device) bridge ---
+
+    struct Playback {
+        ring: SampleRing,
+        channels: u8,
+        active: bool,
+    }
+
+    static PLAYBACK: Mutex<CriticalSectionRawMutex, RefCell<Playback>> =
+        Mutex::new(RefCell::new(Playback {
+            ring: SampleRing::new(),
+            channels: 0,
+            active: false,
+        }));
+
+    /// Called by the capture task when a full-duplex device is registered.
+    pub(crate) fn playback_begin(channels: u8) {
+        PLAYBACK.lock(|c| {
+            let mut c = c.borrow_mut();
+            c.ring.reset(channels.clamp(1, MAX_CHANNELS as u8) as usize);
+            c.channels = channels;
+            c.active = true;
+        });
+    }
+
+    /// Called by the capture task on detach.
+    pub(crate) fn playback_end() {
+        PLAYBACK.lock(|c| {
+            let mut c = c.borrow_mut();
+            c.active = false;
+            c.channels = 0;
+            c.ring.reset(1);
+        });
+    }
+
+    /// Move all available whole frames from the shared playback ring into `dst`
+    /// (the pump's local staging ring) under ONE short critical section
+    /// (bounded by ring capacity, no await). The resampler then pulls from
+    /// `dst` outside the lock.
+    pub(crate) fn playback_drain(dst: &mut SampleRing) {
+        PLAYBACK.lock(|c| {
+            let mut c = c.borrow_mut();
+            let ch = c.channels.max(1) as usize;
+            let mut frame = [0.0f32; MAX_CHANNELS];
+            while c.ring.fill_frames() >= 1 && dst.fill_frames() < dst.capacity_frames() {
+                c.ring.read(&mut frame[..ch]);
+                dst.push_frame(&frame[..ch]);
+            }
+        });
+    }
+
+    /// App-facing: enqueue interleaved playback frames. Short return = ring
+    /// full; never blocks.
+    pub fn playback_write(samples: &[f32]) -> usize {
+        PLAYBACK.lock(|c| {
+            let mut c = c.borrow_mut();
+            let ch = c.channels.max(1) as usize;
+            let mut n = 0;
+            for frame in samples.chunks_exact(ch) {
+                if c.ring.fill_frames() >= c.ring.capacity_frames() {
+                    break;
+                }
+                c.ring.push_frame(frame);
+                n += ch;
+            }
+            n
+        })
+    }
 }
 
 #[cfg(target_os = "none")]
-pub use shared::{capture_channels, capture_read};
+pub use shared::{capture_channels, capture_read, playback_write};
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
