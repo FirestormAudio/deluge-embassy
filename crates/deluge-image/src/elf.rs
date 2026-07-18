@@ -27,20 +27,27 @@ pub const PT_LOAD: u32 = 1;
 /// Uncached mirror alias offset (`rza1l_hal::UNCACHED_MIRROR_OFFSET`).
 pub const UNCACHED_MIRROR_OFFSET: u32 = 0x4000_0000;
 
-/// SDRAM region usable by app images: `0x0C000000..0x0F000000` (the top 1 MB is
-/// reserved for the SRAM staging window, see [`SDRAM_STAGE_BASE`]).
+/// SDRAM region usable by app images: `0x0C000000..0x0FD20000`. The top
+/// 2.875 MB (`0x0FD20000..0x10000000`) is the SRAM staging window (see
+/// [`SDRAM_STAGE_BASE`]) and is off-limits to app `PT_LOAD` segments.
 pub const SDRAM_LO: u32 = 0x0C00_0000;
-/// Exclusive end of the directly-writable SDRAM region.
-pub const SDRAM_HI: u32 = 0x0F00_0000;
 
 /// Upper-SRAM region apps may target: `0x20020000..0x20300000`.
 pub const SRAM_LOAD_ORIGIN: u32 = 0x2002_0000;
 /// Exclusive end of the permitted SRAM load region.
 pub const SRAM_HI: u32 = 0x2030_0000;
 
-/// Base of the SDRAM staging window for SRAM-targeting segments. A segment for
-/// SRAM address `p` is parked at `SDRAM_STAGE_BASE + (p - SRAM_LOAD_ORIGIN)`.
-pub const SDRAM_STAGE_BASE: u32 = 0x0F00_0000;
+/// Exclusive top of the 64 MB SDRAM.
+const SDRAM_TOP: u32 = 0x1000_0000;
+
+/// Base of the SDRAM staging window for SRAM-targeting segments, pinned to the
+/// top of SDRAM and exactly as large as the on-chip SRAM app region it shadows.
+/// A segment for SRAM address `p` is parked at
+/// `SDRAM_STAGE_BASE + (p - SRAM_LOAD_ORIGIN)`.
+pub const SDRAM_STAGE_BASE: u32 = SDRAM_TOP - (SRAM_HI - SRAM_LOAD_ORIGIN);
+/// Exclusive end of the directly-writable SDRAM app region. Equals
+/// [`SDRAM_STAGE_BASE`]: everything above is staging, not app-usable.
+pub const SDRAM_HI: u32 = SDRAM_STAGE_BASE;
 
 /// Maximum program headers the loader processes.
 pub const MAX_PHDRS: usize = 8;
@@ -584,6 +591,15 @@ mod tests {
         // The whole SRAM region stays inside SDRAM (staging window ≤ ~2.875 MB).
         let top = sram_stage_addr(SRAM_HI - 1);
         assert!(top < 0x1000_0000, "staging must stay within 64 MB SDRAM");
+    }
+
+    #[test]
+    fn sdram_ceiling_is_staging_base_at_top_of_sdram() {
+        // The app-segment ceiling equals the staging base, and the staging window
+        // (= the on-chip SRAM app-region size) sits flush against the top of SDRAM.
+        assert_eq!(SDRAM_HI, 0x0FD2_0000);
+        assert_eq!(SDRAM_HI, SDRAM_STAGE_BASE);
+        assert_eq!(SDRAM_STAGE_BASE + (SRAM_HI - SRAM_LOAD_ORIGIN), 0x1000_0000);
     }
 
     /// Build a minimal flat image carrying valid FSB metadata.
