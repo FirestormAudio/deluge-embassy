@@ -55,7 +55,7 @@ pub const MAX_PHDRS: usize = 8;
 /// Where a `PT_LOAD` segment is allowed to land.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LoadTarget {
-    /// SDRAM (`0x0C000000..0x0F000000`): written directly to its final address.
+    /// SDRAM (`0x0C000000..0x0FD20000`): written directly to its final address.
     Sdram,
     /// Upper SRAM (`0x20020000..0x20300000`): staged in SDRAM, relocated later.
     Sram,
