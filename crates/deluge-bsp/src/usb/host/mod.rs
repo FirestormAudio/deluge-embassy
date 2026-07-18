@@ -276,14 +276,25 @@ mod runtime {
     /// cross-task bridge the engine drains via `capture_read`.
     #[embassy_executor::task]
     async fn uac_capture_task(mut host: crate::usb::host::uac::UacIn<'static, HostAlloc>) {
+        // BadResponse is the HAL's detach signal AND a transient iso-fault signal.
+        // Absorb transient faults; treat only sustained failure as a real detach.
+        // 24 consecutive microframe failures ~= 3 ms of no data, far beyond any
+        // single-packet glitch but a prompt exit on a real unplug.
+        const DETACH_THRESHOLD: u32 = 24;
+        let mut consecutive_errs: u32 = 0;
         loop {
-            if host.pump_once_shared().await.is_err() {
-                // Only a fatal invariant break exits; iso errors are absorbed.
-                break;
+            match host.pump_once_shared().await {
+                Ok(()) => consecutive_errs = 0,
+                Err(_) => {
+                    consecutive_errs += 1;
+                    if consecutive_errs >= DETACH_THRESHOLD {
+                        break;
+                    }
+                }
             }
         }
         super::uac::shared::end();
-        // `host` drops here → pipes freed → address reclaimed (MIDI precedent).
+        // `host` drops here → pipes drop → address reclaimed.
     }
 
     /// Owns a hub: services port changes and enumerates devices behind it.
