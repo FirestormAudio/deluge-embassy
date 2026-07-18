@@ -25,7 +25,7 @@ use embassy_usb_host::class::uac::descriptors::{
 use embassy_usb_host::control::{ControlType, Recipient, RequestType, SetupPacket};
 use embassy_usb_host::descriptor::{ConfigurationDescriptor, EndpointDescriptor};
 
-use self::out::PlaybackResampler;
+use self::out::{PlaybackResampler, encode_s24le};
 use self::resample::{PiController, Resampler};
 use self::ring::SampleRing;
 
@@ -440,7 +440,48 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
             self.resampler.feed(&frame[..ch], self.r, |o| ring.push_frame(o));
         }
         self.r = self.pi.update(self.ring.fill_frames() as f32);
+        // Full-duplex: emit one playback packet per capture tick (this cycle's
+        // device-frame count), paced by the same clock. No-op if capture-only.
+        let frames = n / frame_bytes;
+        self.send_playback(frames).await;
         Ok(())
+    }
+
+    /// Emit `frames` device-rate playback frames on the iso OUT endpoint,
+    /// resampled engine->device at `step = 1.0/self.r` (one shared device
+    /// clock) and encoded to 24-bit LE. No-op on a capture-only device.
+    /// Underrun is silence (handled in `PlaybackResampler`); a failed OUT
+    /// transfer is logged + absorbed (detach is governed by the capture side).
+    async fn send_playback(&mut self, frames: usize) {
+        let step = if self.r > 0.0 { 1.0 / self.r } else { 1.0 };
+        if frames == 0 {
+            return;
+        }
+        let Some(pb) = self.playback.as_mut() else {
+            return;
+        };
+        let ch = pb.channels as usize;
+        let frame_bytes = ch * 3;
+        let mut buf = [0u8; 1024];
+        let max_by_buf = buf.len() / frame_bytes;
+        let max_by_pkt = (pb.max_packet as usize) / frame_bytes;
+        let to_send = frames.min(max_by_buf).min(max_by_pkt);
+        let mut w = 0usize;
+        pb.resampler.produce(&mut pb.ring, step, to_send, |frame| {
+            for c in 0..ch {
+                encode_s24le(frame[c], &mut buf[w..w + 3]);
+                w += 3;
+            }
+        });
+        if w == 0 {
+            return;
+        }
+        if let Err(e) = pb.iso_out.request_out(&buf[..w], false).await {
+            log::warn!(
+                "uac: iso OUT transfer failed ({:?}), dropping playback packet",
+                e
+            );
+        }
     }
 
     /// Drain up to `out.len()` samples of captured interleaved `f32`. Short
@@ -496,7 +537,22 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         }
         // Single source of truth: the shared ring the app actually drains.
         self.r = self.pi.update(shared::fill_frames() as f32);
+        // Full-duplex playback: emit this cycle's device-frame count. The
+        // shared->staging drain that feeds it is wired in the shared-bridge
+        // step; until then this plays silence (staging empty), and it is a
+        // no-op on a capture-only device.
+        let frames = n / frame_bytes;
+        self.send_playback(frames).await;
         Ok(())
+    }
+
+    /// Test hook: enqueue one interleaved playback frame into the local staging
+    /// ring (the host-tested `pump_once` playback source).
+    #[cfg(all(test, not(target_os = "none")))]
+    fn push_playback_frame(&mut self, f: &[f32]) {
+        if let Some(pb) = self.playback.as_mut() {
+            pb.ring.push_frame(f);
+        }
     }
 }
 
@@ -695,6 +751,59 @@ mod tests {
         let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
         assert_eq!(host.playback_channels(), 0);
         assert_eq!(state.allocs.borrow().len(), 2); // control + iso IN only
+    }
+
+    #[test]
+    fn full_duplex_pump_sends_encoded_playback() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        // One capture packet: two mono 24-bit frames (so 2 playback frames sent).
+        let mut pkt = Vec::<u8, 64>::new();
+        pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x40]).unwrap(); // +0.5, +0.5
+        state.script.borrow_mut().reads.push(pkt).unwrap();
+
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_full_duplex_cfg(3, 1, 1); // mono cap + mono play
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+
+        // App-side playback data: known engine frames.
+        host.push_playback_frame(&[0.5]);
+        host.push_playback_frame(&[0.5]);
+
+        block_on(host.pump_once()).expect("pump");
+        let sent = state.log.borrow().sent.clone();
+        assert!(!sent.is_empty(), "playback packet must be sent");
+        assert_eq!(sent.len() % 3, 0);
+        // 0.5 encodes to [0x00, 0x00, 0x40]; the emitted frames are all 0.5.
+        assert_eq!(&sent[0..3], &[0x00, 0x00, 0x40]);
+    }
+
+    #[test]
+    fn capture_only_pump_sends_no_playback() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        let mut pkt = Vec::<u8, 64>::new();
+        pkt.extend_from_slice(&[0, 0, 0x40]).unwrap();
+        state.script.borrow_mut().reads.push(pkt).unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+
+        block_on(host.pump_once()).expect("pump");
+        assert!(
+            state.log.borrow().sent.is_empty(),
+            "capture-only sends no OUT"
+        );
     }
 
     fn uac2_mic_cfg_mps(subslot: u8, channels: u8, mps: u16) -> Vec<u8, 256> {
