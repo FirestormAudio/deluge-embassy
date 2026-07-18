@@ -180,7 +180,10 @@ async fn pic_rx_task() {
 /// receive DMA — see the call site.
 pub(crate) unsafe fn quiesce_for_handoff() {
     unsafe {
-        // Stop every DMA channel (covers PIC RX/TX, SD, and OLED channels).
+        // Stop + software-reset every DMA channel and clear its DMARS request
+        // route (covers PIC RX/TX, SD, and OLED channels). Clearing DMARS here
+        // is what lets Linux's rz-dmac claim SCIF1-RX cleanly — previously
+        // U-Boot's deluge_reset_dmac() had to do it after us.
         for ch in 0..16u8 {
             rza1l_hal::dmac::stop(ch);
         }
