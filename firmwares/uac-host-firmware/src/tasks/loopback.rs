@@ -20,8 +20,6 @@ pub(crate) static CAP_CH: AtomicU8 = AtomicU8::new(0);
 pub(crate) static PLAY_CH: AtomicU8 = AtomicU8::new(0);
 /// Input peak over the last window, in milli-units of full scale (0..=1000).
 pub(crate) static PEAK_MILLI: AtomicU32 = AtomicU32::new(0);
-pub(crate) static IN_FPS: AtomicU32 = AtomicU32::new(0);
-pub(crate) static OUT_FPS: AtomicU32 = AtomicU32::new(0);
 
 const MAX_CH: usize = 8;
 /// Scratch frame budget per read (samples). 256 frames * 8ch.
@@ -97,7 +95,6 @@ pub(crate) async fn loopback_task() {
         CAP_CH.store(cap_ch as u8, Ordering::Relaxed);
         PLAY_CH.store(play_ch as u8, Ordering::Relaxed);
 
-        // Drain whole frames that fit the scratch budget.
         // Bound the read so both the input (`scratch`) and remap's output
         // (`frames * play_ch`, into `out`) stay within SCRATCH. Whole cap-frames
         // only, so the read stays frame-aligned. `play_ch == 0` (capture-only) skips
@@ -122,8 +119,6 @@ pub(crate) async fn loopback_task() {
         // ~1 Hz stats window.
         if last_stats.elapsed().as_millis() >= 1000 {
             PEAK_MILLI.store(window_peak, Ordering::Relaxed);
-            IN_FPS.store(in_frames, Ordering::Relaxed);
-            OUT_FPS.store(out_frames, Ordering::Relaxed);
             info!(
                 "loopback: in={}f/s out={}f/s peak={}m/1000 ({}ch->{}ch)",
                 in_frames, out_frames, window_peak, cap_ch, play_ch

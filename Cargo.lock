@@ -5776,6 +5776,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "uac-host-firmware"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-alloc",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "log",
+ "rtt-target",
+ "rza1l-hal",
+]
+
+[[package]]
 name = "uds_windows"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
