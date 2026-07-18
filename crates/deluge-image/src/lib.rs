@@ -3,10 +3,11 @@
 //! [`app-loader`] — keeping the format decisions in one place.
 //!
 //! * [`elf`] — pure `PT_LOAD` classification used by the streaming SD loader
-//!   (uncached-mirror resolution, SRAM-staging / SDRAM-direct decisions), the
-//!   slice-sourced load plan the USB dev-upload path uses, and the FSB-metadata
-//!   validation ([`elf::validate_fsb_metadata`]) the flash-store path runs
-//!   before programming an image.
+//!   (uncached-mirror resolution, SRAM-staging / SDRAM-direct decisions), and
+//!   the [`elf::StreamRouter`] that routes a USB-uploaded ELF's segments
+//!   straight to memory as they arrive, plus the FSB-metadata validation
+//!   ([`elf::validate_fsb_metadata`]) the flash-store path runs before
+//!   programming an image.
 //! * [`crc`] — the shared CRC-32 the USB upload framing and the on-flash
 //!   settings record agree on, so the host tool and the device compute the same
 //!   checksum.

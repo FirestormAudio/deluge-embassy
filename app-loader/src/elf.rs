@@ -217,8 +217,9 @@ where
         }
 
         // Classify and place the segment via the shared host-tested decision
-        // (same one `load_from_slice` and the USB dev-upload path use), so the
-        // FAT and slice loaders can never drift on where a segment may land:
+        // (the same one `StreamRouter` and the USB dev-upload path use), so the
+        // FAT loader and the streaming loaders can never drift on where a
+        // segment may land:
         //   * data-retention RAM (0x20000000-0x2001FFFF) is skipped — reserved
         //     for the trampoline; the app's own startup zeroes any BSS there;
         //   * SDRAM targets are written through `p_paddr` (so a segment that

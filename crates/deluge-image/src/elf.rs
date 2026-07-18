@@ -162,10 +162,11 @@ pub fn sram_stage_addr(dst: u32) -> u32 {
 // --- Per-segment placement (shared by the SD and USB loaders) --------------
 
 /// What a loader should do with one `PT_LOAD` segment, derived purely from its
-/// physical address and size.  Both the streaming SD loader and the slice-based
-/// USB dev-upload loader funnel every segment through [`place_segment`] so the
-/// "where does this land?" decision (and its address math) has a single,
-/// host-tested definition and the two paths can never drift apart.
+/// physical address and size.  Both the streaming SD loader and the streaming
+/// USB dev-upload loader ([`StreamRouter`]) funnel every segment through
+/// [`place_segment`] so the "where does this land?" decision (and its address
+/// math) has a single, host-tested definition and the two paths can never
+/// drift apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SegmentPlacement {
     /// Data-retention RAM (`0x20000000..0x2001FFFF`): skip it. That region is
@@ -386,45 +387,7 @@ impl StreamRouter {
     }
 }
 
-// --- Slice-sourced load plan (USB dev-upload path) -------------------------
-
-/// One copy operation in a [`LoadPlan`]: copy `filesz` bytes from offset
-/// `src_off` in the ELF image to `write_addr`, then zero `zero_extra` bytes after
-/// them.  For an SRAM segment (`sram`), `write_addr` is the staging address and
-/// `final_dst` is where the trampoline must relocate it (with the same
-/// `zero_extra`); for an SDRAM segment `final_dst == write_addr`.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct LoadOp {
-    /// Byte offset of the segment's file content within the ELF image.
-    pub src_off: u32,
-    /// Address the loader copies the file bytes to now.
-    pub write_addr: u32,
-    /// The segment's final runtime address (`p_paddr`).
-    pub final_dst: u32,
-    /// Number of file bytes to copy.
-    pub filesz: u32,
-    /// Bytes to zero immediately after the copy (`p_memsz - p_filesz`).
-    pub zero_extra: u32,
-    /// `true` if this segment is staged in SDRAM for later SRAM relocation.
-    pub sram: bool,
-}
-
-/// A fully-parsed, validated plan for loading an ELF image held entirely in a
-/// byte slice (the USB dev-upload path).  Produced by [`parse_load_plan`]; the
-/// device then executes each [`LoadOp`] with raw memory writes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct LoadPlan {
-    /// Application entry point (`e_entry`).
-    pub entry: u32,
-    /// Copy operations, in program-header order.
-    pub ops: [LoadOp; MAX_PHDRS],
-    /// Number of valid entries in `ops`.
-    pub n_ops: usize,
-    /// Number of `ops` that are SRAM-staged (`sram == true`).
-    pub n_sram: usize,
-}
-
-/// Why [`parse_load_plan`] rejected an ELF image slice.
+/// Why a [`PlanError`]-returning parser rejected an ELF image.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlanError {
     /// Header magic is not `\x7FELF`.
@@ -448,83 +411,6 @@ impl From<HeaderError> for PlanError {
             HeaderError::WrongFormat => PlanError::WrongFormat,
         }
     }
-}
-
-/// Parse and validate an in-memory ELF32 image, producing the [`LoadPlan`] the
-/// USB dev-upload loader executes.  Pure (no hardware): it validates the header,
-/// bounds-checks the program-header table and every segment's file range against
-/// `elf.len()`, classifies each `PT_LOAD` via [`place_segment`], and records a
-/// [`LoadOp`] for each segment that must be written.
-///
-/// This is the host-testable core of the device's `load_from_slice`.
-pub fn parse_load_plan(elf: &[u8]) -> Result<LoadPlan, PlanError> {
-    validate_header(elf)?;
-
-    let e_entry = le32(elf, 24);
-    let e_phoff = le32(elf, 28) as usize;
-    let e_phentsize = le16(elf, 42) as usize;
-    let e_phnum = le16(elf, 44) as usize;
-
-    if e_phentsize != 32 || e_phnum > MAX_PHDRS {
-        return Err(PlanError::WrongFormat);
-    }
-    // The whole program-header table must lie within the image.
-    let ph_table_end = e_phoff
-        .checked_add(e_phnum.checked_mul(32).ok_or(PlanError::WrongFormat)?)
-        .ok_or(PlanError::WrongFormat)?;
-    if ph_table_end > elf.len() {
-        return Err(PlanError::Truncated);
-    }
-
-    let mut ops = [LoadOp::default(); MAX_PHDRS];
-    let mut n_ops = 0usize;
-    let mut n_sram = 0usize;
-
-    for i in 0..e_phnum {
-        let ph = &elf[e_phoff + i * 32..][..32];
-        if le32(ph, 0) != PT_LOAD {
-            continue;
-        }
-        let p_offset = le32(ph, 4);
-        let p_paddr = le32(ph, 12);
-        let p_filesz = le32(ph, 16);
-        let p_memsz = le32(ph, 20);
-
-        // A well-formed PT_LOAD always has filesz <= memsz.
-        if p_filesz > p_memsz {
-            return Err(PlanError::WrongFormat);
-        }
-        // The segment's file bytes must lie within the image.
-        let seg_end = (p_offset as u64) + (p_filesz as u64);
-        if seg_end > elf.len() as u64 {
-            return Err(PlanError::Truncated);
-        }
-
-        match place_segment(p_paddr, p_memsz).map_err(|_| PlanError::BadLoadAddress)? {
-            SegmentPlacement::Skip => continue,
-            SegmentPlacement::Write { write_addr, sram } => {
-                ops[n_ops] = LoadOp {
-                    src_off: p_offset,
-                    write_addr,
-                    final_dst: p_paddr,
-                    filesz: p_filesz,
-                    zero_extra: p_memsz - p_filesz,
-                    sram,
-                };
-                n_ops += 1;
-                if sram {
-                    n_sram += 1;
-                }
-            }
-        }
-    }
-
-    Ok(LoadPlan {
-        entry: e_entry,
-        ops,
-        n_ops,
-        n_sram,
-    })
 }
 
 // --- FSB metadata --------------------------------------------------------
@@ -1025,114 +911,4 @@ mod tests {
         assert_eq!(StreamRouter::new(&front), Err(PlanError::Unordered));
     }
 
-    // --- parse_load_plan ----------------------------------------------------
-
-    /// Build a minimal ELF32 image with the given `PT_LOAD` segments.
-    /// Each segment is `(p_offset, p_paddr, p_filesz, p_memsz)`; the file content
-    /// for each is whatever already sits at `p_offset` in the produced buffer
-    /// (zero), which is fine for the plan tests (they don't inspect content).
-    fn elf_with_segments(entry: u32, segs: &[(u32, u32, u32, u32)], total_len: usize) -> Vec<u8> {
-        let phoff = 52u32;
-        let phnum = segs.len() as u16;
-        let mut buf = vec![0u8; total_len.max((phoff + phnum as u32 * 32) as usize)];
-        buf[0..4].copy_from_slice(&ELF_MAGIC);
-        buf[4] = ELFCLASS32;
-        buf[5] = ELFDATA2LSB;
-        buf[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
-        buf[18..20].copy_from_slice(&EM_ARM.to_le_bytes());
-        buf[24..28].copy_from_slice(&entry.to_le_bytes()); // e_entry
-        buf[28..32].copy_from_slice(&phoff.to_le_bytes()); // e_phoff
-        buf[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
-        buf[44..46].copy_from_slice(&phnum.to_le_bytes()); // e_phnum
-        for (i, &(off, paddr, filesz, memsz)) in segs.iter().enumerate() {
-            let ph = (phoff as usize) + i * 32;
-            buf[ph..ph + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
-            buf[ph + 4..ph + 8].copy_from_slice(&off.to_le_bytes());
-            buf[ph + 12..ph + 16].copy_from_slice(&paddr.to_le_bytes());
-            buf[ph + 16..ph + 20].copy_from_slice(&filesz.to_le_bytes());
-            buf[ph + 20..ph + 24].copy_from_slice(&memsz.to_le_bytes());
-        }
-        buf
-    }
-
-    #[test]
-    fn plan_mixes_sram_sdram_and_skips_retention() {
-        // SRAM segment (staged), an SDRAM segment (direct), and a retention-RAM
-        // segment that must be skipped (no op emitted).
-        let img = elf_with_segments(
-            SRAM_LOAD_ORIGIN + 0x40,
-            &[
-                (0x200, SRAM_LOAD_ORIGIN, 0x100, 0x180), // SRAM: 0x80 BSS tail
-                (0x400, SDRAM_LO, 0x80, 0x80),           // SDRAM: no BSS
-                (0x000, 0x2000_0000, 0x10, 0x10),        // retention: skipped
-            ],
-            0x600,
-        );
-        let plan = parse_load_plan(&img).unwrap();
-        assert_eq!(plan.entry, SRAM_LOAD_ORIGIN + 0x40);
-        assert_eq!(plan.n_ops, 2, "retention segment skipped");
-        assert_eq!(plan.n_sram, 1);
-
-        assert_eq!(
-            plan.ops[0],
-            LoadOp {
-                src_off: 0x200,
-                write_addr: SDRAM_STAGE_BASE, // staged for SRAM_LOAD_ORIGIN
-                final_dst: SRAM_LOAD_ORIGIN,
-                filesz: 0x100,
-                zero_extra: 0x80,
-                sram: true,
-            }
-        );
-        assert_eq!(
-            plan.ops[1],
-            LoadOp {
-                src_off: 0x400,
-                write_addr: SDRAM_LO,
-                final_dst: SDRAM_LO,
-                filesz: 0x80,
-                zero_extra: 0,
-                sram: false,
-            }
-        );
-    }
-
-    #[test]
-    fn plan_rejects_bad_images() {
-        // Bad magic.
-        let mut img = elf_with_segments(
-            SRAM_LOAD_ORIGIN,
-            &[(0x80, SRAM_LOAD_ORIGIN, 0x10, 0x10)],
-            0x100,
-        );
-        img[1] = b'Z';
-        assert_eq!(parse_load_plan(&img), Err(PlanError::BadMagic));
-
-        // filesz > memsz.
-        let img = elf_with_segments(
-            SRAM_LOAD_ORIGIN,
-            &[(0x80, SRAM_LOAD_ORIGIN, 0x20, 0x10)],
-            0x100,
-        );
-        assert_eq!(parse_load_plan(&img), Err(PlanError::WrongFormat));
-
-        // Segment file range past the end of the slice.
-        let img = elf_with_segments(
-            SRAM_LOAD_ORIGIN,
-            &[(0x80, SRAM_LOAD_ORIGIN, 0x100, 0x100)],
-            0x100,
-        );
-        assert_eq!(parse_load_plan(&img), Err(PlanError::Truncated));
-
-        // Bad load address.
-        let img = elf_with_segments(SRAM_LOAD_ORIGIN, &[(0x80, 0x0800_0000, 0x10, 0x10)], 0x100);
-        assert_eq!(parse_load_plan(&img), Err(PlanError::BadLoadAddress));
-
-        // Too many program headers.
-        let many: Vec<(u32, u32, u32, u32)> = (0..=MAX_PHDRS)
-            .map(|_| (0x80, SRAM_LOAD_ORIGIN, 0, 0))
-            .collect();
-        let img = elf_with_segments(SRAM_LOAD_ORIGIN, &many, 0x400);
-        assert_eq!(parse_load_plan(&img), Err(PlanError::WrongFormat));
-    }
 }
