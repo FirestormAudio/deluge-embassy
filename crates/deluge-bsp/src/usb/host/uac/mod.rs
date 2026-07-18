@@ -25,6 +25,7 @@ use embassy_usb_host::class::uac::descriptors::{
 use embassy_usb_host::control::{ControlType, Recipient, RequestType, SetupPacket};
 use embassy_usb_host::descriptor::{ConfigurationDescriptor, EndpointDescriptor};
 
+use self::out::PlaybackResampler;
 use self::resample::{PiController, Resampler};
 use self::ring::SampleRing;
 
@@ -210,7 +211,17 @@ const SAMPLING_FREQ_WVALUE: u16 = codes::control_selector::clock_source::SAMPLIN
 ///
 /// Owns the control pipe and the isochronous IN data pipe. Generic over the
 /// allocator so it unit-tests against [`super::mock`].
-pub struct UacIn<'d, A: UsbHostAllocator<'d>> {
+/// Playback (host->device) state, present only for a full-duplex device.
+struct PlaybackState<'d, A: UsbHostAllocator<'d>> {
+    iso_out: A::Pipe<pipe::Isochronous, pipe::Out>,
+    ring: SampleRing,
+    resampler: PlaybackResampler,
+    channels: u8,
+    max_packet: u16,
+    _p: core::marker::PhantomData<&'d ()>,
+}
+
+pub struct Uac<'d, A: UsbHostAllocator<'d>> {
     control: A::Pipe<pipe::Control, pipe::InOut>,
     iso_in: A::Pipe<pipe::Isochronous, pipe::In>,
     num_channels: u8,
@@ -219,14 +230,21 @@ pub struct UacIn<'d, A: UsbHostAllocator<'d>> {
     resampler: Resampler,
     pi: PiController,
     r: f32,
+    /// Playback path; `None` on a capture-only device.
+    playback: Option<PlaybackState<'d, A>>,
     _p: core::marker::PhantomData<&'d ()>,
 }
 
-impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
+impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
     /// Channels this device declared. `read`'s output length should be a
     /// multiple of this.
     pub fn channels(&self) -> u8 {
         self.num_channels
+    }
+
+    /// Playback channels the device declared, or 0 if capture-only.
+    pub fn playback_channels(&self) -> u8 {
+        self.playback.as_ref().map(|p| p.channels).unwrap_or(0)
     }
 
     /// Match, claim pipes, negotiate 44.1 kHz, and select the streaming alt.
@@ -270,6 +288,31 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
         // Activate the stream (alt 0 is zero-bandwidth; the real stream is 1+).
         Self::set_interface(&mut control, m.streaming_interface, m.alternate_setting).await?;
 
+        // Optional playback (full-duplex). Absent on capture-only devices; the
+        // clock is shared across directions, so no additional SET_CUR is needed.
+        let playback = match find_uac_playback(cfg) {
+            Some(p) => {
+                let iso_out = alloc
+                    .alloc_pipe::<pipe::Isochronous, pipe::Out>(addr, &p.endpoint.into(), split)
+                    .map_err(UacError::NoPipe)?;
+                Self::set_interface(&mut control, p.streaming_interface, p.alternate_setting)
+                    .await?;
+                let mut pring = SampleRing::new();
+                pring.reset(p.num_channels as usize);
+                let mut presampler = PlaybackResampler::new();
+                presampler.reset(p.num_channels as usize);
+                Some(PlaybackState {
+                    iso_out,
+                    ring: pring,
+                    resampler: presampler,
+                    channels: p.num_channels,
+                    max_packet: p.endpoint.max_packet_size,
+                    _p: core::marker::PhantomData,
+                })
+            }
+            None => None,
+        };
+
         let mut ring = SampleRing::new();
         ring.reset(m.num_channels as usize);
         let mut resampler = Resampler::new();
@@ -284,6 +327,7 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
             resampler,
             pi: PiController::new(setpoint),
             r: 1.0,
+            playback,
             _p: core::marker::PhantomData,
         })
     }
@@ -457,7 +501,7 @@ impl<'d, A: UsbHostAllocator<'d>> UacIn<'d, A> {
 }
 
 /// Cross-task capture bridge: the app-facing static that
-/// [`UacIn::pump_once_shared`] publishes into and [`capture_read`] drains.
+/// [`Uac::pump_once_shared`] publishes into and [`capture_read`] drains.
 ///
 /// Device-only: it uses a `CriticalSectionRawMutex` static, which only makes
 /// sense once there is a real interrupt-driven executor. Host tests exercise
@@ -611,6 +655,48 @@ mod tests {
         assert!(find_uac_playback(&cfg).is_none());
     }
 
+    #[test]
+    fn register_opens_playback_on_full_duplex_device() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_full_duplex_cfg(3, 2, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
+        assert_eq!(host.channels(), 2); // capture
+        assert_eq!(host.playback_channels(), 2); // playback opened
+        // control + iso IN + iso OUT = 3 pipes.
+        assert_eq!(state.allocs.borrow().len(), 3);
+        // A SET_INTERFACE for the playback interface (2) was issued.
+        let setups = state.setups.borrow();
+        assert!(
+            setups.iter().any(|s| s[1] == 11 && s[4] == 2),
+            "expected SET_INTERFACE on playback interface 2"
+        );
+    }
+
+    #[test]
+    fn register_capture_only_has_no_playback() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
+        assert_eq!(host.playback_channels(), 0);
+        assert_eq!(state.allocs.borrow().len(), 2); // control + iso IN only
+    }
+
     fn uac2_mic_cfg_mps(subslot: u8, channels: u8, mps: u16) -> Vec<u8, 256> {
         let mut b: Vec<u8, 256> = Vec::new();
         let push = |s: &[u8], b: &mut Vec<u8, 256>| b.extend_from_slice(s).unwrap();
@@ -699,7 +785,7 @@ mod tests {
         assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
     }
 
-    // --- UacIn::try_register negotiation ---
+    // --- Uac::try_register negotiation ---
 
     use crate::usb::host::mock::{MockAlloc, MockState};
     use embassy_futures::block_on;
@@ -717,7 +803,7 @@ mod tests {
         let raw = uac2_mic_cfg(3, 2);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
-        let host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).expect("register");
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
         assert_eq!(host.channels(), 2);
         // Two pipes claimed: control (EP0) + iso IN (0x81).
         assert_eq!(state.allocs.borrow().len(), 2);
@@ -743,7 +829,7 @@ mod tests {
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
-        let host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).expect("register");
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
         assert_eq!(host.channels(), 1);
         // The SET_CUR data stage carried 44100 LE.
         assert_eq!(&state.control_out_data.borrow()[..4], &44_100u32.to_le_bytes());
@@ -776,7 +862,7 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
 
         block_on(host.pump_once()).expect("pump");
         // At r≈1.0 the resampler emits ~one frame per input frame after priming;
@@ -802,7 +888,7 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
 
         // A failed iso transfer must NOT error out — the stream survives.
         block_on(host.pump_once()).expect("iso error is absorbed, not fatal");
@@ -828,7 +914,7 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
 
         let err = block_on(host.pump_once()).expect_err("detach must be propagated, not absorbed");
         assert!(matches!(err, UacError::Transfer(PipeError::BadResponse)));
@@ -852,7 +938,7 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(UacIn::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
 
         // Must not panic on the non-multiple-of-frame_bytes packet length.
         block_on(host.pump_once()).expect("torn trailing sample is silently dropped, not fatal");
