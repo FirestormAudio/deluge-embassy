@@ -216,9 +216,9 @@ async fn receive(rx: Receiver<'static, Rusb1Driver>) -> ! {
 async fn handoff(result: elf::LoadResult) -> ! {
     ui::show_message(b"LAUNCHING", b"FROM USB").await;
 
-    // Blank the OLED before interrupts/DMA are quiesced (must run while the
-    // executor + pic_rx_task are still live — see `crate::blank_oled`).
-    crate::blank_oled().await;
+    // Draw the boot droplet before interrupts/DMA are quiesced (must run while
+    // the executor + pic_rx_task are still live — see `crate::show_boot_logo`).
+    crate::show_boot_logo().await;
 
     // Unplug from the host: it sees a clean disconnect and re-enumerates the
     // launched app's own USB stack (e.g. the usb-log CDC for `cargo deluge run
