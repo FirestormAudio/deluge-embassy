@@ -1,0 +1,8 @@
+[package]
+name = "deluge-sys"
+version = "0.1.0"
+edition = "2021"
+links = "deluge"
+
+[build-dependencies]
+bindgen = "0.70"
