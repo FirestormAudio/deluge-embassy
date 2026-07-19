@@ -1,10 +1,15 @@
 //! Device backend ops (deluge-bsp peripherals). Bodies moved verbatim from the
 //! capability modules' `#[cfg(target_os = "none")]` arms.
 use core::convert::Infallible;
+use core::future::poll_fn;
+use core::sync::atomic::Ordering;
+use core::task::Poll;
 
 use deluge_bsp::oled::{self, FrameBuffer};
 use deluge_bsp::pic;
 use deluge_bsp::rgb::PadLeds;
+use deluge_bsp::trigger_clock;
+use embassy_time::Instant;
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use rza1l_hal::gpio::{Output, Pin};
 
@@ -93,4 +98,33 @@ pub(crate) async fn midi_recv() -> u8 {
 }
 pub(crate) fn midi_try_recv() -> Option<u8> {
     deluge_bsp::uart::try_read_midi()
+}
+
+pub(crate) fn clock_in_init() {
+    // SAFETY: runs once. Registers the P1_14/IRQ6 handler and enables the
+    // GIC line. Registering lazily here (after global IRQ enable) matches
+    // the proven `input()`/encoder precedent.
+    unsafe { trigger_clock::irq_init() };
+}
+pub(crate) async fn clock_in_wait_edge() -> u64 {
+    let start = trigger_clock::EDGE_COUNT.load(Ordering::Relaxed);
+    poll_fn(|cx| {
+        trigger_clock::EDGE_WAKER.register(cx.waker());
+        if trigger_clock::EDGE_COUNT.load(Ordering::Relaxed) != start {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    trigger_clock::LAST_EDGE_TICKS.load(Ordering::Relaxed)
+}
+pub(crate) fn clock_in_count() -> u32 {
+    trigger_clock::EDGE_COUNT.load(Ordering::Relaxed)
+}
+pub(crate) fn clock_in_last_edge() -> Option<Instant> {
+    match trigger_clock::LAST_EDGE_TICKS.load(Ordering::Relaxed) {
+        0 => None,
+        t => Some(Instant::from_ticks(t)),
+    }
 }

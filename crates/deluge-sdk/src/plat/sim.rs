@@ -2,6 +2,7 @@
 //! verbatim from the capability modules' `#[cfg(not(target_os = "none"))]` arms.
 use deluge_bsp::oled::FrameBuffer;
 use deluge_bsp::rgb::{COLS, PadLeds, ROWS};
+use embassy_time::Instant;
 
 pub(crate) async fn oled_init_panel() {}
 pub(crate) async fn oled_flush(fb: &FrameBuffer) {
@@ -73,4 +74,15 @@ pub(crate) async fn midi_recv() -> u8 {
 }
 pub(crate) fn midi_try_recv() -> Option<u8> {
     crate::host::panel().pop_midi_in()
+}
+
+pub(crate) fn clock_in_init() {}
+pub(crate) async fn clock_in_wait_edge() -> u64 {
+    core::future::pending::<u64>().await
+}
+pub(crate) fn clock_in_count() -> u32 {
+    0
+}
+pub(crate) fn clock_in_last_edge() -> Option<Instant> {
+    None
 }
