@@ -323,6 +323,99 @@ Expected: `done`.
 
 ---
 
+## Task 5b: Make `deluge_add_app()` discover mkimage lazily + optionally
+
+> **Inserted during execution.** Task 6 revealed `cmake/DelugeApp.cmake` did an unconditional, top-level `find_program(DELUGE_MKIMAGE deluge-mkimage PATHS ../tools REQUIRED)`. `mkimage` left with the extraction (→ deluge-linux/bundle in Stage 2), so that hard requirement breaks `cmake` configure for *every* consumer — even a plain library build. Fix: discover the packer **lazily** (inside the function, only when an app is added) and **optionally** (absence degrades to "executable only"), searching the bundle (`DELUGE_BASE`) then `PATH`.
+
+**Files:**
+- Modify: `~/GitHub/deluge-ndk/cmake/DelugeApp.cmake` (replace whole file)
+
+- [ ] **Step 1: Replace `cmake/DelugeApp.cmake` with the lazy/optional version**
+
+```cmake
+# deluge_add_app(<name> SOURCES <files...>)
+#
+# One compile, two products: a bootable appliance image for the card's /APPS/,
+# and the bare static binary for /LINUX/APPS/. They are the same executable —
+# the image is just that executable baked into the base rootfs.
+#
+# Packaging needs `deluge-mkimage` (shipped in the deluge-linux release bundle).
+# It is discovered lazily — only when an app is actually added — and is OPTIONAL:
+# with no packer found, the app executable still builds; only the image/bare
+# packaging targets are skipped (with a status message). This lets the library,
+# tests, and app *executables* build without the packer present (e.g. before the
+# bundle ships it); a bundle on DELUGE_BASE enables full packaging.
+
+function(deluge_add_app NAME)
+    cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
+
+    add_executable(${NAME} ${ARG_SOURCES})
+    target_link_libraries(${NAME} PRIVATE deluge)
+
+    # Static, always. A dynamic binary is welded to the rootfs it was built
+    # against; deluge-mkimage rejects one, so fail here rather than there.
+    target_link_options(${NAME} PRIVATE -static)
+
+    # Locate the packer lazily and optionally: search the bundle (DELUGE_BASE)
+    # first, then PATH. Not REQUIRED — absence degrades to "executable only".
+    find_program(DELUGE_MKIMAGE deluge-mkimage
+        PATHS "$ENV{DELUGE_BASE}/tools" "$ENV{DELUGE_BASE}/bin")
+
+    if(NOT DELUGE_MKIMAGE)
+        message(STATUS
+            "deluge_add_app(${NAME}): deluge-mkimage not found — building the "
+            "executable only (no .ELF/bare image). Set DELUGE_BASE to a bundle "
+            "that ships deluge-mkimage to enable packaging.")
+        return()
+    endif()
+
+    string(TOUPPER "${NAME}" UPPER)
+
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${UPPER}.ELF
+        COMMAND ${DELUGE_MKIMAGE} $<TARGET_FILE:${NAME}>
+                -o ${CMAKE_CURRENT_BINARY_DIR}/${UPPER}.ELF
+        DEPENDS ${NAME}
+        COMMENT "Packing ${UPPER}.ELF (copy to the card's /APPS/)")
+    add_custom_target(${NAME}-image ALL
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${UPPER}.ELF)
+
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/bare/${NAME}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/bare
+        COMMAND ${DELUGE_MKIMAGE} $<TARGET_FILE:${NAME}> --bare
+                -o ${CMAKE_CURRENT_BINARY_DIR}/bare/${NAME}
+        DEPENDS ${NAME}
+        COMMENT "Validating ${NAME} (copy to the card's /LINUX/APPS/)")
+    add_custom_target(${NAME}-bare ALL
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/bare/${NAME})
+endfunction()
+```
+
+- [ ] **Step 2: Host configure now succeeds**
+
+```bash
+cd ~/GitHub/deluge-ndk
+rm -rf build
+cmake -S . -B build 2>&1 | tail -5
+```
+Expected: configure completes (no `DELUGE_MKIMAGE` / `find_program` fatal). On host, `examples/app` is not added (it is `if(CMAKE_CROSSCOMPILING)`), so `deluge_add_app` is not even called.
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd ~/GitHub/deluge-ndk
+git add cmake/DelugeApp.cmake
+git commit -q -m "build(ndk): deluge_add_app discovers mkimage lazily + optionally
+
+The packer (deluge-mkimage) ships in the deluge-linux bundle now, not this
+repo. Discover it inside deluge_add_app (not at include time) and treat it as
+optional: build the app executable regardless, skip .ELF/bare packaging with a
+status message when absent. Unbreaks cmake configure for library/test builds."
+echo done
+```
+Expected: `done`.
+
 ## Task 6: Verify host build + tests, and a cross build
 
 **Files:** none (verification only)
