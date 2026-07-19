@@ -65,7 +65,13 @@ Expected: all Finished/pass. (If the device build errors on `dep:deluge-sim-link
 
 **Files:**
 - Create: `crates/deluge-sdk/src/linux.rs`, `crates/deluge-sdk/src/plat/linux.rs`
-- Modify: `crates/deluge-sdk/src/lib.rs` (`mod linux;` gate + `__rt::linux::run`), `crates/deluge-sdk-macros/src/lib.rs` (third `main` arm)
+- Modify: `crates/deluge-sdk/src/lib.rs` (`mod linux;` gate + `__rt::linux::run` + re-gate `mod host`/`__rt::host`), `crates/deluge-sdk/src/plat/mod.rs`, `crates/deluge-sdk-macros/src/lib.rs` (third `main` arm)
+
+**The final cfg partition** (apply everywhere a backend is selected): `device = cfg(target_os = "none")`; `sim = cfg(all(not(target_os = "none"), feature = "sim"))`; `linux = cfg(all(not(target_os = "none"), feature = "linux"))`. The `not(target_os = "none")` guard is required so an app that enables `sim` (or `linux`) for its **device** build doesn't double-compile a second backend.
+
+- [ ] **Step 0: Finalize the sim/linux/device gating**
+  - `crates/deluge-sdk/src/plat/mod.rs`: the **sim** arm is `cfg(all(not(target_os = "none"), feature = "sim"))` (Task 1 left it as bare `feature = "sim"` — add the guard); the **linux** arm is `cfg(all(not(target_os = "none"), feature = "linux"))` (add the guard to `mod linux;` + its `use`).
+  - `crates/deluge-sdk/src/lib.rs`: re-gate the simulator-backend code from `cfg(not(target_os = "none"))` to `cfg(all(not(target_os = "none"), feature = "sim"))` — specifically `mod host;` and the `__rt::host` module (they use `deluge_sim_link`/`deluge_simulator`, which the linux build must not pull). **Leave** the genuinely-both-backends `cfg(not(target_os = "none"))` blocks alone — the host `StereoFrame` def (`audio.rs`), the host `SdError`/`FatError`/`Sd` def (`sd.rs`), and the crate-level `no_std`-only-on-device — sim *and* linux need those.
 
 - [ ] **Step 1: `linux.rs` — process-wide libdeluge handle (mirror `host.rs`)**
 
@@ -91,7 +97,7 @@ pub(crate) fn dev() -> MutexGuard<'static, Deluge> {
         .unwrap()
 }
 ```
-Gate its module decl in `lib.rs`: `#[cfg(feature = "linux")] mod linux;` (next to `#[cfg(not(target_os="none"))] mod host;`).
+Gate its module decl in `lib.rs`: `#[cfg(all(not(target_os = "none"), feature = "linux"))] mod linux;` (next to `#[cfg(not(target_os="none"))] mod host;`).
 
 - [ ] **Step 2: `plat/linux.rs` — the op set (OLED+input real; the rest no-op/unimplemented)**
 
@@ -111,7 +117,7 @@ In `plat::linux::input_start_pump`, call `crate::linux::dev().input_start(cb)` w
 
 Add to the `__rt` module in `lib.rs`, gated `#[cfg(feature = "linux")]`:
 ```rust
-#[cfg(feature = "linux")]
+#[cfg(all(not(target_os = "none"), feature = "linux"))]
 pub mod linux {
     use super::Spawner;
     use embassy_executor::Executor;
@@ -136,7 +142,7 @@ pub mod linux {
 
 In `crates/deluge-sdk-macros/src/lib.rs`, re-gate the existing non-device `fn main` to the sim case and add the linux case:
 ```rust
-#[cfg(all(not(target_os = "none"), not(feature = "linux")))]
+#[cfg(all(not(target_os = "none"), feature = "sim"))]
 fn main() { ::deluge::__rt::host::run(|| { #setup_call; }, |spawner| { spawner.spawn(__deluge_app_main(spawner).unwrap()); }) }
 
 #[cfg(all(not(target_os = "none"), feature = "linux"))]
