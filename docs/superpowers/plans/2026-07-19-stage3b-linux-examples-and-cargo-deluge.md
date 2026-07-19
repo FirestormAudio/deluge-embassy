@@ -299,11 +299,13 @@ Expected: installed (or "up to date").
 
 - [ ] **Step 3: `cargo deluge linux --bare` on `snake`**
 
+Build `cargo-deluge` (a host tool) with an explicit host `--target` — the repo's forced `armv7a-none-eabihf` default can't build this `std` tool:
+
 ```bash
 cd ~/GitHub/deluge-sdk
 CD=$(pwd)/tools/cargo-deluge
-cargo build --manifest-path "$CD/Cargo.toml" -q
-BIN="$CD/target/debug/cargo-deluge"
+cargo build --manifest-path "$CD/Cargo.toml" --target x86_64-unknown-linux-gnu -q
+BIN="$CD/target/x86_64-unknown-linux-gnu/debug/cargo-deluge"
 cd examples-linux/snake
 DELUGE_BASE=~/GitHub/deluge-linux/out/deluge-base-stage3 "$BIN" linux --bare 2>&1 | tail -8
 ```
@@ -318,7 +320,7 @@ Expected: `ELF 32-bit LSB executable, ARM, EABI5 … statically linked`.
 
 ```bash
 cd ~/GitHub/deluge-sdk/examples-linux/snake
-BIN=$(cd ~/GitHub/deluge-sdk && pwd)/tools/cargo-deluge/target/debug/cargo-deluge
+BIN=$(cd ~/GitHub/deluge-sdk && pwd)/tools/cargo-deluge/target/x86_64-unknown-linux-gnu/debug/cargo-deluge
 DELUGE_BASE=~/GitHub/deluge-linux/out/deluge-base-stage3 "$BIN" linux 2>&1 | tail -6
 ```
 Expected: `packed …/SNAKE.ELF`. That ELF is the appliance image `deluge-mkimage` baked from the bundle's rootfs + the snake binary — the full `cargo deluge linux` path working against a real bundle.
