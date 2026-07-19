@@ -22,3 +22,13 @@ pub(crate) async fn pads_flush(leds: &mut PadLeds) {
 pub(crate) async fn pads_set_brightness_interval(interval: u8) {
     let _ = interval;
 }
+
+pub(crate) async fn leds_set(id: u8, on: bool) {
+    crate::host::panel().set_led(id as usize, on);
+}
+pub(crate) async fn leds_clear() {
+    crate::host::panel().clear_all_leds();
+}
+pub(crate) async fn leds_gold_knob(knob: u8, brightness: [u8; 4]) {
+    crate::host::panel().set_knob_indicator(knob as usize, brightness);
+}
