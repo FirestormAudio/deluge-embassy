@@ -49,11 +49,11 @@ Expected: a version string (e.g. `git-filter-repo 2.38.0`). If "command not foun
 
 ```bash
 rm -rf ~/GitHub/deluge-ndk /tmp/deluge-ndk-extract
-git clone ~/GitHub/deluge-linux-sdk /tmp/deluge-ndk-extract
+git clone --no-local ~/GitHub/deluge-linux-sdk /tmp/deluge-ndk-extract
 cd /tmp/deluge-ndk-extract
 ```
 
-Expected: a clean clone; `git log --oneline | head -1` shows `f2837fe` (or newer) at HEAD.
+Expected: a clean clone; `git log --oneline | head -1` shows `f2837fe` (or newer) at HEAD. **`--no-local` is required** — a plain local clone hardlinks objects and `git filter-repo` (Step 3) refuses to rewrite it ("does not look like a fresh clone"). `--no-local` forces a freshly-packed clone filter-repo accepts.
 
 - [ ] **Step 3: Keep-pass — retain only the C-side paths (allowlist)**
 
