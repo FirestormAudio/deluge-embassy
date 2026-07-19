@@ -111,6 +111,9 @@ Commands:
                                --port <path>  serial port override (else auto)
   sim [--release]            Build for the host and run the app in the desktop
                              simulator (OLED/pads/LEDs/audio), no hardware needed.
+  linux [--bare] [--out N]   Build the current app for the Deluge's Linux userland
+                             (armv7 musl, static) and pack it with the bundle's
+                             deluge-mkimage. Needs DELUGE_BASE=<unpacked bundle>.
   debug [--release] [-- ...] Build, then `probe-rs run` over J-Link (--chip set)
   trace [--release] [opts]   Build, then `probe-rs read-trace` (trace-a9 fork):
                                --flow         compact execution-flow view
