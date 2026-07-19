@@ -1,8 +1,24 @@
 //! Host-simulator backend ops (the deluge-sim-link SharedPanel). Bodies moved
 //! verbatim from the capability modules' `#[cfg(not(target_os = "none"))]` arms.
 use deluge_bsp::oled::FrameBuffer;
+use deluge_bsp::rgb::{COLS, PadLeds, ROWS};
 
 pub(crate) async fn oled_init_panel() {}
 pub(crate) async fn oled_flush(fb: &FrameBuffer) {
     crate::host::panel().set_display(fb.as_bytes());
+}
+
+pub(crate) async fn pads_flush(leds: &mut PadLeds) {
+    let grid = leds.grid();
+    let mut buf = [0u8; deluge_sim_link::ALL_PADS_BYTES];
+    for col in 0..COLS {
+        for row in 0..ROWS {
+            let o = (col * ROWS + row) * 3;
+            buf[o..o + 3].copy_from_slice(&grid[col][row]);
+        }
+    }
+    crate::host::panel().set_all_pads(&buf);
+}
+pub(crate) async fn pads_set_brightness_interval(interval: u8) {
+    let _ = interval;
 }
