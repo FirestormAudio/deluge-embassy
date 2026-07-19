@@ -8,9 +8,9 @@ mod device;
 #[cfg(target_os = "none")]
 pub(crate) use device::*;
 
-#[cfg(all(not(target_os = "none"), not(feature = "linux")))]
+#[cfg(feature = "sim")]
 mod sim;
-#[cfg(all(not(target_os = "none"), not(feature = "linux")))]
+#[cfg(feature = "sim")]
 pub(crate) use sim::*;
 
 #[cfg(feature = "linux")]

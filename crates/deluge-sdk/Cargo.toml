@@ -66,11 +66,21 @@ embassy-executor = { workspace = true, features = [
 embassy-time = { workspace = true, features = ["std"] }
 critical-section = { version = "1", features = ["std"] }
 env_logger = "0.11"
-deluge-sim-link = { path = "../deluge-sim-link" }
-deluge-simulator = { path = "../../tools/deluge-simulator" }
+deluge-sim-link = { path = "../deluge-sim-link", optional = true }
+deluge-simulator = { path = "../../tools/deluge-simulator", optional = true }
+deluge-hal-linux = { path = "../deluge-hal-linux", optional = true }
 
 [features]
+# NOTE: cannot default to "sim" — `cargo build-fw` (device target) does not
+# pass --no-default-features, and the sim backend's deps are only declared
+# under the not-none-only target table, so a default-on sim feature breaks
+# the device build. `cargo deluge sim` must pass `--features sim` explicitly.
 default = []
+## Desktop simulator backend (`cargo deluge sim`): drives the in-process
+## simulator panel (deluge-sim-link) instead of real peripherals.
+sim = ["dep:deluge-sim-link", "dep:deluge-simulator"]
+## Linux backend (Phase 1b): drives real hardware via libdeluge/deluge-hal-linux.
+linux = ["dep:deluge-hal-linux"]
 ## Register the on-chip SRAM heap (`deluge-alloc`) as the global allocator, so
 ## `alloc` collections (`String`, `Vec`, `format!`) work. Needed by apps that use
 ## the GPL `deluge-ui-toolkit`. Off by default — the SDK is otherwise allocator-free.
