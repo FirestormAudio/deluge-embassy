@@ -7,6 +7,42 @@ use deluge_bsp::rgb::{COLS, PadLeds, ROWS};
 use embassy_executor::Spawner;
 use embassy_time::Instant;
 
+/// Host: exchange audio blocks with the simulator over the in-memory bridge.
+/// The GUI's audio callback drains output and fills input at the device rate,
+/// so this loop is paced by real time without a hardware clock. Body moved
+/// verbatim from `Audio::process`'s `#[cfg(not(target_os = "none"))]` arm.
+pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame])>(mut f: F) -> ! {
+    use deluge_sim_link::audio::{self as au, Consumer, Observer, Producer};
+    use embassy_time::{Duration, Timer};
+
+    let mut ends = crate::host::take_audio().expect("audio bridge already taken");
+    let mut block = [crate::audio::StereoFrame::default(); au::BLOCK_FRAMES];
+
+    let period_us = (au::BLOCK_FRAMES as u64 * 1_000_000) / au::SAMPLE_RATE_HZ as u64;
+    let wait = Duration::from_micros(period_us / 2);
+
+    loop {
+        // Paced by output demand: produce a block whenever the GUI's audio
+        // callback has drained room for one. Input is opportunistic — read
+        // what the input callback has captured, padding with silence on
+        // underrun — so the loop runs even with no input device.
+        if ends.out.vacant_len() < au::BLOCK_FRAMES {
+            Timer::after(wait).await;
+            continue;
+        }
+
+        for fr in block.iter_mut() {
+            let s = ends.in_.try_pop().unwrap_or([0.0, 0.0]);
+            fr.l = s[0];
+            fr.r = s[1];
+        }
+        f(&mut block);
+        for fr in &block {
+            let _ = ends.out.try_push([fr.l, fr.r]);
+        }
+    }
+}
+
 pub(crate) async fn oled_init_panel() {}
 pub(crate) async fn oled_flush(fb: &FrameBuffer) {
     crate::host::panel().set_display(fb.as_bytes());

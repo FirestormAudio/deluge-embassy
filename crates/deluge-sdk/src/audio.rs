@@ -3,11 +3,6 @@
 #[cfg(target_os = "none")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(target_os = "none")]
-use deluge_bsp::audio_block::{self, BlockState};
-#[cfg(all(target_os = "none", not(feature = "audio-irq")))]
-use embassy_time::{Duration, Ticker};
-
 /// One stereo audio frame; samples in `[-1.0, 1.0]`. `l` = left, `r` = right.
 #[cfg(target_os = "none")]
 pub use deluge_bsp::audio_block::Frame as StereoFrame;
@@ -64,77 +59,7 @@ impl Audio {
     ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
     /// }).await
     /// ```
-    #[cfg(target_os = "none")]
-    pub async fn process<F: FnMut(&mut [StereoFrame])>(self, mut f: F) -> ! {
-        // Prime the TX ring with dither, then anchor read/write heads.
-        audio_block::prime_tx();
-        let mut state = BlockState::new();
-        let mut block = [StereoFrame::default(); audio_block::BLOCK_FRAMES];
-
-        // v1: Ticker-paced poll loop. The codec crystal is the effective master
-        // (try_read_block skips on underrun / re-anchors on overrun), so OSTM vs
-        // codec drift costs at most an occasional one-block glitch.
-        #[cfg(not(feature = "audio-irq"))]
-        {
-            let period_us =
-                (audio_block::BLOCK_FRAMES as u64 * 1_000_000) / audio_block::SAMPLE_RATE_HZ as u64;
-            let mut tick = Ticker::every(Duration::from_micros(period_us));
-            loop {
-                tick.next().await;
-                if !state.try_read_block(&mut block) {
-                    continue; // not enough input yet — try next tick
-                }
-                f(&mut block);
-                state.write_output_block(&block);
-            }
-        }
-
-        // v2: per-block RX DMA interrupt clock — codec-locked, drift-free.
-        #[cfg(feature = "audio-irq")]
-        loop {
-            audio_block::wait_block().await;
-            // Drain every completed block (usually one) so a missed wake can't
-            // back the read head up.
-            while state.try_read_block(&mut block) {
-                f(&mut block);
-                state.write_output_block(&block);
-            }
-        }
-    }
-
-    /// Host: exchange audio blocks with the simulator over the in-memory bridge.
-    /// The GUI's audio callback drains output and fills input at the device rate,
-    /// so this loop is paced by real time without a hardware clock.
-    #[cfg(not(target_os = "none"))]
-    pub async fn process<F: FnMut(&mut [StereoFrame])>(self, mut f: F) -> ! {
-        use deluge_sim_link::audio::{self as au, Consumer, Observer, Producer};
-        use embassy_time::{Duration, Timer};
-
-        let mut ends = crate::host::take_audio().expect("audio bridge already taken");
-        let mut block = [StereoFrame::default(); au::BLOCK_FRAMES];
-
-        let period_us = (au::BLOCK_FRAMES as u64 * 1_000_000) / au::SAMPLE_RATE_HZ as u64;
-        let wait = Duration::from_micros(period_us / 2);
-
-        loop {
-            // Paced by output demand: produce a block whenever the GUI's audio
-            // callback has drained room for one. Input is opportunistic — read
-            // what the input callback has captured, padding with silence on
-            // underrun — so the loop runs even with no input device.
-            if ends.out.vacant_len() < au::BLOCK_FRAMES {
-                Timer::after(wait).await;
-                continue;
-            }
-
-            for fr in block.iter_mut() {
-                let s = ends.in_.try_pop().unwrap_or([0.0, 0.0]);
-                fr.l = s[0];
-                fr.r = s[1];
-            }
-            f(&mut block);
-            for fr in &block {
-                let _ = ends.out.try_push([fr.l, fr.r]);
-            }
-        }
+    pub async fn process<F: FnMut(&mut [StereoFrame])>(self, f: F) -> ! {
+        crate::plat::audio_run(f).await
     }
 }

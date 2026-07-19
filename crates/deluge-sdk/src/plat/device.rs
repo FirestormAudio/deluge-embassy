@@ -5,6 +5,7 @@ use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 
+use deluge_bsp::audio_block::{self, BlockState};
 use deluge_bsp::encoder;
 use deluge_bsp::fat::{self, FatError, Mode, VolumeIdx};
 use deluge_bsp::jacks::{self, Jack};
@@ -14,8 +15,49 @@ use deluge_bsp::rgb::PadLeds;
 use deluge_bsp::trigger_clock;
 use embassy_executor::Spawner;
 use embassy_time::Instant;
+#[cfg(not(feature = "audio-irq"))]
+use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use rza1l_hal::gpio::{Output, Pin};
+
+/// Run `f` over every audio block, forever. Body moved verbatim from
+/// `Audio::process`'s `#[cfg(target_os = "none")]` arm.
+pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame])>(mut f: F) -> ! {
+    // Prime the TX ring with dither, then anchor read/write heads.
+    audio_block::prime_tx();
+    let mut state = BlockState::new();
+    let mut block = [crate::audio::StereoFrame::default(); audio_block::BLOCK_FRAMES];
+
+    // v1: Ticker-paced poll loop. The codec crystal is the effective master
+    // (try_read_block skips on underrun / re-anchors on overrun), so OSTM vs
+    // codec drift costs at most an occasional one-block glitch.
+    #[cfg(not(feature = "audio-irq"))]
+    {
+        let period_us =
+            (audio_block::BLOCK_FRAMES as u64 * 1_000_000) / audio_block::SAMPLE_RATE_HZ as u64;
+        let mut tick = Ticker::every(Duration::from_micros(period_us));
+        loop {
+            tick.next().await;
+            if !state.try_read_block(&mut block) {
+                continue; // not enough input yet — try next tick
+            }
+            f(&mut block);
+            state.write_output_block(&block);
+        }
+    }
+
+    // v2: per-block RX DMA interrupt clock — codec-locked, drift-free.
+    #[cfg(feature = "audio-irq")]
+    loop {
+        audio_block::wait_block().await;
+        // Drain every completed block (usually one) so a missed wake can't
+        // back the read head up.
+        while state.try_read_block(&mut block) {
+            f(&mut block);
+            state.write_output_block(&block);
+        }
+    }
+}
 
 /// The SYNC LED is wired to port 6, pin 7.
 type SyncLedPin = Pin<6, 7, Output>;
