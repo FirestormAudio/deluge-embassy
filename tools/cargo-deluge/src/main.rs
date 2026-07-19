@@ -12,9 +12,11 @@
 //!   mounted Deluge SD card's `/APPS/` instead.
 //! - `cargo deluge log [--port <path>]` — connect to a running app's USB
 //!   serial-log channel (the `usb-log` feature) and stream it to stdout.
-//! - `cargo deluge linux [--bare] [--out <NAME>] [--features <list>] [--no-strip]`
+//! - `cargo deluge linux [--bare] [--out <NAME>] [--features <list>] [--no-strip] [--run]`
 //!   — build the current app for the Deluge's Linux userland and pack it with
 //!   the bundle's deluge-mkimage. Needs DELUGE_BASE set to an unpacked bundle.
+//!   `--run` then dev-uploads + launches the packed appliance image from RAM
+//!   (needs the Deluge in dev mode on the boot menu).
 //! - `cargo deluge debug [--release] [-- <args>]` — build, then `probe-rs run`
 //!   (J-Link).
 //! - `cargo deluge trace [--release] [--flow] [--duration-ms N] [-- <args>]` —
@@ -118,6 +120,9 @@ Commands:
                                --out N          image basename (else PACKAGE-NAME)
                                --features LIST  cargo --features to build with
                                --no-strip       keep debug info (larger image)
+                               --run            dev-upload + launch the packed
+                                                image from RAM (needs DEV MODE
+                                                on the boot menu; not with --bare)
   debug [--release] [-- ...] Build, then `probe-rs run` over J-Link (--chip set)
   trace [--release] [opts]   Build, then `probe-rs read-trace` (trace-a9 fork):
                                --flow         compact execution-flow view

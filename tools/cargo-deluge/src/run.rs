@@ -28,16 +28,23 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
     // program headers + entry point) before sending.  A debug build is mostly
     // `.debug_*`/symbol sections that never become a PT_LOAD segment, so they
     // bloat the transfer for zero on-device benefit.  `--no-strip` opts out.
-    let upload_elf = if args.iter().any(|a| a == "--no-strip") {
+    let stripped_elf = if args.iter().any(|a| a == "--no-strip") {
         elf.clone()
     } else {
         strip_for_upload(&elf)?
     };
 
+    upload_elf(&stripped_elf, args)
+}
+
+/// Upload an already-built ELF (device-loadable: PT_LOAD segments + entry
+/// point) to a Deluge over USB (dev mode) and launch it from RAM. Shared by
+/// `run` (after stripping a freshly built device ELF) and `linux --run`
+/// (an already segment-only appliance image, no stripping needed).
+pub(crate) fn upload_elf(elf: &Path, args: &[String]) -> Result<(), String> {
     // The Deluge must be sitting on the boot menu with DEV MODE on (its
     // background CDC listener is what we upload to).
-    let bytes =
-        fs::read(&upload_elf).map_err(|e| format!("reading {}: {e}", upload_elf.display()))?;
+    let bytes = fs::read(elf).map_err(|e| format!("reading {}: {e}", elf.display()))?;
     if bytes.len() > MAX_UPLOAD_BYTES {
         return Err(format!(
             "image is {} bytes, larger than the SDRAM app region ({MAX_UPLOAD_BYTES} bytes) \
@@ -53,7 +60,7 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
     };
     println!(
         "uploading {} ({} bytes) to {port_path}",
-        upload_elf.display(),
+        elf.display(),
         bytes.len()
     );
 

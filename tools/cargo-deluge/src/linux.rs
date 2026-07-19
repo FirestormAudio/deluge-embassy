@@ -18,8 +18,16 @@ const LINUX_TARGET: &str = "armv7-unknown-linux-musleabihf";
 pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
     let debug = args.iter().any(|a| a == "--debug");
     let bare = args.iter().any(|a| a == "--bare");
+    let run = args.iter().any(|a| a == "--run");
     let out = arg_value(args, "--out");
     let features = arg_value(args, "--features");
+
+    // `--run` dev-uploads the bootable appliance *image* from RAM; `--bare`
+    // emits a `/LINUX/APPS/` binary instead, which isn't a bootable image and
+    // can't be launched this way.
+    if run && bare {
+        return Err("--run uploads the bootable appliance image; drop --bare".to_string());
+    }
 
     let base = std::env::var("DELUGE_BASE")
         .map_err(|_| "set DELUGE_BASE to an unpacked deluge-linux bundle".to_string())?;
@@ -83,5 +91,12 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
         return Err("deluge-mkimage failed".to_string());
     }
     println!("packed {}", product.display());
+
+    if run {
+        // The appliance image is already segment-only (deluge-mkimage's
+        // output, not a raw cargo build ELF), so unlike `run` there's nothing
+        // to strip here — go straight to the shared USB dev-upload path.
+        crate::run::upload_elf(&product, args)?;
+    }
     Ok(())
 }
