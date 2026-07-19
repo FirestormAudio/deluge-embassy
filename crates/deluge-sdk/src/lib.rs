@@ -718,9 +718,16 @@ pub mod __rt {
         /// Open libdeluge, then run the app on a std executor on the MAIN thread
         /// (no GUI competes for it; libdeluge owns its own input/audio threads).
         pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner) + Send + 'static) {
-            let _ = env_logger::try_init();
+            // Default to `info` so the backend's own diagnostics (libdeluge
+            // open, oled_write failures) reach stderr → the boot console even
+            // when the launcher doesn't set RUST_LOG.
+            let _ = env_logger::Builder::from_env(
+                env_logger::Env::default().default_filter_or("info"),
+            )
+            .try_init();
             let dev = deluge_hal_linux::Deluge::open().expect("deluge_open failed");
             crate::linux::init(dev);
+            log::info!("libdeluge opened; linux backend running");
             setup();
             let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
             executor.run(move |spawner| {

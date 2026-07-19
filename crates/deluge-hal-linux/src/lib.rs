@@ -245,6 +245,15 @@ impl Deluge {
         if rc == 0 { Ok(()) } else { Err(Error(rc)) }
     }
 
+    /// Drive the SYNC LED (P6_7 GPIO). Returns `Err` if the LED-class device
+    /// is absent (kernel without the `deluge:sync` gpio-led node).
+    pub fn leds_sync(&mut self, on: bool) -> Result<(), Error> {
+        let h = unsafe { deluge_sys::deluge_leds(self.raw.as_ptr()) };
+        if h.is_null() { return Err(Error(-1)); }
+        let rc = unsafe { deluge_sys::deluge_leds_sync(h, on as i32) };
+        if rc == 0 { Ok(()) } else { Err(Error(rc)) }
+    }
+
     pub fn cv_set_raw(&mut self, ch: i32, raw: u16) -> Result<(), Error> {
         let h = unsafe { deluge_sys::deluge_cv(self.raw.as_ptr()) };
         if h.is_null() { return Err(Error(-1)); }

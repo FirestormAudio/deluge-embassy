@@ -18,8 +18,26 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame])>(mut f:
 /// Linux: no panel init sequence needed — `libdeluge` owns the display.
 pub(crate) async fn oled_init_panel() {}
 /// Linux: push the framebuffer to the OLED over `libdeluge`.
+///
+/// The SDK's [`FrameBuffer`] is page-major SSD1309 (128×48; the top
+/// `VISIBLE_TOP` rows sit behind the faceplate). The Linux `deluge-oled` fb is
+/// linear/row-major 1bpp — the 43 visible rows × 16 bytes (128 px/row, MSB =
+/// leftmost pixel), the format `deluge-linux-ui::OledTarget` targets. Transpose
+/// the visible rows into that layout before handing it to `libdeluge`.
 pub(crate) async fn oled_flush(fb: &FrameBuffer) {
-    let _ = crate::linux::dev().oled_write(fb.as_bytes());
+    use deluge_bsp::oled::{VISIBLE_HEIGHT, VISIBLE_TOP, WIDTH};
+    const LINE_BYTES: usize = WIDTH / 8; // 16
+    let mut out = [0u8; VISIBLE_HEIGHT * LINE_BYTES]; // 43 × 16 = 688
+    for y in 0..VISIBLE_HEIGHT {
+        for x in 0..WIDTH {
+            if fb.get_pixel(x, y + VISIBLE_TOP) {
+                out[y * LINE_BYTES + x / 8] |= 1 << (7 - (x % 8));
+            }
+        }
+    }
+    if let Err(e) = crate::linux::dev().oled_write(&out) {
+        log::warn!("oled_write failed: {e}");
+    }
 }
 
 pub(crate) async fn pads_flush(_leds: &mut PadLeds) {
@@ -45,9 +63,19 @@ pub(crate) async fn pic_wait_ready() {}
 pub(crate) fn pic_ensure_started(_spawner: Spawner) {}
 
 pub(crate) fn sync_led_init() -> bool {
+    // Initialize the LED to off; the returned bool is the initial on/off state
+    // (mirrors the sim), not an availability flag. A missing LED is non-fatal —
+    // `sync_led_set` logs and no-ops.
+    if let Err(e) = crate::linux::dev().leds_sync(false) {
+        log::warn!("sync LED unavailable: {e}");
+    }
     false
 }
-pub(crate) fn sync_led_set(_on: bool) {}
+pub(crate) fn sync_led_set(on: bool) {
+    if let Err(e) = crate::linux::dev().leds_sync(on) {
+        log::warn!("sync_led set failed: {e}");
+    }
+}
 pub(crate) fn sync_led_is_set_high(state: bool) -> bool {
     state
 }
