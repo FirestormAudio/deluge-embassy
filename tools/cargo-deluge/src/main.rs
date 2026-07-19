@@ -12,6 +12,9 @@
 //!   mounted Deluge SD card's `/APPS/` instead.
 //! - `cargo deluge log [--port <path>]` — connect to a running app's USB
 //!   serial-log channel (the `usb-log` feature) and stream it to stdout.
+//! - `cargo deluge linux <app-dir> [--bare] [--out <NAME>]` — build the current
+//!   app for the Deluge's Linux userland and pack it with the bundle's
+//!   deluge-mkimage. Needs DELUGE_BASE set to an unpacked bundle.
 //! - `cargo deluge debug [--release] [-- <args>]` — build, then `probe-rs run`
 //!   (J-Link).
 //! - `cargo deluge trace [--release] [--flow] [--duration-ms N] [-- <args>]` —
@@ -26,6 +29,7 @@
 mod build;
 mod deploy;
 mod frame;
+mod linux;
 mod log;
 mod new;
 mod probe;
@@ -69,6 +73,7 @@ fn main() -> ExitCode {
         "deploy" => deploy::cmd_deploy(rest),
         "log" => log::cmd_log(rest),
         "sim" => sim::cmd_sim(rest),
+        "linux" => linux::cmd_linux(rest),
         "debug" => probe::cmd_debug(rest),
         "trace" => probe::cmd_trace(rest),
         "" | "help" | "-h" | "--help" => {
