@@ -41,6 +41,28 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
 /// point) to a Deluge over USB (dev mode) and launch it from RAM. Shared by
 /// `run` (after stripping a freshly built device ELF) and `linux --run`
 /// (an already segment-only appliance image, no stripping needed).
+/// `cargo deluge upload <path> [--port <p>] [--log]` — stream an already-built
+/// ELF / appliance image straight to the device, skipping the build+pack step.
+/// Used to re-test a packed image without rebuilding (e.g. when the source tree
+/// has moved on but the on-disk image is the one we want on the device).
+pub(crate) fn cmd_upload(args: &[String]) -> Result<(), String> {
+    let mut path = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--port" {
+            it.next(); // skip the flag's value
+            continue;
+        }
+        if a.starts_with("--") {
+            continue; // other flags (e.g. --log)
+        }
+        path = Some(a.as_str());
+        break;
+    }
+    let path = path.ok_or("usage: cargo deluge upload <elf-path> [--port <p>] [--log]")?;
+    upload_elf(Path::new(path), args)
+}
+
 pub(crate) fn upload_elf(elf: &Path, args: &[String]) -> Result<(), String> {
     // The Deluge must be sitting on the boot menu with DEV MODE on (its
     // background CDC listener is what we upload to).

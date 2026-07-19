@@ -72,6 +72,7 @@ fn main() -> ExitCode {
         "new" => new::cmd_new(rest),
         "build" => build::cmd_build(rest).map(|_| ()),
         "run" => run::cmd_run(rest),
+        "upload" => run::cmd_upload(rest),
         "deploy" => deploy::cmd_deploy(rest),
         "log" => log::cmd_log(rest),
         "sim" => sim::cmd_sim(rest),
