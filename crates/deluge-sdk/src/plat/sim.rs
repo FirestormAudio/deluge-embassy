@@ -45,3 +45,11 @@ pub(crate) fn sync_led_is_set_high(state: bool) -> bool {
 pub(crate) fn sync_led_is_set_low(state: bool) -> bool {
     !state
 }
+
+pub(crate) fn cv_gate_init() {}
+pub(crate) async fn cv_set(ch: u8, code: u16) {
+    crate::host::panel().set_cv(ch as usize, code);
+}
+pub(crate) fn gate_set(ch: u8, on: bool) {
+    crate::host::panel().set_gate(ch as usize, on);
+}

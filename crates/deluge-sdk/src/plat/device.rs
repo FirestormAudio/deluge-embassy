@@ -61,3 +61,18 @@ pub(crate) fn sync_led_is_set_high(pin: &mut SyncLedPin) -> Result<bool, Infalli
 pub(crate) fn sync_led_is_set_low(pin: &mut SyncLedPin) -> Result<bool, Infallible> {
     pin.is_set_low()
 }
+
+pub(crate) fn cv_gate_init() {
+    // SAFETY: runs once. Configures GPIO + RSPI0 and runs the DAC's ~10 ms
+    // linearity init (poll-based delays). Acquire CV/gate before entering a
+    // loop that also drives the OLED, so this one-time RSPI0 setup can't race an
+    // in-flight OLED transfer (see docs/advanced-guide.md §7).
+    unsafe { deluge_bsp::cv_gate::init() };
+}
+pub(crate) async fn cv_set(ch: u8, code: u16) {
+    deluge_bsp::cv_gate::cv_set(ch, code).await;
+}
+pub(crate) fn gate_set(ch: u8, on: bool) {
+    // SAFETY: GPIO write to a gate line we own; pins configured by init.
+    unsafe { deluge_bsp::cv_gate::gate_set(ch, on) };
+}
