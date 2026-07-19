@@ -30,22 +30,21 @@ impl SyncLed {
     /// [`Deluge::sync_led`](crate::Deluge::sync_led), whose take-once guard
     /// guarantees single ownership.
     pub(crate) fn new() -> Self {
-        // SAFETY: the take-once guard in `Deluge::sync_led` ensures this runs once
-        // and nothing else owns P6_7; clocks are up by the time an app runs.
-        let pin = unsafe { SyncLedPin::into_output() };
-        SyncLed { pin }
+        SyncLed {
+            pin: crate::plat::sync_led_init(),
+        }
     }
 
     /// Turn the LED on.
     #[inline]
     pub fn on(&mut self) {
-        let _ = self.pin.set_high();
+        let _ = crate::plat::sync_led_set_high(&mut self.pin);
     }
 
     /// Turn the LED off.
     #[inline]
     pub fn off(&mut self) {
-        let _ = self.pin.set_low();
+        let _ = crate::plat::sync_led_set_low(&mut self.pin);
     }
 
     /// Set the LED on (`true`) or off (`false`).
@@ -61,7 +60,7 @@ impl SyncLed {
     /// Toggle the LED.
     #[inline]
     pub fn toggle(&mut self) {
-        let _ = StatefulOutputPin::toggle(&mut self.pin);
+        let _ = crate::plat::sync_led_toggle(&mut self.pin);
     }
 
     /// Borrow the underlying `embedded-hal` output pin, for driver crates that
@@ -76,11 +75,11 @@ impl SyncLed {
 impl OutputPin for SyncLed {
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        self.pin.set_high()
+        crate::plat::sync_led_set_high(&mut self.pin)
     }
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        self.pin.set_low()
+        crate::plat::sync_led_set_low(&mut self.pin)
     }
 }
 
@@ -88,11 +87,11 @@ impl OutputPin for SyncLed {
 impl StatefulOutputPin for SyncLed {
     #[inline]
     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
-        self.pin.is_set_high()
+        crate::plat::sync_led_is_set_high(&mut self.pin)
     }
     #[inline]
     fn is_set_low(&mut self) -> Result<bool, Self::Error> {
-        self.pin.is_set_low()
+        crate::plat::sync_led_is_set_low(&mut self.pin)
     }
 }
 
@@ -107,7 +106,9 @@ pub struct SyncLed {
 #[cfg(not(target_os = "none"))]
 impl SyncLed {
     pub(crate) fn new() -> Self {
-        SyncLed { state: false }
+        SyncLed {
+            state: crate::plat::sync_led_init(),
+        }
     }
 
     /// Turn the LED on.
@@ -126,7 +127,7 @@ impl SyncLed {
     #[inline]
     pub fn set(&mut self, on: bool) {
         self.state = on;
-        crate::host::panel().set_synced_led(on);
+        crate::plat::sync_led_set(on);
     }
 
     /// Toggle the LED.
@@ -160,11 +161,11 @@ impl OutputPin for SyncLed {
 impl StatefulOutputPin for SyncLed {
     #[inline]
     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
-        Ok(self.state)
+        Ok(crate::plat::sync_led_is_set_high(self.state))
     }
     #[inline]
     fn is_set_low(&mut self) -> Result<bool, Self::Error> {
-        Ok(!self.state)
+        Ok(crate::plat::sync_led_is_set_low(self.state))
     }
 }
 

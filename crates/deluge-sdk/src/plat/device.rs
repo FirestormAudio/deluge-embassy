@@ -1,8 +1,15 @@
 //! Device backend ops (deluge-bsp peripherals). Bodies moved verbatim from the
 //! capability modules' `#[cfg(target_os = "none")]` arms.
+use core::convert::Infallible;
+
 use deluge_bsp::oled::{self, FrameBuffer};
 use deluge_bsp::pic;
 use deluge_bsp::rgb::PadLeds;
+use embedded_hal::digital::{OutputPin, StatefulOutputPin};
+use rza1l_hal::gpio::{Output, Pin};
+
+/// The SYNC LED is wired to port 6, pin 7.
+type SyncLedPin = Pin<6, 7, Output>;
 
 pub(crate) async fn oled_init_panel() {
     oled::init().await;
@@ -32,4 +39,25 @@ pub(crate) async fn leds_clear() {
 }
 pub(crate) async fn leds_gold_knob(knob: u8, brightness: [u8; 4]) {
     pic::set_gold_knob_indicators(knob, brightness).await;
+}
+
+pub(crate) fn sync_led_init() -> SyncLedPin {
+    // SAFETY: the take-once guard in `Deluge::sync_led` ensures this runs once
+    // and nothing else owns P6_7; clocks are up by the time an app runs.
+    unsafe { SyncLedPin::into_output() }
+}
+pub(crate) fn sync_led_set_high(pin: &mut SyncLedPin) -> Result<(), Infallible> {
+    pin.set_high()
+}
+pub(crate) fn sync_led_set_low(pin: &mut SyncLedPin) -> Result<(), Infallible> {
+    pin.set_low()
+}
+pub(crate) fn sync_led_toggle(pin: &mut SyncLedPin) -> Result<(), Infallible> {
+    StatefulOutputPin::toggle(pin)
+}
+pub(crate) fn sync_led_is_set_high(pin: &mut SyncLedPin) -> Result<bool, Infallible> {
+    pin.is_set_high()
+}
+pub(crate) fn sync_led_is_set_low(pin: &mut SyncLedPin) -> Result<bool, Infallible> {
+    pin.is_set_low()
 }

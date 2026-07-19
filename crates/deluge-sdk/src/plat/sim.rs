@@ -32,3 +32,16 @@ pub(crate) async fn leds_clear() {
 pub(crate) async fn leds_gold_knob(knob: u8, brightness: [u8; 4]) {
     crate::host::panel().set_knob_indicator(knob as usize, brightness);
 }
+
+pub(crate) fn sync_led_init() -> bool {
+    false
+}
+pub(crate) fn sync_led_set(on: bool) {
+    crate::host::panel().set_synced_led(on);
+}
+pub(crate) fn sync_led_is_set_high(state: bool) -> bool {
+    state
+}
+pub(crate) fn sync_led_is_set_low(state: bool) -> bool {
+    !state
+}
