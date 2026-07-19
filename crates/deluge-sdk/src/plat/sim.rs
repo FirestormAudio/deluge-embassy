@@ -1,7 +1,10 @@
 //! Host-simulator backend ops (the deluge-sim-link SharedPanel). Bodies moved
 //! verbatim from the capability modules' `#[cfg(not(target_os = "none"))]` arms.
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use deluge_bsp::oled::FrameBuffer;
 use deluge_bsp::rgb::{COLS, PadLeds, ROWS};
+use embassy_executor::Spawner;
 use embassy_time::Instant;
 
 pub(crate) async fn oled_init_panel() {}
@@ -133,4 +136,39 @@ pub(crate) fn sd_write(name: &str, data: &[u8]) -> Result<(), crate::sd::FatErro
     std::fs::create_dir_all(&root)?;
     std::fs::write(root.join(name), data)?;
     Ok(())
+}
+
+static INPUT_PUMP_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Host: start the pump that forwards GUI input from the shared panel into the
+/// SDK event queue. Called once by the host runtime before the app runs.
+pub(crate) fn input_start_pump(spawner: Spawner) {
+    if INPUT_PUMP_STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    spawner.spawn(host_input_pump().unwrap());
+}
+
+/// Host: poll the shared panel for GUI input and enqueue it as
+/// [`crate::input::Event`]s.
+#[embassy_executor::task]
+async fn host_input_pump() {
+    use deluge_sim_link::InputEvent;
+    use embassy_time::{Duration, Timer};
+    loop {
+        while let Some(ev) = crate::host::panel().pop_event() {
+            let mapped = match ev {
+                InputEvent::Pad { x, y, pressed } => crate::input::Event::Pad { x, y, pressed },
+                InputEvent::Button { id, pressed } => {
+                    crate::input::Event::Button { id, pressed }
+                }
+                InputEvent::Encoder { index, delta } => {
+                    crate::input::Event::Encoder { index, delta }
+                }
+            };
+            let _ = crate::input::EVENTS.try_send(mapped);
+        }
+        // Poll cadence: low enough latency to feel instant, cheap on the host.
+        Timer::after(Duration::from_millis(1)).await;
+    }
 }

@@ -2,15 +2,17 @@
 //! capability modules' `#[cfg(target_os = "none")]` arms.
 use core::convert::Infallible;
 use core::future::poll_fn;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 
+use deluge_bsp::encoder;
 use deluge_bsp::fat::{self, FatError, Mode, VolumeIdx};
 use deluge_bsp::jacks::{self, Jack};
 use deluge_bsp::oled::{self, FrameBuffer};
 use deluge_bsp::pic;
 use deluge_bsp::rgb::PadLeds;
 use deluge_bsp::trigger_clock;
+use embassy_executor::Spawner;
 use embassy_time::Instant;
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use rza1l_hal::gpio::{Output, Pin};
@@ -193,4 +195,51 @@ pub(crate) fn sd_write(name: &str, data: &[u8]) -> Result<(), FatError> {
     // close_file flushes; must happen before `vm` is dropped.
     vm.close_file(file)?;
     Ok(())
+}
+
+static INPUT_PUMP_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Configure the encoder GPIO interrupts and spawn the encoder pump. Idempotent.
+///
+/// Pads/buttons additionally require the PIC service; [`Deluge::input`] starts
+/// that too.
+pub(crate) fn input_start_pump(spawner: Spawner) {
+    if INPUT_PUMP_STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    // SAFETY: runs once (guarded above). `irq_init` registers each encoder's GIC
+    // handler before enabling its source, so it is safe with interrupts enabled.
+    unsafe { encoder::irq_init() };
+    spawner.spawn(encoder_pump().unwrap());
+}
+
+/// Wake on encoder IRQ, drain detent deltas, and enqueue [`crate::input::Event::Encoder`].
+#[embassy_executor::task]
+async fn encoder_pump() {
+    let mut acc = [0i8; encoder::NUM_ENCODERS];
+    loop {
+        // Sleep until an ISR records a non-zero delta on some encoder.
+        poll_fn(|cx| {
+            encoder::ENCODER_WAKER.register(cx.waker());
+            if encoder::ENCODER_DELTAS
+                .iter()
+                .any(|d| d.load(Ordering::Relaxed) != 0)
+            {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+
+        for (i, acc_i) in acc.iter_mut().enumerate() {
+            let delta = encoder::take_detents(i, acc_i);
+            if delta != 0 {
+                let _ = crate::input::EVENTS.try_send(crate::input::Event::Encoder {
+                    index: i as u8,
+                    delta,
+                });
+            }
+        }
+    }
 }

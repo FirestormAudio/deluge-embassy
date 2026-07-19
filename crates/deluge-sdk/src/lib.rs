@@ -682,7 +682,7 @@ pub mod __rt {
                     let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
                     executor.run(move |spawner| {
                         // Bridge GUI input → the SDK event queue.
-                        crate::input::start_host_pump(spawner);
+                        crate::plat::input_start_pump(spawner);
                         spawn(spawner);
                     });
                 })
