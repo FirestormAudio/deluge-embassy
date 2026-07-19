@@ -53,6 +53,16 @@ test-wren-debug       = "test --manifest-path tools/wren-web-debug/Cargo.toml --
 build-wren           = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p wren-firmware"
 build-wren-bin       = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p wren-firmware -- -O binary target/armv7a-none-eabihf/release/wren-firmware.bin"
 
+# ---------------------------------------------------------------------------
+# armv7-unknown-linux-musleabihf — the Deluge's Linux userland (deluge-linux).
+# `cargo deluge linux` selects this triple and prepends the bundle toolchain's
+# bin to PATH so `arm-linux-gcc` resolves; apps are fully static (crt-static)
+# because they run from the SD card and must not depend on any image's rootfs.
+# ---------------------------------------------------------------------------
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [env]
 # UAC2 (3 ifaces) + CDC-ACM (2 ifaces) + USB-MIDI (2 ifaces) = 7 total.
 EMBASSY_USB_MAX_INTERFACE_COUNT = "8"
