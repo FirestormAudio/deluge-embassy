@@ -106,3 +106,31 @@ pub(crate) fn jacks_line_out_right() -> bool {
 pub(crate) fn jacks_set_speaker(on: bool) {
     let _ = on;
 }
+
+/// Host: the simulated card is always available.
+pub(crate) async fn sd_init_card() -> Result<(), crate::sd::SdError> {
+    Ok(())
+}
+
+/// The simulated SD-card root directory (`DELUGE_SIM_SD`, default `./sim-sd`).
+fn sim_sd_root() -> std::path::PathBuf {
+    std::env::var_os("DELUGE_SIM_SD")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("sim-sd"))
+}
+
+/// Read a root-directory file into `buf`; returns the number of bytes read.
+pub(crate) fn sd_read(name: &str, buf: &mut [u8]) -> Result<usize, crate::sd::FatError> {
+    let data = std::fs::read(sim_sd_root().join(name))?;
+    let n = data.len().min(buf.len());
+    buf[..n].copy_from_slice(&data[..n]);
+    Ok(n)
+}
+
+/// Write `data` to a root-directory file, creating or truncating it.
+pub(crate) fn sd_write(name: &str, data: &[u8]) -> Result<(), crate::sd::FatError> {
+    let root = sim_sd_root();
+    std::fs::create_dir_all(&root)?;
+    std::fs::write(root.join(name), data)?;
+    Ok(())
+}

@@ -5,6 +5,7 @@ use core::future::poll_fn;
 use core::sync::atomic::Ordering;
 use core::task::Poll;
 
+use deluge_bsp::fat::{self, FatError, Mode, VolumeIdx};
 use deluge_bsp::jacks::{self, Jack};
 use deluge_bsp::oled::{self, FrameBuffer};
 use deluge_bsp::pic;
@@ -153,4 +154,43 @@ pub(crate) fn jacks_line_out_right() -> bool {
 pub(crate) fn jacks_set_speaker(on: bool) {
     // SAFETY: GPIO write to the speaker-enable output configured by init.
     unsafe { jacks::set_speaker_enable(on) };
+}
+
+pub(crate) async fn sd_init_card() -> Result<(), deluge_bsp::sd::SdError> {
+    deluge_bsp::sd::init().await
+}
+
+/// Read a root-directory file into `buf`; returns the number of bytes read
+/// (capped at `buf.len()`).
+pub(crate) fn sd_read(name: &str, buf: &mut [u8]) -> Result<usize, FatError> {
+    let vm = fat::new_volume_manager();
+    let volume = vm.open_raw_volume(VolumeIdx(0))?;
+    let root = vm.open_root_dir(volume)?;
+    let file = vm.open_file_in_dir(root, name, Mode::ReadOnly)?;
+
+    let mut total = 0;
+    while total < buf.len() {
+        let n = vm.read(file, &mut buf[total..])?;
+        if n == 0 {
+            break;
+        }
+        total += n;
+    }
+
+    vm.close_file(file)?;
+    // Dropping `vm` releases the volume/dir handles.
+    Ok(total)
+}
+
+/// Write `data` to a root-directory file, creating or truncating it.
+pub(crate) fn sd_write(name: &str, data: &[u8]) -> Result<(), FatError> {
+    let vm = fat::new_volume_manager();
+    let volume = vm.open_raw_volume(VolumeIdx(0))?;
+    let root = vm.open_root_dir(volume)?;
+    let file = vm.open_file_in_dir(root, name, Mode::ReadWriteCreateOrTruncate)?;
+
+    vm.write(file, data)?;
+    // close_file flushes; must happen before `vm` is dropped.
+    vm.close_file(file)?;
+    Ok(())
 }
