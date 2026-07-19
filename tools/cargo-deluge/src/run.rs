@@ -4,7 +4,6 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use crate::build::cmd_build;
@@ -83,74 +82,10 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
 const MAX_UPLOAD_BYTES: usize = 0x0FD2_0000 - 0x0C00_0000; // SDRAM app-region span
 
 /// Strip the ELF down to what the loader reads (PT_LOAD segments + entry point)
-/// with the toolchain's `llvm-objcopy --strip-all`, writing a `.stripped`
-/// sibling and returning its path.  If objcopy can't be located, warns and
-/// returns `elf` unchanged so `run` still works (just with a larger transfer).
+/// via [`util::strip_elf`], so `run` still works (just with a larger transfer)
+/// if objcopy can't be located.
 fn strip_for_upload(elf: &Path) -> Result<PathBuf, String> {
-    let Some(objcopy) = locate_objcopy() else {
-        eprintln!(
-            "warning: llvm-objcopy not found (add it with \
-             `rustup component add llvm-tools-preview`); sending the unstripped ELF"
-        );
-        return Ok(elf.to_path_buf());
-    };
-
-    let out = elf.with_file_name(format!(
-        "{}.stripped",
-        elf.file_name().and_then(|n| n.to_str()).unwrap_or("app")
-    ));
-    let status = Command::new(&objcopy)
-        .arg("--strip-all")
-        .arg(elf)
-        .arg(&out)
-        .status()
-        .map_err(|e| format!("running {}: {e}", objcopy.display()))?;
-    if !status.success() {
-        return Err("llvm-objcopy --strip-all failed".to_string());
-    }
-
-    if let (Ok(before), Ok(after)) = (fs::metadata(elf), fs::metadata(&out)) {
-        println!(
-            "stripped {} -> {} bytes ({}% smaller)",
-            before.len(),
-            after.len(),
-            before
-                .len()
-                .checked_sub(after.len())
-                .map(|d| d * 100 / before.len().max(1))
-                .unwrap_or(0),
-        );
-    }
-    Ok(out)
-}
-
-/// Locate `llvm-objcopy`: prefer one on `PATH` (`llvm-objcopy`, then
-/// cargo-binutils' `rust-objcopy`), else the binary shipped by the active
-/// toolchain's `llvm-tools` component at `<sysroot>/lib/rustlib/<host>/bin`.
-fn locate_objcopy() -> Option<PathBuf> {
-    for cand in ["llvm-objcopy", "rust-objcopy"] {
-        if Command::new(cand)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-        {
-            return Some(PathBuf::from(cand));
-        }
-    }
-
-    let sysroot = Command::new("rustc").args(["--print", "sysroot"]).output().ok()?;
-    let sysroot = String::from_utf8(sysroot.stdout).ok()?;
-    let verbose = Command::new("rustc").arg("-vV").output().ok()?;
-    let verbose = String::from_utf8(verbose.stdout).ok()?;
-    let host = verbose.lines().find_map(|l| l.strip_prefix("host: "))?;
-
-    let path = Path::new(sysroot.trim())
-        .join("lib")
-        .join("rustlib")
-        .join(host)
-        .join("bin")
-        .join("llvm-objcopy");
-    path.is_file().then_some(path)
+    crate::util::strip_elf(elf)
 }
 
 /// Write the framed image, showing a local progress bar (USB bulk flow-control

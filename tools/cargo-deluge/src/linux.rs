@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::build::{package_name, target_dir};
-use crate::util::arg_value;
+use crate::util::{arg_value, strip_elf};
 
 /// The Deluge's Linux userland triple (musl, static).
 const LINUX_TARGET: &str = "armv7-unknown-linux-musleabihf";
@@ -19,6 +19,7 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
     let debug = args.iter().any(|a| a == "--debug");
     let bare = args.iter().any(|a| a == "--bare");
     let out = arg_value(args, "--out");
+    let features = arg_value(args, "--features");
 
     let base = std::env::var("DELUGE_BASE")
         .map_err(|_| "set DELUGE_BASE to an unpacked deluge-linux bundle".to_string())?;
@@ -34,9 +35,14 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
     );
 
     let mut cmd = Command::new("cargo");
-    cmd.args(["build", "--target", LINUX_TARGET]);
+    cmd.args(["build", "--target", LINUX_TARGET, "--no-default-features"]);
     if !debug {
         cmd.arg("--release");
+    }
+    if let Some(features) = &features {
+        if !features.is_empty() {
+            cmd.arg("--features").arg(features);
+        }
     }
     cmd.env("DELUGE_SDK_ROOT", &sysroot).env("PATH", &path);
     if !cmd.status().map_err(|e| format!("cargo: {e}"))?.success() {
@@ -50,8 +56,16 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
         return Err(format!("binary not found at {}", bin.display()));
     }
 
+    // The workspace's release profile keeps debug info (for device gdb/RTT
+    // work), which bloats a Linux appliance image well past the bundle's
+    // rootfs.uimg size ceiling. Strip before packing unless asked not to;
+    // `--bare` binaries aren't image-size-constrained but are stripped too
+    // for a smaller card footprint.
+    let no_strip = args.iter().any(|a| a == "--no-strip");
+    let packed_bin = if no_strip { bin.clone() } else { strip_elf(&bin)? };
+
     let mut mk = Command::new(&mkimage);
-    mk.arg(&bin);
+    mk.arg(&packed_bin);
     let product = if bare {
         let p = target_dir()?.join("bare").join(&name);
         if let Some(dir) = p.parent() {
