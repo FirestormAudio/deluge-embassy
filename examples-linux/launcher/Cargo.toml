@@ -1,0 +1,12 @@
+[package]
+name = "launcher"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+deluge-hal-linux = { path = "../../crates/deluge-hal-linux" }
+deluge-linux-ui = { path = "../../crates/deluge-linux-ui" }
+deluge-ui-toolkit = { path = "../../crates/deluge-ui-toolkit" }
+embedded-graphics = "0.8"
+libc = "0.2"

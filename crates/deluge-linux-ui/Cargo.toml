@@ -1,0 +1,11 @@
+[package]
+name = "deluge-linux-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Bridge from deluge-linux's OLED framebuffer to the deluge-ui-toolkit (embedded-graphics)."
+
+[dependencies]
+deluge-hal-linux = { path = "../deluge-hal-linux" }
+embedded-graphics = "0.8"
+deluge-ui-toolkit = { path = "../deluge-ui-toolkit" }
+deluge-grid-toolkit = { path = "../deluge-grid-toolkit" }

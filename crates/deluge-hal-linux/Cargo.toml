@@ -1,0 +1,7 @@
+[package]
+name = "deluge-hal-linux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+deluge-sys = { path = "../deluge-sys" }

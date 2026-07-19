@@ -49,7 +49,7 @@ pub(crate) fn cmd_build(args: &[String]) -> Result<PathBuf, String> {
 ///
 /// Parsed without a JSON dependency — the tool deliberately keeps `serialport`
 /// as its only dep — by pulling the single `"target_directory"` string field.
-fn target_dir() -> Result<PathBuf, String> {
+pub(crate) fn target_dir() -> Result<PathBuf, String> {
     let out = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .output()
@@ -90,7 +90,7 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 }
 
 /// Read the package (bin) name from `./Cargo.toml` (minimal TOML scan).
-fn package_name() -> Result<String, String> {
+pub(crate) fn package_name() -> Result<String, String> {
     let toml = fs::read_to_string("Cargo.toml")
         .map_err(|_| "no Cargo.toml in the current directory — run inside an app".to_string())?;
     parse_package_name(&toml).ok_or_else(|| "could not find package name in Cargo.toml".to_string())

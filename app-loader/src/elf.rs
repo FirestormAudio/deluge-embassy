@@ -22,7 +22,7 @@ use deluge_bsp::flash;
 use deluge_image::elf::{
     ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD, PlanError,
     SegmentPlacement, classify_load_range, find_fsb_base, le16, le32, mirror_to_phys,
-    parse_load_plan, place_segment, sram_stage_addr,
+    place_segment, sram_stage_addr,
 };
 use embassy_time::{Duration, Timer};
 
@@ -54,6 +54,10 @@ pub enum ElfError {
     WrongFormat,
     /// A `PT_LOAD` segment's physical address is outside the permitted regions.
     BadLoadAddress,
+    /// The uploaded ELF cannot be stream-loaded: its `PT_LOAD` segments are not
+    /// in non-decreasing, non-overlapping file order, so the loader would have
+    /// to seek backward to place them.
+    Unstreamable,
     /// SD card / FAT read or seek error.
     Io(#[allow(dead_code)] FatError),
     /// `read` returned 0 before the segment was fully copied.
@@ -80,6 +84,7 @@ impl From<PlanError> for ElfError {
             // A truncated image / short program-header table is an I/O-shaped
             // failure the slice loader maps to its EOF variant.
             PlanError::Truncated => ElfError::UnexpectedEof,
+            PlanError::Unordered => ElfError::Unstreamable,
         }
     }
 }
@@ -119,7 +124,7 @@ fn read_exact(
 /// # Safety
 /// Writes to physical RAM derived from ELF program headers.  Each
 /// destination is validated before any write, but the caller must ensure no
-/// live data occupies the SDRAM staging window (`0x0F000000–0x0F2FFFFF`).
+/// live data occupies the SDRAM staging window (`0x0FD20000–0x0FFFFFFF`).
 pub async unsafe fn load_from_sd_with_progress<F, Fut>(
     vm: &mut fat::DelugeVolumeManager,
     file: RawFile,
@@ -212,8 +217,9 @@ where
         }
 
         // Classify and place the segment via the shared host-tested decision
-        // (same one `load_from_slice` and the USB dev-upload path use), so the
-        // FAT and slice loaders can never drift on where a segment may land:
+        // (the same one `StreamRouter` and the USB dev-upload path use), so the
+        // FAT loader and the streaming loaders can never drift on where a
+        // segment may land:
         //   * data-retention RAM (0x20000000-0x2001FFFF) is skipped — reserved
         //     for the trampoline; the app's own startup zeroes any BSS there;
         //   * SDRAM targets are written through `p_paddr` (so a segment that
@@ -283,59 +289,6 @@ where
     })
 }
 
-/// Load an ELF32 image that is already fully present in memory (the USB
-/// dev-upload path), mirroring [`load_from_sd_with_progress`] but copying each
-/// segment's bytes from `elf[p_offset..]` instead of streaming from FAT.
-///
-/// The parsing, bounds-checking and per-segment placement are the host-tested
-/// [`parse_load_plan`] (shared address math with the FAT path); this function
-/// only performs the raw memory writes the plan describes:
-/// - **SDRAM targets** are written to their final addresses directly;
-/// - **SRAM targets** are written to the SDRAM staging window, and a
-///   [`SramSegDesc`] is recorded so the caller can drive
-///   [`crate::launcher::launch_via_trampoline`].
-///
-/// # Safety
-/// Writes physical RAM derived from the image's program headers. Each
-/// destination range is validated by [`parse_load_plan`] before any write, but
-/// the caller must ensure no live data occupies the SDRAM staging window
-/// (`0x0F000000+`) or the SDRAM load region — true during the boot menu, like the
-/// SD ELF loader. `elf` must remain valid for the duration of the call and must
-/// not overlap any segment's destination (the dev-upload receiver stages the raw
-/// image high in SDRAM, clear of both windows).
-pub unsafe fn load_from_slice(elf: &[u8]) -> Result<LoadResult, ElfError> {
-    let plan = parse_load_plan(elf).map_err(ElfError::from)?;
-
-    let mut sram_descs = [SramSegDesc::default(); MAX_PHDRS];
-    let mut n_sram = 0usize;
-
-    for op in &plan.ops[..plan.n_ops] {
-        let src = unsafe { elf.as_ptr().add(op.src_off as usize) };
-        let dst = op.write_addr as *mut u8;
-        unsafe {
-            core::ptr::copy_nonoverlapping(src, dst, op.filesz as usize);
-            if op.zero_extra > 0 {
-                core::ptr::write_bytes(dst.add(op.filesz as usize), 0, op.zero_extra as usize);
-            }
-        }
-        if op.sram {
-            sram_descs[n_sram] = SramSegDesc {
-                src: op.write_addr,
-                dst: op.final_dst,
-                filesz: op.filesz,
-                zero_extra: op.zero_extra,
-            };
-            n_sram += 1;
-        }
-    }
-
-    Ok(LoadResult {
-        entry: plan.entry,
-        sram_descs,
-        n_sram,
-    })
-}
-
 /// A flat firmware image staged in the SDRAM staging window, ready to be
 /// programmed into the flash app slot.
 pub struct FlashStage {
@@ -365,7 +318,7 @@ pub struct FlashStage {
 /// the slot (see [`crate::flashboot::store_image_to_slot`]).
 ///
 /// # Safety
-/// Writes the SDRAM staging window (`0x0F000000+`); the caller must ensure no
+/// Writes the SDRAM staging window (`0x0FD20000+`); the caller must ensure no
 /// live data occupies it (true during the boot menu, like the SD ELF loader).
 pub async unsafe fn flatten_to_flash_staging<F, Fut>(
     vm: &mut fat::DelugeVolumeManager,

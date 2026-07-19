@@ -1,0 +1,6 @@
+# The bundle's toolchain, not the host's. DELUGE_SDK_ROOT already points at the
+# staged SDK for the host build; DELUGE_BASE points at the bundle for the target
+# one. Without an explicit linker, cargo picks `cc` and links an x86 libasound.
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
