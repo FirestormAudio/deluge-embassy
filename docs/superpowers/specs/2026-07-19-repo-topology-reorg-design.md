@@ -278,12 +278,13 @@ both packers (this also fixes a **stale SDRAM ceiling** in `deluge-linux`'s
 `memmap.py` — `0x10000000` where it must be `0x0FD20000` to match the app-loader
 `SDRAM_HI`), with `deluge_mkimage` importing them flat.
 
-**Deliberately deferred: Stage 2c — unify the two packers into one.** Fold
-`mk-app-elf.py`'s `LINUX.ELF` path into `deluge_mkimage` (or make it a thin caller)
-so there is a single ELF-packing implementation, and remove the remaining
-`mk-app-elf.py`/`deluge_mkimage` duplication (`elf.py`, appelf validation, the
-two entry points). Touches `make appelf` + `release.yml`, so it is its own phase
-with its own spec — **tracked here so it is not forgotten.**
+**Stage 2c — unify the two packers into one. ✅ DONE (2026-07-19).** Took the
+"thin caller" option: `deluge_mkimage.elf` is the single `pack`/`check`
+implementation; `mk-app-elf.py` re-exports `elf.pack` and `check-app-elf.py`
+wraps `elf.check`, deleting the duplicated bodies (−164 lines) with no interface
+or behavior change (`make appelf`/`release.yml`/pytest untouched, `LINUX.ELF`
+still packs + validates). Plan:
+`docs/superpowers/plans/2026-07-19-stage2c-unify-elf-packers.md`.
 
 ## 11. Risks & open questions
 
