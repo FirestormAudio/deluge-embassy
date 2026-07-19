@@ -73,6 +73,16 @@ pub(crate) async fn leds_gold_knob(knob: u8, brightness: [u8; 4]) {
     crate::host::panel().set_knob_indicator(knob as usize, brightness);
 }
 
+static PIC_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Host: nothing to wait for.
+pub(crate) async fn pic_wait_ready() {}
+
+/// Host: there is no PIC co-processor to bring up.
+pub(crate) fn pic_ensure_started(_spawner: Spawner) {
+    let _ = PIC_STARTED.swap(true, Ordering::Relaxed);
+}
+
 pub(crate) fn sync_led_init() -> bool {
     false
 }

@@ -13,6 +13,7 @@ use deluge_bsp::oled::{self, FrameBuffer};
 use deluge_bsp::pic;
 use deluge_bsp::rgb::PadLeds;
 use deluge_bsp::trigger_clock;
+use deluge_bsp::uart as bsp_uart;
 use embassy_executor::Spawner;
 use embassy_time::Instant;
 #[cfg(not(feature = "audio-irq"))]
@@ -90,6 +91,58 @@ pub(crate) async fn leds_clear() {
 }
 pub(crate) async fn leds_gold_knob(knob: u8, brightness: [u8; 4]) {
     pic::set_gold_knob_indicators(knob, brightness).await;
+}
+
+/// PIC UART link speed (matches the demo firmware / PIC power-on baud). Body
+/// moved verbatim from `pic_service`'s `#[cfg(target_os = "none")]` arm.
+const PIC_BAUD: u32 = 31_250;
+
+static PIC_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Wait for the PIC to finish configuring.
+pub(crate) async fn pic_wait_ready() {
+    pic::wait_ready().await;
+}
+
+/// Ensure the PIC UART is up and the RX pump is running. Idempotent.
+pub(crate) fn pic_ensure_started(spawner: Spawner) {
+    if PIC_STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    // SAFETY: runs once (guarded above). `init_pic` registers the TXI handler
+    // before the source is enabled and sets up DMA RX, so it is safe to call with
+    // interrupts already enabled.
+    unsafe { bsp_uart::init_pic(PIC_BAUD) };
+    // `#[embassy_executor::task]` returns a Result in this Embassy version; the
+    // only failure is pool exhaustion, impossible for this single spawn.
+    spawner.spawn(pic_pump().unwrap());
+}
+
+/// PIC RX pump: configure the PIC, then forward decoded events.
+///
+/// Currently it routes only the OLED chip-select echoes that
+/// [`oled::send_frame`](deluge_bsp::oled::send_frame) waits on. Input routing
+/// (pads/buttons/encoders) is added alongside the `input()` capability.
+#[embassy_executor::task]
+async fn pic_pump() {
+    // Configures debounce/refresh, switches to the fast baud, and signals
+    // `pic::wait_ready()`.
+    pic::init().await;
+
+    let mut parser = pic::Parser::new();
+    loop {
+        let byte = bsp_uart::read_byte(pic::UART_CH).await;
+        let Some(event) = parser.push(byte) else {
+            continue;
+        };
+        match event {
+            pic::Event::OledSelected => pic::notify_oled_selected(),
+            pic::Event::OledDeselected => pic::notify_oled_deselected(),
+            // Pads, buttons, etc. go to the input event queue (dropped there if
+            // no `input()` consumer is draining it).
+            other => crate::input::route_pic_event(other),
+        }
+    }
 }
 
 pub(crate) fn sync_led_init() -> SyncLedPin {
