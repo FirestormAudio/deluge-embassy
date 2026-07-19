@@ -36,6 +36,10 @@ flash = []
 ## the async `deluge-sdk::Oled` wrapper. Used by hosts (e.g. spark) that render their
 ## own UI into the frame buffer and read it back via `FrameBuffer::as_bytes`.
 embedded-graphics = ["dep:embedded-graphics-core"]
+## Expose the USB **host** stack (`usb::host`: generic host class drivers +
+## UAC/MIDI). Opt-in — only host-role firmwares need it; gating it keeps
+## `embassy-usb-host` (and its `ssmarshal` dep) out of every other build.
+usb-host = ["dep:embassy-usb-host"]
 
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
@@ -44,14 +48,14 @@ critical-section = { workspace = true }
 log = { workspace = true }
 embedded-graphics-core = { version = "0.4", optional = true }
 heapless = "0.9"
-# USB **host** stack — unconditional, unlike the device-side `embassy-usb`
-# below. The host class drivers in `usb::host` are generic over
-# `UsbHostAllocator` and are unit-tested against a mock on
+# USB **host** stack — gated behind the `usb-host` feature, unlike the
+# device-side `embassy-usb` below. The host class drivers in `usb::host` are
+# generic over `UsbHostAllocator` and are unit-tested against a mock on
 # armv7-unknown-linux-gnueabihf under QEMU (see tools/test.sh), which is
 # `target_os = "linux"` — so these cannot be gated to `target_os = "none"`.
 embassy-sync = { workspace = true }
 embassy-usb-driver = { workspace = true }
-embassy-usb-host = { workspace = true }
+embassy-usb-host = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
 cortex-ar = { workspace = true }

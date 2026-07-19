@@ -40,7 +40,7 @@ cargo test --target "$QEMU" -p deluge-fixedpoint --lib
 # No --lib: also runs the cross-crate dsp_pipeline integration test.
 cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
-cargo test --target "$QEMU" -p deluge-bsp --lib
+cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
 
 echo "==> Host bucket ($HOST)"

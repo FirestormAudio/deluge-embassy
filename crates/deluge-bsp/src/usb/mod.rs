@@ -21,6 +21,8 @@ pub mod bot;
 #[cfg(target_os = "none")]
 pub mod classes;
 // Host-side class drivers are generic over `UsbHostAllocator` and build (and
-// are tested) on the QEMU ARM target too — see `tools/test.sh`.
+// are tested) on the QEMU ARM target too — see `tools/test.sh`. Opt-in via
+// the `usb-host` feature (only host-role firmwares need `embassy-usb-host`).
+#[cfg(feature = "usb-host")]
 pub mod host;
 pub mod ids;

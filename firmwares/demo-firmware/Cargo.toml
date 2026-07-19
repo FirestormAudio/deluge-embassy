@@ -12,7 +12,7 @@ test = false
 [dependencies]
 deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
 rza1l-hal = { path = "../../crates/rza1l-hal" }
-deluge-bsp = { path = "../../crates/deluge-bsp" }
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
