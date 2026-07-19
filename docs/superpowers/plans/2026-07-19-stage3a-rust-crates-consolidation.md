@@ -157,10 +157,12 @@ Expected: the three host-install paths listed. (This is the host `libdeluge` `de
 
 - [ ] **Step 2: Build the crates for the host against it**
 
+The explicit `--target x86_64-unknown-linux-gnu` is **required**: `deluge-sdk/.cargo/config.toml` forces `[build] target = armv7a-none-eabihf`, and cargo config discovery walks up from CWD (not `--manifest-path`), so without an override these `std` crates try to build for the `no_std` device triple and fail with `can't find crate for 'std'`. (Stage 3b's `cargo deluge linux` overrides with `--target armv7-unknown-linux-musleabihf` for the same reason — exactly as `cargo deluge sim` overrides to the host triple.)
+
 ```bash
 cd ~/GitHub/deluge-sdk
 DELUGE_SDK_ROOT=~/GitHub/deluge-ndk/stage-host \
-  cargo build --manifest-path crates/deluge-linux-ui/Cargo.toml 2>&1 | tail -12
+  cargo build --manifest-path crates/deluge-linux-ui/Cargo.toml --target x86_64-unknown-linux-gnu 2>&1 | tail -12
 ```
 Expected: `Finished`. Building `deluge-linux-ui` pulls in `deluge-sys` (its `build.rs` runs bindgen against `$DELUGE_SDK_ROOT/include/deluge` — proving the headers resolve), `deluge-hal-linux` (the rename compiles cleanly), and the in-workspace `deluge-ui-toolkit` + `deluge-grid-toolkit` (proving the collapsed path-deps resolve). A build error here means a rename miss or a path-dep typo — fix in Task 1.
 
@@ -169,7 +171,7 @@ Expected: `Finished`. Building `deluge-linux-ui` pulls in `deluge-sys` (its `bui
 ```bash
 cd ~/GitHub/deluge-sdk
 DELUGE_SDK_ROOT=~/GitHub/deluge-ndk/stage-host \
-  cargo build --manifest-path crates/deluge-hal-linux/Cargo.toml 2>&1 | tail -5
+  cargo build --manifest-path crates/deluge-hal-linux/Cargo.toml --target x86_64-unknown-linux-gnu 2>&1 | tail -5
 ```
 Expected: `Finished` (the renamed HAL crate + `deluge-sys` compile on their own).
 
