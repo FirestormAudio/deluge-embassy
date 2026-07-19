@@ -239,8 +239,12 @@ Expected: `cleaned`. (`_SITE_METHOD = local` copies the whole checkout; keep it 
 
 - [ ] **Step 2: Build the base profile (incremental — builds the new libdeluge package)**
 
+`local` site method caches the extracted copy, so after any `deluge-ndk` change
+the package must be dircleaned to re-copy the updated source:
+
 ```bash
 cd ~/GitHub/deluge-linux
+make -C .buildroot BR2_EXTERNAL="$PWD" libdeluge-dirclean
 make base 2>&1 | tail -15
 ```
 Expected: Buildroot configures (defconfig + base fragment), builds `libdeluge` (a `>>> libdeluge 0.1.0 …` build log), and finishes without error. Kernel/toolchain are already built, so this is incremental. If `libdeluge` fails to configure/compile, capture the `>>> libdeluge` error block.
