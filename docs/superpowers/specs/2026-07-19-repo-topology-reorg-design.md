@@ -268,6 +268,23 @@ This topology is what makes that clean: `deluge-hal-linux`/`deluge-sys` live
 *in* the `deluge-sdk` workspace (no cross-repo path-dep), and `libdeluge` arrives
 as a bundle sysroot artifact (no in-repo C build). Phase 1 touches one repo.
 
+## 10b. Deferred phase — packer unification (Stage 2c)
+
+Stage 2b moves the `deluge_mkimage` packer into `deluge-linux`, where it meets
+`deluge-linux`'s pre-existing `mk-app-elf.py` (the `make appelf` / `LINUX.ELF`
+packer) — the two overlap on `memmap.py` + `uimage.py`. Stage 2b takes the
+**share-one-module** path: a single `tools/memmap.py` + `tools/uimage.py` used by
+both packers (this also fixes a **stale SDRAM ceiling** in `deluge-linux`'s
+`memmap.py` — `0x10000000` where it must be `0x0FD20000` to match the app-loader
+`SDRAM_HI`), with `deluge_mkimage` importing them flat.
+
+**Deliberately deferred: Stage 2c — unify the two packers into one.** Fold
+`mk-app-elf.py`'s `LINUX.ELF` path into `deluge_mkimage` (or make it a thin caller)
+so there is a single ELF-packing implementation, and remove the remaining
+`mk-app-elf.py`/`deluge_mkimage` duplication (`elf.py`, appelf validation, the
+two entry points). Touches `make appelf` + `release.yml`, so it is its own phase
+with its own spec — **tracked here so it is not forgotten.**
+
 ## 11. Risks & open questions
 
 - **Artifact name collision (resolved).** The `libdeluge` collision is on the
