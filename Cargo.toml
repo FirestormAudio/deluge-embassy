@@ -59,6 +59,9 @@ exclude = [
   "tools/wren-analyzer-wasm",
   "crates/deluge-sim-link",
   "crates/deluge-dsp-test",
+  "crates/deluge-sys",
+  "crates/deluge-hal-linux",
+  "crates/deluge-linux-ui",
 ]
 resolver = "2"
 
