@@ -138,9 +138,21 @@ pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
 
         // Host entry point (the desktop simulator, via `cargo deluge sim`): a normal
         // `fn main` that hands off to the host runtime (which owns the GUI).
-        #[cfg(not(target_os = "none"))]
+        #[cfg(all(not(target_os = "none"), feature = "sim"))]
         fn main() {
             ::deluge::__rt::host::run(
+                || { #setup_call; },
+                |spawner: ::deluge::__rt::Spawner| {
+                    spawner.spawn(__deluge_app_main(spawner).unwrap());
+                },
+            )
+        }
+
+        // Native Linux entry point (`cargo deluge linux`): a normal `fn main`
+        // that hands off to the linux runtime (which owns libdeluge).
+        #[cfg(all(not(target_os = "none"), feature = "linux"))]
+        fn main() {
+            ::deluge::__rt::linux::run(
                 || { #setup_call; },
                 |spawner: ::deluge::__rt::Spawner| {
                     spawner.spawn(__deluge_app_main(spawner).unwrap());

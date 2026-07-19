@@ -85,6 +85,18 @@ pub struct Deluge {
     usb_cb: Option<NonNull<BoxedUsbCb>>,
 }
 
+// SAFETY: every field is an opaque handle address (the `deluge_t*` context, or
+// a `Box::into_raw` callback pointer reclaimed only in `Drop`/`*_stop`/`*_unwatch`).
+// None of them are ever dereferenced as a `NonNull<T>` from Rust code directly —
+// `raw` is passed straight back into the (thread-safe) `deluge_sys` C API, and
+// the callback pointers are only read by the trampolines, which the C library
+// already invokes from its own RT/input/hotplug threads (distinct from whatever
+// thread called `audio_start`/`input_start`/`usb_watch`), hence those callbacks
+// are themselves bounded `Send`. Moving `Deluge` to another thread — e.g. to
+// park it behind a process-wide `Mutex`, as the SDK's Linux backend does — just
+// transfers ownership of these addresses; nothing is accessed concurrently.
+unsafe impl Send for Deluge {}
+
 extern "C" fn trampoline(inp: *const f32, out: *mut f32, n: i32, ctx: *mut c_void) {
     // ctx is the *mut BoxedCb produced by Box::into_raw in audio_start.
     let cb = unsafe { &mut *(ctx as *mut BoxedCb) };

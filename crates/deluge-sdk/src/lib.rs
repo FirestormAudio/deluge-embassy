@@ -93,8 +93,11 @@ mod sync_led;
 mod usb_debug;
 
 /// Host (desktop-simulator) backend, active when built for the host triple.
-#[cfg(not(target_os = "none"))]
+#[cfg(all(not(target_os = "none"), feature = "sim"))]
 mod host;
+/// Native Linux backend, active under `feature = "linux"`.
+#[cfg(all(not(target_os = "none"), feature = "linux"))]
+mod linux;
 pub use audio::{Audio, StereoFrame};
 pub use clock::{ClockIn, ClockOut};
 pub use cv_gate::{Cv, Gate};
@@ -648,7 +651,7 @@ pub mod __rt {
     /// `iced` owns the main thread (the "panel"). They communicate through the
     /// in-memory [`deluge_sim_link::SharedPanel`] and audio bridge — no protocol,
     /// no sockets.
-    #[cfg(not(target_os = "none"))]
+    #[cfg(all(not(target_os = "none"), feature = "sim"))]
     pub mod host {
         use super::Spawner;
         use embassy_executor::Executor;
@@ -698,6 +701,32 @@ pub mod __rt {
                 deluge_simulator::run_in_process(gui_panel, gui_audio);
             }
             std::process::exit(0);
+        }
+    }
+
+    /// Native Linux runtime.
+    ///
+    /// Unlike the sim runtime, there is no GUI competing for the main thread and
+    /// no in-memory panel bridge: `libdeluge` (via `deluge-hal-linux`) owns its
+    /// own input/audio threads, so the app's `async fn main` runs directly on a
+    /// std Embassy executor on the main thread.
+    #[cfg(all(not(target_os = "none"), feature = "linux"))]
+    pub mod linux {
+        use super::Spawner;
+        use embassy_executor::Executor;
+
+        /// Open libdeluge, then run the app on a std executor on the MAIN thread
+        /// (no GUI competes for it; libdeluge owns its own input/audio threads).
+        pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner) + Send + 'static) {
+            let _ = env_logger::try_init();
+            let dev = deluge_hal_linux::Deluge::open().expect("deluge_open failed");
+            crate::linux::init(dev);
+            setup();
+            let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
+            executor.run(move |spawner| {
+                crate::plat::input_start_pump(spawner);
+                spawn(spawner);
+            });
         }
     }
 }
