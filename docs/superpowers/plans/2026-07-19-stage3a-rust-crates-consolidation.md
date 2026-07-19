@@ -113,12 +113,16 @@ exclude = [
 
 - [ ] **Step 2: Verify the device workspace is intact (excluded crates don't build for the device)**
 
+`cargo metadata` resolves the workspace **without compiling** (so no `-Zbuild-std` is needed) and *errors* if a crate dir under the root is neither a member nor excluded — exactly the failure the `exclude` entry prevents:
+
 ```bash
 cd ~/GitHub/deluge-sdk
-cargo metadata --format-version=1 --no-deps 2>&1 | tr ',' '\n' | grep -cE '"name":"deluge-(sys|hal-linux|linux-ui)"' | sed 's/^/excluded-crates-in-metadata: /'
-cargo build -p deluge-sdk 2>&1 | tail -5
+cargo metadata --format-version=1 --no-deps >/tmp/wsmeta.json 2>/tmp/wsmeta.err \
+  && echo "metadata OK" || { echo "metadata FAILED:"; cat /tmp/wsmeta.err; }
+grep -cE '"name":"deluge-(sys|hal-linux|linux-ui)"' /tmp/wsmeta.json | sed 's/^/excluded-as-members: /'
+grep -cE '"name":"deluge-sdk"' /tmp/wsmeta.json | sed 's/^/device-facade-member: /'
 ```
-Expected: `excluded-crates-in-metadata: 0` (they're excluded, so not in workspace metadata), and `cargo build -p deluge-sdk` (the device facade) still builds — proving the exclusion didn't disturb the device workspace, and cargo raises no "current package believes it's in a workspace" error for the new crate dirs.
+Expected: `metadata OK`, then `excluded-as-members: 0` (the three are excluded → not workspace members), then `device-facade-member: 1` (the device workspace is intact). A `metadata FAILED` with a "current package believes it's in a workspace" message means an `exclude` entry is missing or misspelled.
 
 - [ ] **Step 3: Commit**
 
