@@ -1,5 +1,5 @@
 fn main() {
-    let mut d = deluge_linux::Deluge::open().expect("open");
+    let mut d = deluge_hal_linux::Deluge::open().expect("open");
     let mut phase = 0f32;
     d.audio_start(move |_in, out| {
         for f in out.iter_mut() {

@@ -1,5 +1,5 @@
 fn main() {
-    let mut d = deluge_linux::Deluge::open().expect("open");
+    let mut d = deluge_hal_linux::Deluge::open().expect("open");
     println!("usb hotplug fd: {}", d.usb_hotplug_fd());
     // NOTE: the callback is moved into the SDK thread and can't borrow `d`, so
     // this example just logs; a real consumer routes AUDIO/MIDI events to

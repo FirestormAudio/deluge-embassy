@@ -1,5 +1,5 @@
 fn main() {
-    let mut d = deluge_linux::Deluge::open().expect("open");
+    let mut d = deluge_hal_linux::Deluge::open().expect("open");
     match d.usb_audio_card_id() {
         Some(id) => match d.usb_audio_probe() {
             Ok(i) => println!("usb audio: {id} {:?}", i),
