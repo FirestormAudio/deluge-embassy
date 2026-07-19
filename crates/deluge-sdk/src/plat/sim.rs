@@ -53,3 +53,24 @@ pub(crate) async fn cv_set(ch: u8, code: u16) {
 pub(crate) fn gate_set(ch: u8, on: bool) {
     crate::host::panel().set_gate(ch as usize, on);
 }
+
+pub(crate) fn midi_init() {}
+pub(crate) async fn midi_send(data: &[u8]) {
+    // Hand the bytes to the simulator panel (lights the MIDI OUT activity
+    // indicator; the GUI can forward them to a host port).
+    crate::host::panel().push_midi_out(data);
+}
+pub(crate) async fn midi_recv() -> u8 {
+    // Drain bytes the simulator's MIDI bridge pushed into the panel, polling
+    // at ~1 ms when the queue is empty (DIN MIDI is slow, so the latency is
+    // inaudible).
+    loop {
+        if let Some(b) = crate::host::panel().pop_midi_in() {
+            return b;
+        }
+        embassy_time::Timer::after_millis(1).await;
+    }
+}
+pub(crate) fn midi_try_recv() -> Option<u8> {
+    crate::host::panel().pop_midi_in()
+}

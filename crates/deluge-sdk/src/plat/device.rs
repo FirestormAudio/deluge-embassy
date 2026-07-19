@@ -76,3 +76,21 @@ pub(crate) fn gate_set(ch: u8, on: bool) {
     // SAFETY: GPIO write to a gate line we own; pins configured by init.
     unsafe { deluge_bsp::cv_gate::gate_set(ch, on) };
 }
+
+/// MIDI DIN baud rate.
+const MIDI_BAUD: u32 = 31_250;
+
+pub(crate) fn midi_init() {
+    // SAFETY: runs once. Sets up SCIF0 with DMA RX and registers its TX handler
+    // before the source is enabled, so it is safe at runtime.
+    unsafe { deluge_bsp::uart::init_midi(MIDI_BAUD) };
+}
+pub(crate) async fn midi_send(data: &[u8]) {
+    deluge_bsp::uart::write_midi(data).await;
+}
+pub(crate) async fn midi_recv() -> u8 {
+    deluge_bsp::uart::read_midi_byte().await
+}
+pub(crate) fn midi_try_recv() -> Option<u8> {
+    deluge_bsp::uart::try_read_midi()
+}
