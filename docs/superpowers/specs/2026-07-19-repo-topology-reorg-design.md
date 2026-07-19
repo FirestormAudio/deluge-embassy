@@ -207,13 +207,11 @@ firmwares); everything already in `deluge-linux` (Buildroot tree, bundle).
 - **`deluge-ndk`** (Native Development Kit) for the C/C++ SDK repo/product —
   reads instantly as "C/C++ SDK," distinct from `deluge-sdk` (Rust) and from the
   `libdeluge` artifact. Runner-up: `deluge-native`. Provisional.
-- **`libdeluge`** stays the *linkable artifact* name (`libdeluge.a`, `-ldeluge`,
-  `deluge.pc`, headers under `deluge/`) **iff** nothing else in the ecosystem
-  links a `libdeluge`. **Open question (§11):** the ask "we have a couple library
-  by that name by now" — if the collision is on the *artifact*, rename the
-  linkable too (candidate: `libdelugehw` / headers `deluge/hw.h`), which ripples
-  through `deluge.pc`, `-l`, and `deluge-sys`'s `links = "deluge"` + bindgen
-  allowlist.
+- **`libdeluge`** stays the *linkable artifact* name unchanged (`libdeluge.a`,
+  `-ldeluge`, `deluge.pc`, headers under `deluge/`). **Resolved:** the "couple
+  library by that name" collision is on the *product name*, not the linkable —
+  so only the repo/product is renamed (`deluge-ndk`); `deluge-sys`'s
+  `links = "deluge"` + bindgen allowlist and `deluge.pc` are untouched.
 - **`deluge-linux` (crate) → `deluge-hal-linux`.** The safe Rust wrapper cannot
   keep a name identical to the *platform repo*. `deluge-sys` (the `-sys` FFI
   crate) keeps its name.
@@ -272,10 +270,9 @@ as a bundle sysroot artifact (no in-repo C build). Phase 1 touches one repo.
 
 ## 11. Risks & open questions
 
-- **Artifact name collision (open).** Confirm whether the `libdeluge` collision
-  is on the repo/product name (solved by `deluge-ndk`) or on the *linkable
-  artifact* itself. If the latter, rename the artifact (§7) — decide before
-  Phase 0 execution so `deluge-sys` and `deluge.pc` move once.
+- **Artifact name collision (resolved).** The `libdeluge` collision is on the
+  repo/product name only — solved by `deluge-ndk`. The linkable artifact
+  `libdeluge` is unchanged; `deluge-sys` and `deluge.pc` do not move.
 - **Multi-repo coordination cost.** Three repos = 3 CIs and an ABI change that
   needs a `libdeluge` change is a two-step (land in `deluge-ndk` → bump the pin
   in `deluge-linux`'s package). Real for a small team; mitigated because most
