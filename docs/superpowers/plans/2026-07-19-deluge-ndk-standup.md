@@ -118,6 +118,8 @@ Expected: `~/GitHub/deluge-ndk` exists and `git remote -v` prints nothing (origi
 
 ## Task 2: Prune generated/stale artifacts
 
+> **STATUS: NO-OP (verified during execution).** The generated `cmake/DelugeToolchain.cmake` was gitignored+untracked in the source, so it never entered `deluge-ndk`, and the carried `.gitignore` already ignores it (`/cmake/DelugeToolchain.cmake`) plus build dirs (`/build/`, `build*/`, `/stage/`). Task 1's output already is Task 2's intended end-state. Steps below are retained for the record; skip them.
+
 **Files:**
 - Delete: `~/GitHub/deluge-ndk/cmake/DelugeToolchain.cmake` (checked-in generated file with a hardcoded local path)
 - Modify: `~/GitHub/deluge-ndk/.gitignore`
