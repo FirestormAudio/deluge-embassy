@@ -86,3 +86,23 @@ pub(crate) fn clock_in_count() -> u32 {
 pub(crate) fn clock_in_last_edge() -> Option<Instant> {
     None
 }
+
+pub(crate) fn jacks_init() {}
+pub(crate) fn jacks_headphone() -> bool {
+    false
+}
+pub(crate) fn jacks_line_in() -> bool {
+    false
+}
+pub(crate) fn jacks_mic() -> bool {
+    false
+}
+pub(crate) fn jacks_line_out_left() -> bool {
+    false
+}
+pub(crate) fn jacks_line_out_right() -> bool {
+    false
+}
+pub(crate) fn jacks_set_speaker(on: bool) {
+    let _ = on;
+}

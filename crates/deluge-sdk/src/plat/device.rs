@@ -5,6 +5,7 @@ use core::future::poll_fn;
 use core::sync::atomic::Ordering;
 use core::task::Poll;
 
+use deluge_bsp::jacks::{self, Jack};
 use deluge_bsp::oled::{self, FrameBuffer};
 use deluge_bsp::pic;
 use deluge_bsp::rgb::PadLeds;
@@ -127,4 +128,29 @@ pub(crate) fn clock_in_last_edge() -> Option<Instant> {
         0 => None,
         t => Some(Instant::from_ticks(t)),
     }
+}
+
+pub(crate) fn jacks_init() {
+    // SAFETY: runs once. Configures the five jack-detect inputs and the
+    // speaker-enable output (left disabled).
+    unsafe { jacks::init() };
+}
+pub(crate) fn jacks_headphone() -> bool {
+    jacks::is_inserted(Jack::Headphone)
+}
+pub(crate) fn jacks_line_in() -> bool {
+    jacks::is_inserted(Jack::LineIn)
+}
+pub(crate) fn jacks_mic() -> bool {
+    jacks::is_inserted(Jack::Mic)
+}
+pub(crate) fn jacks_line_out_left() -> bool {
+    jacks::is_inserted(Jack::LineOutL)
+}
+pub(crate) fn jacks_line_out_right() -> bool {
+    jacks::is_inserted(Jack::LineOutR)
+}
+pub(crate) fn jacks_set_speaker(on: bool) {
+    // SAFETY: GPIO write to the speaker-enable output configured by init.
+    unsafe { jacks::set_speaker_enable(on) };
 }
