@@ -86,6 +86,7 @@ mod midi;
 mod oled;
 mod pads;
 mod pic_service;
+mod plat;
 mod sd;
 mod sync_led;
 #[cfg(feature = "usb-log")]
