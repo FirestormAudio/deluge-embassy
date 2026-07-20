@@ -76,13 +76,11 @@ where
             && core::mem::align_of::<StereoFrame>() == core::mem::align_of::<[f32; 2]>()
     );
 
+    // `Audio::process`'s contract is in-place: the block arrives pre-loaded with
+    // input and whatever `f` leaves is sent to line-out. libdeluge hands us
+    // split slices, so `adapt_block` seeds `out` with input before calling `f`.
     let shim = move |inp: &[[f32; 2]], out: &mut [[f32; 2]]| {
-        // `Audio::process`'s contract is in-place: the block arrives pre-loaded
-        // with input and whatever `f` leaves is sent to line-out. libdeluge
-        // hands us split slices, so seed `out` with input and hand it over.
-        debug_assert_eq!(inp.len(), out.len());
-        out.copy_from_slice(inp);
-        f(unsafe { core::mem::transmute::<&mut [[f32; 2]], &mut [StereoFrame]>(out) });
+        crate::audio::adapt_block(&mut f, inp, out);
     };
 
     if let Err(e) = crate::linux::dev().audio_start(shim) {
@@ -94,6 +92,26 @@ where
     core::future::pending().await
 }
 ```
+
+The adaptation itself is extracted as a **pure function** in `audio.rs` — no
+libdeluge, no hardware, no `dev()` — so it is unit-testable on the host:
+
+```rust
+#[cfg(any(feature = "linux", test))]
+#[inline]
+pub(crate) fn adapt_block<F>(f: &mut F, inp: &[[f32; 2]], out: &mut [[f32; 2]])
+where
+    F: FnMut(&mut [StereoFrame]),
+{
+    debug_assert_eq!(inp.len(), out.len());
+    out.copy_from_slice(inp);
+    f(unsafe { core::mem::transmute::<&mut [[f32; 2]], &mut [StereoFrame]>(out) });
+}
+```
+
+`plat::linux`'s shim is then just `move |i, o| adapt_block(&mut f, i, o)`. This
+is the only logic in the feature that can be wrong in an interesting way, so it
+is the only part that gets tests (§4.1).
 
 **Why `copy_from_slice` is the whole adaptation.** Both slices are 128 frames of
 the same layout, so this is one 1 KiB memcpy per period — no scratch buffer, no
@@ -207,15 +225,29 @@ in the tree transitively via `deluge-sys`, so this costs no new build time.
 
 Ordered so each step isolates one risk:
 
-1. **Compile.** `cargo deluge linux --features linux` on `audio_passthru`. The
+1. **Unit tests for `adapt_block`** (`cargo test -p deluge-sdk --features sim`,
+   host bucket). Covers: input reaches the closure; the closure's writes reach
+   `out`; a pass-through closure is bit-exact; a zero-length block is a no-op.
+   `deluge-sdk` is added to `tools/test.sh`'s host bucket — it has no test target
+   there today.
+
+   It stays **host-only**, not in the QEMU ARM bucket, for two independent
+   reasons: `--features sim` pulls `deluge-simulator` → `cpal` → `alsa-sys`,
+   which fails to cross-compile to `armv7-unknown-linux-gnueabihf`; and
+   `--features linux` cannot target `gnueabihf` at all, since `libdeluge.a` is
+   built against **musl**. The 32-bit concern this would otherwise address is
+   covered more strongly by the `const _` layout assert, which is evaluated at
+   compile time against the real `armv7-...-musleabihf` target in step 2.
+
+2. **Compile.** `cargo deluge linux --features linux` on `audio_passthru`. The
    layout `const _` assert and the musl build both gate here.
-2. **Cross-backend regression.** Device and sim builds of every example stay
+3. **Cross-backend regression.** Device and sim builds of every example stay
    green. §3b and §3c are the only changes touching all backends — if `!Send`
    breaks anything it will be an Embassy spawn interaction, and it surfaces
    here rather than after the hardware trip.
-3. **`audio_passthru` on hardware.** Line-in reaches line-out. Proves the
+4. **`audio_passthru` on hardware.** Line-in reaches line-out. Proves the
    callback path, the in-place contract, and the layout reinterpret.
-4. **`additive_osc` on hardware.** DSP under real load, with the UI half running
+5. **`additive_osc` on hardware.** DSP under real load, with the UI half running
    concurrently. Proves the split survives contention. The §3d check must stay
    silent here — if it warns, RT was not granted and any glitching is a
    privilege problem, not a defect in this work. Resolve that before judging
