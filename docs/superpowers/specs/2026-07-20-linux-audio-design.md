@@ -52,12 +52,11 @@ Two measured facts make this clean rather than fiddly:
 - `deluge_audio_stop()` / `deluge_audio_xruns()` bindings in `deluge-hal-linux`.
   Both exist in C and neither is bound; the app model here is start-once,
   run-forever, so neither is needed yet.
-- **`SCHED_FIFO` on libdeluge's audio thread.** `src/audio.c:112` creates it with
-  `pthread_create(..., NULL, ...)` — default scheduling, no RT priority. This is
-  a genuine glitch risk under load, but the fix belongs in deluge-linux, not
-  here. Recorded so it is not misdiagnosed as an SDK bug during bring-up.
 - Sample-rate negotiation, USB audio, and the remaining `plat::linux` stubs
   (pads, LEDs, CV/gate, MIDI, SD, clock, jacks).
+- Changing libdeluge's scheduling policy. It already requests `SCHED_FIFO`
+  correctly (§3d); confirming the request *succeeded* is in scope, altering it
+  is not.
 
 ---
 
@@ -163,6 +162,45 @@ the SDK requires these handles to be `Send` today. `Audio` itself stays `Send`:
 The escape hatch is a user's own `unsafe impl Send` wrapper. That is acceptable:
 it makes bypassing the rule explicit and greppable.
 
+### 3d. Confirming RT priority was granted
+
+libdeluge's audio thread self-elevates to `SCHED_FIFO` priority 80 as its first
+action (`src/audio.c:56-57`), via `pthread_setschedparam(pthread_self(), ...)`
+rather than `pthread_create` attributes. This is required, not optional: at
+128-frame periods the callback budget is ~2.7 ms on a single-core Cortex-A9
+shared with the app's UI half, so a non-RT audio thread will be preempted and
+xrun.
+
+The failure mode is what makes this a goal. If the process lacks `CAP_SYS_NICE`
+/ `RLIMIT_RTPRIO`, the elevation fails **soft** — one `fprintf` to stderr, and
+the thread runs at normal priority. The appliance's stderr is not routed
+anywhere the developer sees (`cargo deluge linux --run` is a serial upload path,
+not a console), so the observable result is audio that works when idle and
+glitches under load — indistinguishable from a bug in §3a.
+
+So the SDK checks it itself, once, on the first callback:
+
+```rust
+// One-shot: this runs on libdeluge's audio thread, so policy 0 is our own.
+static CHECKED: AtomicBool = AtomicBool::new(false);
+if !CHECKED.swap(true, Ordering::Relaxed) {
+    // SAFETY: sched_getscheduler(0) is thread-safe and has no preconditions.
+    if unsafe { libc::sched_getscheduler(0) } != libc::SCHED_FIFO {
+        log::warn!("audio thread is NOT SCHED_FIFO — expect xruns under load \
+                    (missing CAP_SYS_NICE?)");
+    }
+}
+```
+
+One relaxed atomic per period on the already-taken fast path, and it turns a
+silent degradation into a named one. It does not *fix* an ungranted elevation —
+that would be a deluge-linux change — but it makes the bring-up verdict in §4
+trustworthy, which is the actual requirement.
+
+This adds one dependency: `deluge-sdk` has no `libc` today, so it joins
+`deluge-hal-linux` as `optional = true` under `feature = "linux"`. It is already
+in the tree transitively via `deluge-sys`, so this costs no new build time.
+
 ---
 
 ## 4. Verification
@@ -178,8 +216,10 @@ Ordered so each step isolates one risk:
 3. **`audio_passthru` on hardware.** Line-in reaches line-out. Proves the
    callback path, the in-place contract, and the layout reinterpret.
 4. **`additive_osc` on hardware.** DSP under real load, with the UI half running
-   concurrently. Proves the split survives contention — and is where the missing
-   `SCHED_FIFO` (§2) would first show up as glitching under load.
+   concurrently. Proves the split survives contention. The §3d check must stay
+   silent here — if it warns, RT was not granted and any glitching is a
+   privilege problem, not a defect in this work. Resolve that before judging
+   the audio path.
 
 ---
 
@@ -193,10 +233,10 @@ mechanism, not two — §3c only works because §3b exists, and §3a's closure i
 thing both constrain. The panic in §3a is explicitly reconciled against the
 log-and-continue precedent in `sync_led_init`.
 
-**Scope:** one plan's worth. The shim is one function; the bound and the
-`PhantomData` fields are mechanical; verification is four steps. Deliberately
-excludes the remaining `plat::linux` stubs, which have no shared design with
-this work.
+**Scope:** one plan's worth. The shim is one function; the bound, the
+`PhantomData` fields, and the §3d check are mechanical; verification is four
+steps. Deliberately excludes the remaining `plat::linux` stubs, which have no
+shared design with this work.
 
 **Ambiguity:** "ring-free" is defined in §1 (DSP executes inside libdeluge's
 callback) rather than left to interpretation. The 128-frame equality is cited to
