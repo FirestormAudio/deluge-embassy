@@ -61,7 +61,10 @@ build-wren-bin       = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-b
 # ---------------------------------------------------------------------------
 [target.armv7-unknown-linux-musleabihf]
 linker = "arm-linux-gcc"
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon,+crt-static",
+]
 
 [env]
 # UAC2 (3 ifaces) + CDC-ACM (2 ifaces) + USB-MIDI (2 ifaces) = 7 total.

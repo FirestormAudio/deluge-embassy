@@ -29,19 +29,17 @@ fn main() {
     // triples.
     let embedded = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none");
     // `target_arch = "arm"` is not a NEON signal by itself — it also covers
-    // NEON-less targets (armv5te, armv6, thumbv7 with no NEON unit). This
-    // branch is safe today only because the sole hosted-ARM triple
-    // `cargo-deluge` builds against is `armv7-unknown-linux-musleabihf` (see
-    // `LINUX_TARGET` in `tools/cargo-deluge/src/linux.rs`), whose Cortex-A9
-    // hardware does have NEON, just not enabled by default — its rustc
-    // target-feature list (`rustc --print cfg --target
-    // armv7-unknown-linux-musleabihf`) has no `neon`, and nothing in this
-    // workspace's rustflags turns it on for that triple, so
-    // `CARGO_CFG_TARGET_FEATURE` can't be used to detect it either. Match the
-    // triple explicitly instead. If another hosted-ARM triple is ever added,
-    // this needs a matching arm (or a switch to CARGO_CFG_TARGET_FEATURE, if
-    // that triple's rustflags do set target-feature=+neon).
-    let arm = env::var("TARGET").as_deref() == Ok("armv7-unknown-linux-musleabihf");
+    // NEON-less targets (armv5te, armv6, thumbv7 with no NEON unit). The
+    // workspace `.cargo/config.toml` sets `-C target-cpu=cortex-a9 -C
+    // target-feature=+neon` for `armv7-unknown-linux-musleabihf` (the sole
+    // hosted-ARM triple `cargo-deluge` builds against — see `LINUX_TARGET` in
+    // `tools/cargo-deluge/src/linux.rs`), matching the device build, so
+    // `CARGO_CFG_TARGET_FEATURE` (which reflects the *effective* target
+    // features, rustflags included) now reports `neon` there and this check
+    // is the principled one rather than a triple string match.
+    let arm = env::var("CARGO_CFG_TARGET_FEATURE")
+        .map(|f| f.split(',').any(|feat| feat == "neon"))
+        .unwrap_or(false);
 
     build_dsp_core(&manifest_dir, embedded, arm);
 
