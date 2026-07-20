@@ -456,7 +456,7 @@ impl Deluge {
     /// Take the codec audio path for per-block DSP. Takeable once.
     ///
     /// ```ignore
-    /// dlg.audio().process(|block| {
+    /// dlg.audio().process(move |block| {
     ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
     /// }).await
     /// ```
