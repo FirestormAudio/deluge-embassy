@@ -1,20 +1,13 @@
 //! Audio jack detection + speaker-amplifier control.
 
-#[cfg(target_os = "none")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(target_os = "none")]
-use deluge_bsp::jacks::{self, Jack};
-
-#[cfg(target_os = "none")]
 fn ensure_init() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::Relaxed) {
         return;
     }
-    // SAFETY: runs once. Configures the five jack-detect inputs and the
-    // speaker-enable output (left disabled).
-    unsafe { jacks::init() };
+    crate::plat::jacks_init();
 }
 
 /// Audio jack-detect inputs and the speaker-amplifier enable.
@@ -26,92 +19,52 @@ fn ensure_init() {
 /// On the host simulator there is no physical panel: all jacks read as not
 /// inserted and the speaker control is a no-op.
 pub struct Jacks {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 impl Jacks {
     pub(crate) fn new() -> Self {
-        #[cfg(target_os = "none")]
         ensure_init();
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// `true` if the headphone jack is inserted.
     #[inline]
     pub fn headphone(&self) -> bool {
-        #[cfg(target_os = "none")]
-        {
-            jacks::is_inserted(Jack::Headphone)
-        }
-        #[cfg(not(target_os = "none"))]
-        {
-            false
-        }
+        crate::plat::jacks_headphone()
     }
 
     /// `true` if the line-input jack is inserted.
     #[inline]
     pub fn line_in(&self) -> bool {
-        #[cfg(target_os = "none")]
-        {
-            jacks::is_inserted(Jack::LineIn)
-        }
-        #[cfg(not(target_os = "none"))]
-        {
-            false
-        }
+        crate::plat::jacks_line_in()
     }
 
     /// `true` if the microphone jack is inserted.
     #[inline]
     pub fn mic(&self) -> bool {
-        #[cfg(target_os = "none")]
-        {
-            jacks::is_inserted(Jack::Mic)
-        }
-        #[cfg(not(target_os = "none"))]
-        {
-            false
-        }
+        crate::plat::jacks_mic()
     }
 
     /// `true` if the left line-output jack is inserted.
     #[inline]
     pub fn line_out_left(&self) -> bool {
-        #[cfg(target_os = "none")]
-        {
-            jacks::is_inserted(Jack::LineOutL)
-        }
-        #[cfg(not(target_os = "none"))]
-        {
-            false
-        }
+        crate::plat::jacks_line_out_left()
     }
 
     /// `true` if the right line-output jack is inserted.
     #[inline]
     pub fn line_out_right(&self) -> bool {
-        #[cfg(target_os = "none")]
-        {
-            jacks::is_inserted(Jack::LineOutR)
-        }
-        #[cfg(not(target_os = "none"))]
-        {
-            false
-        }
+        crate::plat::jacks_line_out_right()
     }
 
     /// Drive the speaker amplifier on (`true`) or off (`false`) directly. No-op
     /// on the host simulator.
     #[inline]
     pub fn set_speaker(&mut self, on: bool) {
-        // SAFETY: GPIO write to the speaker-enable output configured by init.
-        #[cfg(target_os = "none")]
-        unsafe {
-            jacks::set_speaker_enable(on)
-        };
-        #[cfg(not(target_os = "none"))]
-        let _ = on;
+        crate::plat::jacks_set_speaker(on);
     }
 
     /// Apply the stock speaker-mute policy once: enable the amplifier only when

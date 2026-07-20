@@ -6,57 +6,50 @@
 //! (see [`Gate`](crate::Gate)), so the channel it claims should not also be
 //! driven through `Gate`.
 
-#[cfg(target_os = "none")]
-use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "none")]
-use core::task::Poll;
 
 use embassy_time::{Duration, Instant, Timer};
 
-#[cfg(target_os = "none")]
-use deluge_bsp::trigger_clock;
-
 // ── Clock input ─────────────────────────────────────────────────────────────
+
+/// Bring up the trigger-clock input's edge-counting IRQ once. No-op on the
+/// host simulator (there is no trigger-clock jack).
+fn ensure_clock_in_init() {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    crate::plat::clock_in_init();
+}
 
 /// The analog trigger-clock **input** jack.
 ///
 /// Taken once from [`Deluge::clock_in`](crate::Deluge::clock_in). Each external
 /// pulse advances an edge counter; [`tick`](ClockIn::tick) awaits the next one
 /// and reports the interval since the previous tick (handy for tempo).
+///
+/// Host: there is no trigger-clock jack in the simulator, so the input never
+/// pulses. `tick` waits forever, `count`/`last_edge` report nothing.
 pub struct ClockIn {
     /// Embassy-time tick of the previously observed edge, for interval math.
     prev_ticks: Option<u64>,
+    _not_send: crate::NotSend,
 }
 
-#[cfg(target_os = "none")]
 impl ClockIn {
     pub(crate) fn new() -> Self {
-        static DONE: AtomicBool = AtomicBool::new(false);
-        if !DONE.swap(true, Ordering::Relaxed) {
-            // SAFETY: runs once. Registers the P1_14/IRQ6 handler and enables the
-            // GIC line. Registering lazily here (after global IRQ enable) matches
-            // the proven `input()`/encoder precedent.
-            unsafe { trigger_clock::irq_init() };
+        ensure_clock_in_init();
+        Self {
+            prev_ticks: None,
+            _not_send: crate::NOT_SEND,
         }
-        Self { prev_ticks: None }
     }
 
     /// Await the next external clock pulse, returning the interval since the
     /// previous tick (or `None` on the first tick, when there's no prior edge).
+    /// Never arrives on the host simulator.
     pub async fn tick(&mut self) -> Option<Duration> {
-        let start = trigger_clock::EDGE_COUNT.load(Ordering::Relaxed);
-        poll_fn(|cx| {
-            trigger_clock::EDGE_WAKER.register(cx.waker());
-            if trigger_clock::EDGE_COUNT.load(Ordering::Relaxed) != start {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-
-        let now = trigger_clock::LAST_EDGE_TICKS.load(Ordering::Relaxed);
+        let now = crate::plat::clock_in_wait_edge().await;
         let interval = self
             .prev_ticks
             .map(|p| Duration::from_ticks(now.saturating_sub(p)));
@@ -64,46 +57,17 @@ impl ClockIn {
         interval
     }
 
-    /// Total number of pulses seen since boot.
+    /// Total number of pulses seen since boot (always 0 on the host simulator).
     #[inline]
     pub fn count(&self) -> u32 {
-        trigger_clock::EDGE_COUNT.load(Ordering::Relaxed)
+        crate::plat::clock_in_count()
     }
 
-    /// The time of the most recent pulse, or `None` if none has arrived yet.
+    /// The time of the most recent pulse, or `None` if none has arrived yet
+    /// (always `None` on the host simulator).
     #[inline]
     pub fn last_edge(&self) -> Option<Instant> {
-        match trigger_clock::LAST_EDGE_TICKS.load(Ordering::Relaxed) {
-            0 => None,
-            t => Some(Instant::from_ticks(t)),
-        }
-    }
-}
-
-/// Host: there is no trigger-clock jack in the simulator, so the input never
-/// pulses. `tick` waits forever, `count`/`last_edge` report nothing.
-#[cfg(not(target_os = "none"))]
-impl ClockIn {
-    pub(crate) fn new() -> Self {
-        Self { prev_ticks: None }
-    }
-
-    /// Await the next external clock pulse — never arrives in the simulator.
-    pub async fn tick(&mut self) -> Option<Duration> {
-        core::future::pending::<()>().await;
-        None
-    }
-
-    /// Total number of pulses seen since boot (always 0 in the simulator).
-    #[inline]
-    pub fn count(&self) -> u32 {
-        0
-    }
-
-    /// The time of the most recent pulse (never any in the simulator).
-    #[inline]
-    pub fn last_edge(&self) -> Option<Instant> {
-        None
+        crate::plat::clock_in_last_edge()
     }
 }
 
@@ -120,6 +84,7 @@ const DEFAULT_PULSE_WIDTH: Duration = Duration::from_millis(5);
 pub struct ClockOut {
     channel: u8,
     pulse_width: Duration,
+    _not_send: crate::NotSend,
 }
 
 impl ClockOut {
@@ -129,6 +94,7 @@ impl ClockOut {
         Self {
             channel,
             pulse_width: DEFAULT_PULSE_WIDTH,
+            _not_send: crate::NOT_SEND,
         }
     }
 
@@ -142,20 +108,9 @@ impl ClockOut {
     /// Emit a single clock pulse: assert the gate for the pulse width, then
     /// release it.
     pub async fn pulse(&mut self) {
-        // SAFETY: GPIO writes to the gate line this handle owns.
-        #[cfg(target_os = "none")]
-        unsafe {
-            deluge_bsp::cv_gate::gate_set(self.channel, true)
-        };
-        #[cfg(not(target_os = "none"))]
-        crate::host::panel().set_gate(self.channel as usize, true);
+        crate::plat::gate_set(self.channel, true);
         Timer::after(self.pulse_width).await;
-        #[cfg(target_os = "none")]
-        unsafe {
-            deluge_bsp::cv_gate::gate_set(self.channel, false)
-        };
-        #[cfg(not(target_os = "none"))]
-        crate::host::panel().set_gate(self.channel as usize, false);
+        crate::plat::gate_set(self.channel, false);
     }
 
     /// Free-run: emit a pulse every `period`, forever.

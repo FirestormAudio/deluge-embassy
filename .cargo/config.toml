@@ -29,10 +29,15 @@ rustflags = [
 # build-std cannot live in [unstable] because it applies to all targets,
 # breaking host-native `cargo test` for the rza1/deluge-bsp crates.
 # build-fw-bin requires cargo-binutils (`cargo install cargo-binutils`).
-build-fw      = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem"
+# `core,alloc` (not just `core`): matches `cargo deluge build` (see
+# tools/cargo-deluge/src/build.rs) so `alloc` apps (e.g. the GPL
+# deluge-ui-toolkit menu/text) don't hit E0152 under this alias but not that
+# one. `alloc` is a no-op extra for apps that don't use it.
+build-fw      = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem"
 build-fw-rel  = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features"
-# For apps that use `alloc` (e.g. the GPL deluge-ui-toolkit menu/text): adds the
-# alloc crate to build-std. Usage: cargo build-fw-alloc -p oled_menu
+# Kept as a documented alias of `build-fw` (identical build-std set) now that
+# `build-fw` itself includes `alloc` — old invocations/scripts keep working.
+# Usage: cargo build-fw-alloc -p oled_menu
 build-fw-alloc = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem"
 build-fw-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p demo-firmware -- -O binary target/armv7a-none-eabihf/release/demo-firmware.bin"
 build-controller-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-controller -- -O binary target/armv7a-none-eabihf/release/deluge-controller.bin"
@@ -61,7 +66,10 @@ build-wren-bin       = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-b
 # ---------------------------------------------------------------------------
 [target.armv7-unknown-linux-musleabihf]
 linker = "arm-linux-gcc"
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon,+crt-static",
+]
 
 [env]
 # UAC2 (3 ifaces) + CDC-ACM (2 ifaces) + USB-MIDI (2 ifaces) = 7 total.

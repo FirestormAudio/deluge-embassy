@@ -40,7 +40,7 @@ cargo test --target "$QEMU" -p deluge-fixedpoint --lib
 # No --lib: also runs the cross-crate dsp_pipeline integration test.
 cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
-cargo test --target "$QEMU" -p deluge-bsp --lib
+cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
 
 echo "==> Host bucket ($HOST)"
@@ -53,6 +53,12 @@ cargo test --target "$HOST" -p deluge-fft --features test-utils
 cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit
 cargo test --target "$HOST" -p deluge-sdk-macros
+# The SDK facade: `adapt_block` (the linux backend's frame adaptation) is pure
+# logic and testable here. Needs an explicit backend feature — `sim` is the only
+# one that builds on the host (`linux` requires the musl libdeluge sysroot).
+# Host-only: `--features sim` pulls deluge-simulator -> cpal -> alsa-sys, which
+# does not cross-compile to the QEMU ARM bucket's target.
+cargo test --target "$HOST" -p deluge-sdk --features sim
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 cargo test --target "$HOST" --manifest-path tools/wren-web-debug/Cargo.toml
 

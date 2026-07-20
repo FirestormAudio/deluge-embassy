@@ -11,11 +11,15 @@ name = "oled_hello"
 test = false
 
 [dependencies]
-deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk", default-features = false }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embedded-graphics = "0.8"
 
 [features]
-default = []
+default = ["sim"]
+## Desktop simulator backend (`cargo deluge sim`).
+sim = ["deluge/sim"]
+## Deluge Linux userland backend (`cargo deluge linux --features linux`).
+linux = ["deluge/linux"]
 ## Opt-in RTT (SEGGER) logging over a debug probe.
 rtt = ["deluge/rtt"]

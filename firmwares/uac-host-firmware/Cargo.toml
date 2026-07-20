@@ -11,7 +11,7 @@ test = false
 
 [dependencies]
 rza1l-hal = { path = "../../crates/rza1l-hal" }
-deluge-bsp = { path = "../../crates/deluge-bsp" }
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
 deluge-alloc = { path = "../../crates/deluge-alloc" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }

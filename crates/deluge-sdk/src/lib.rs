@@ -86,14 +86,18 @@ mod midi;
 mod oled;
 mod pads;
 mod pic_service;
+mod plat;
 mod sd;
 mod sync_led;
 #[cfg(feature = "usb-log")]
 mod usb_debug;
 
 /// Host (desktop-simulator) backend, active when built for the host triple.
-#[cfg(not(target_os = "none"))]
+#[cfg(all(not(target_os = "none"), feature = "sim"))]
 mod host;
+/// Native Linux backend, active under `feature = "linux"`.
+#[cfg(all(not(target_os = "none"), feature = "linux"))]
+mod linux;
 pub use audio::{Audio, StereoFrame};
 pub use clock::{ClockIn, ClockOut};
 pub use cv_gate::{Cv, Gate};
@@ -125,6 +129,51 @@ pub use sd::{FatError, SdError};
 /// conversions/multiplies map onto the hardware DSP instructions.
 pub use fixedpoint as fixed;
 
+/// Makes a capability handle `!Send`, so it cannot be captured by the
+/// `Send + 'static` DSP closure passed to [`Audio::process`].
+///
+/// On the Linux backend that closure runs on libdeluge's audio thread; every
+/// hardware op goes through `crate::linux::dev()`, a lock on the process-wide
+/// `Mutex<Deluge>` the UI half also holds. Taking it from the audio thread
+/// would stall the callback. Since every hardware op is a method on an owned
+/// handle (there are no free functions), making the handles `!Send` turns that
+/// stall into a compile error at the `.process()` call site.
+///
+/// Safe on all backends: Embassy's executor is single-threaded, so nothing in
+/// the SDK requires these handles to be `Send`.
+pub(crate) type NotSend = core::marker::PhantomData<*const ()>;
+pub(crate) const NOT_SEND: NotSend = core::marker::PhantomData;
+
+/// Compile-time proof that capability handles are `!Send` (see [`NotSend`]).
+///
+/// If any listed type becomes `Send`, both blanket impls below apply and the
+/// `AmbiguousIfSend<_>` inference in `assertions` fails with "type annotations
+/// needed" — turning an accidental `Send` into a build error.
+mod not_send_assertions {
+    trait AmbiguousIfSend<A> {
+        fn assert() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+    #[allow(dead_code)]
+    fn assertions() {
+        let _ = <crate::Deluge as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Cv as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Gate as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Jacks as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Midi as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Sd as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Leds as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Input as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Pads as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Oled as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::ClockIn as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::ClockOut as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::SyncLed as AmbiguousIfSend<_>>::assert;
+    }
+}
+
 // Re-export the underlying layers so apps can reach lower-level functionality
 // through the single `deluge` dependency while the capability API (M2+) grows.
 // The allocator and HAL are device-only escape hatches (no host equivalent); an
@@ -143,6 +192,14 @@ pub use rza1l_hal;
 /// at a time.
 pub struct Deluge {
     spawner: embassy_executor::Spawner,
+    // Makes `Deluge` itself `!Send` (see [`NotSend`]) — not just its capability
+    // handles. Every capability accessor is `&self`, so a `Send + 'static` DSP
+    // closure that captured `dlg` instead of a specific handle could still reach
+    // every peripheral from libdeluge's audio thread. Today `Spawner` happens to
+    // be `!Send` too (an Embassy implementation detail), so this was only
+    // accidentally enforced; this field makes it a property `Deluge` owns and
+    // proves for itself, in `not_send_assertions`.
+    _not_send: NotSend,
 }
 
 impl Deluge {
@@ -151,7 +208,10 @@ impl Deluge {
     #[doc(hidden)]
     #[inline]
     pub fn __new(spawner: embassy_executor::Spawner) -> Self {
-        Self { spawner }
+        Self {
+            spawner,
+            _not_send: NOT_SEND,
+        }
     }
 
     /// The Embassy task spawner for the app's executor.
@@ -396,7 +456,7 @@ impl Deluge {
     /// Take the codec audio path for per-block DSP. Takeable once.
     ///
     /// ```ignore
-    /// dlg.audio().process(|block| {
+    /// dlg.audio().process(move |block| {
     ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
     /// }).await
     /// ```
@@ -647,7 +707,7 @@ pub mod __rt {
     /// `iced` owns the main thread (the "panel"). They communicate through the
     /// in-memory [`deluge_sim_link::SharedPanel`] and audio bridge — no protocol,
     /// no sockets.
-    #[cfg(not(target_os = "none"))]
+    #[cfg(all(not(target_os = "none"), feature = "sim"))]
     pub mod host {
         use super::Spawner;
         use embassy_executor::Executor;
@@ -681,7 +741,7 @@ pub mod __rt {
                     let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
                     executor.run(move |spawner| {
                         // Bridge GUI input → the SDK event queue.
-                        crate::input::start_host_pump(spawner);
+                        crate::plat::input_start_pump(spawner);
                         spawn(spawner);
                     });
                 })
@@ -697,6 +757,39 @@ pub mod __rt {
                 deluge_simulator::run_in_process(gui_panel, gui_audio);
             }
             std::process::exit(0);
+        }
+    }
+
+    /// Native Linux runtime.
+    ///
+    /// Unlike the sim runtime, there is no GUI competing for the main thread and
+    /// no in-memory panel bridge: `libdeluge` (via `deluge-hal-linux`) owns its
+    /// own input/audio threads, so the app's `async fn main` runs directly on a
+    /// std Embassy executor on the main thread.
+    #[cfg(all(not(target_os = "none"), feature = "linux"))]
+    pub mod linux {
+        use super::Spawner;
+        use embassy_executor::Executor;
+
+        /// Open libdeluge, then run the app on a std executor on the MAIN thread
+        /// (no GUI competes for it; libdeluge owns its own input/audio threads).
+        pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner) + Send + 'static) {
+            // Default to `info` so the backend's own diagnostics (libdeluge
+            // open, oled_write failures) reach stderr → the boot console even
+            // when the launcher doesn't set RUST_LOG.
+            let _ = env_logger::Builder::from_env(
+                env_logger::Env::default().default_filter_or("info"),
+            )
+            .try_init();
+            let dev = deluge_hal_linux::Deluge::open().expect("deluge_open failed");
+            crate::linux::init(dev);
+            log::info!("libdeluge opened; linux backend running");
+            setup();
+            let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
+            executor.run(move |spawner| {
+                crate::plat::input_start_pump(spawner);
+                spawn(spawner);
+            });
         }
     }
 }

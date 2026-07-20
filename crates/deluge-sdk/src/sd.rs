@@ -1,18 +1,20 @@
 //! SD-card file access (FAT).
 
 #[cfg(target_os = "none")]
-use deluge_bsp::fat::{self, FatError, Mode, VolumeIdx};
+use deluge_bsp::fat::FatError;
+#[cfg(target_os = "none")]
+use deluge_bsp::sd::SdError;
 
 /// Initialise the SD card. On the device this powers up and probes the card; on
 /// the host simulator the "card" is a local directory, so there is nothing to do.
 #[cfg(target_os = "none")]
-pub(crate) async fn init_card() -> Result<(), deluge_bsp::sd::SdError> {
-    deluge_bsp::sd::init().await
+pub(crate) async fn init_card() -> Result<(), SdError> {
+    crate::plat::sd_init_card().await
 }
 /// Host: the simulated card is always available.
 #[cfg(not(target_os = "none"))]
 pub(crate) async fn init_card() -> Result<(), SdError> {
-    Ok(())
+    crate::plat::sd_init_card().await
 }
 
 /// SD-card files, taken once from [`Deluge::sd`](crate::Deluge::sd).
@@ -29,48 +31,26 @@ pub(crate) async fn init_card() -> Result<(), SdError> {
 /// On the host simulator the "card root" is a local directory (the
 /// `DELUGE_SIM_SD` env var, default `./sim-sd`), so reads/writes hit real files.
 pub struct Sd {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 #[cfg(target_os = "none")]
 impl Sd {
     pub(crate) fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Read a root-directory file into `buf`; returns the number of bytes read
     /// (capped at `buf.len()`).
     pub fn read(&mut self, name: &str, buf: &mut [u8]) -> Result<usize, FatError> {
-        let vm = fat::new_volume_manager();
-        let volume = vm.open_raw_volume(VolumeIdx(0))?;
-        let root = vm.open_root_dir(volume)?;
-        let file = vm.open_file_in_dir(root, name, Mode::ReadOnly)?;
-
-        let mut total = 0;
-        while total < buf.len() {
-            let n = vm.read(file, &mut buf[total..])?;
-            if n == 0 {
-                break;
-            }
-            total += n;
-        }
-
-        vm.close_file(file)?;
-        // Dropping `vm` releases the volume/dir handles.
-        Ok(total)
+        crate::plat::sd_read(name, buf)
     }
 
     /// Write `data` to a root-directory file, creating or truncating it.
     pub fn write(&mut self, name: &str, data: &[u8]) -> Result<(), FatError> {
-        let vm = fat::new_volume_manager();
-        let volume = vm.open_raw_volume(VolumeIdx(0))?;
-        let root = vm.open_root_dir(volume)?;
-        let file = vm.open_file_in_dir(root, name, Mode::ReadWriteCreateOrTruncate)?;
-
-        vm.write(file, data)?;
-        // close_file flushes; must happen before `vm` is dropped.
-        vm.close_file(file)?;
-        Ok(())
+        crate::plat::sd_write(name, data)
     }
 }
 
@@ -106,33 +86,21 @@ impl From<std::io::Error> for FatError {
     }
 }
 
-/// The simulated SD-card root directory (`DELUGE_SIM_SD`, default `./sim-sd`).
-#[cfg(not(target_os = "none"))]
-fn sim_sd_root() -> std::path::PathBuf {
-    std::env::var_os("DELUGE_SIM_SD")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("sim-sd"))
-}
-
 #[cfg(not(target_os = "none"))]
 impl Sd {
     pub(crate) fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Read a root-directory file into `buf`; returns the number of bytes read.
     pub fn read(&mut self, name: &str, buf: &mut [u8]) -> Result<usize, FatError> {
-        let data = std::fs::read(sim_sd_root().join(name))?;
-        let n = data.len().min(buf.len());
-        buf[..n].copy_from_slice(&data[..n]);
-        Ok(n)
+        crate::plat::sd_read(name, buf)
     }
 
     /// Write `data` to a root-directory file, creating or truncating it.
     pub fn write(&mut self, name: &str, data: &[u8]) -> Result<(), FatError> {
-        let root = sim_sd_root();
-        std::fs::create_dir_all(&root)?;
-        std::fs::write(root.join(name), data)?;
-        Ok(())
+        crate::plat::sd_write(name, data)
     }
 }
