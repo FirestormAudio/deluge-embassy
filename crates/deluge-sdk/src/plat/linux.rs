@@ -18,15 +18,6 @@ use embassy_time::Instant;
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
     mut f: F,
 ) -> ! {
-    // `adapt_block`'s transmute is sound only under this layout equality, and
-    // libdeluge owns one side of it. Evaluated against the real armv7 musl
-    // target at build time, so a 32-bit divergence cannot slip through.
-    const _: () = assert!(
-        core::mem::size_of::<crate::audio::StereoFrame>() == core::mem::size_of::<[f32; 2]>()
-            && core::mem::align_of::<crate::audio::StereoFrame>()
-                == core::mem::align_of::<[f32; 2]>()
-    );
-
     static RT_CHECKED: AtomicBool = AtomicBool::new(false);
 
     let shim = move |inp: &[[f32; 2]], out: &mut [[f32; 2]]| {

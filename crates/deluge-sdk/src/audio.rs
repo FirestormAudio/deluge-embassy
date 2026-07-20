@@ -27,6 +27,23 @@ pub struct StereoFrame {
 /// Pure by design — no `libdeluge`, no hardware, no locks — so the Linux
 /// backend's only interesting logic is unit-testable on the host. See
 /// `plat::linux::audio_run`, its sole caller.
+// `adapt_block` reinterprets `&mut [[f32; 2]]` as `&mut [StereoFrame]`. That is
+// sound only if the two are layout-identical. `StereoFrame` is SDK-local and
+// `#[repr(C)]`, so this cannot drift from under us silently — but it CAN be
+// edited, and these asserts are what turn such an edit into a build error.
+//
+// Note what this does NOT prove: field *types*. `{ l: i32, r: f32 }` would
+// satisfy every assertion below and make the transmute type confusion. The
+// `#[repr(C)] { l: f32, r: f32 }` declaration above is the real contract;
+// these asserts guard its layout consequences.
+#[cfg(any(feature = "linux", test))]
+const _: () = {
+    assert!(core::mem::size_of::<StereoFrame>() == core::mem::size_of::<[f32; 2]>());
+    assert!(core::mem::align_of::<StereoFrame>() == core::mem::align_of::<[f32; 2]>());
+    assert!(core::mem::offset_of!(StereoFrame, l) == 0);
+    assert!(core::mem::offset_of!(StereoFrame, r) == core::mem::size_of::<f32>());
+};
+
 #[cfg(any(feature = "linux", test))]
 #[inline]
 pub(crate) fn adapt_block<F>(f: &mut F, inp: &[[f32; 2]], out: &mut [[f32; 2]])
