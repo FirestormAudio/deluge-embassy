@@ -122,6 +122,18 @@ impl Audio {
     /// [`SyncLed`](crate::SyncLed), …) are deliberately `!Send`, so capturing one
     /// here is a compile error rather than a runtime audio stall.
     ///
+    /// **Dropping the returned future diverges by backend.** `process` returns
+    /// `-> !`, so this is uncommon — but not impossible, e.g. racing it in a
+    /// `select!` against a UI branch. On device and in the simulator, dropping
+    /// stops the DSP. On Linux, `audio_start` has already moved `f` into a
+    /// context owned by `libdeluge`; dropping the future does not reach it, so
+    /// `f` keeps rendering audio blocks forever with no owning task left.
+    ///
+    /// **`!Send` guarantees no hardware access, not RT-safety.** Nothing stops
+    /// `f` from allocating, taking a lock, logging, or blocking on I/O — all of
+    /// which were merely slow on the app's executor but will xrun the codec
+    /// once `f` runs on libdeluge's `SCHED_FIFO` thread.
+    ///
     /// ```ignore
     /// dlg.audio().process(move |block| {
     ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
