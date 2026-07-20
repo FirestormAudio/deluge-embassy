@@ -18,14 +18,19 @@ use embassy_time::Instant;
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
     mut f: F,
 ) -> ! {
-    static RT_CHECKED: AtomicBool = AtomicBool::new(false);
+    let mut rt_checked = false;
 
     let shim = move |inp: &[[f32; 2]], out: &mut [[f32; 2]]| {
         // libdeluge's audio thread self-elevates to SCHED_FIFO (audio.c), but
         // that fails *soft* to a stderr warning the appliance never shows. At
         // 128-frame periods a non-RT thread will xrun under load, so confirm it
-        // once from inside the callback — this is that thread.
-        if !RT_CHECKED.swap(true, Ordering::Relaxed) {
+        // once from inside the callback — this is that thread. `shim` is `move`
+        // and invoked by exactly one thread (libdeluge's audio thread), so a
+        // captured local latches this without needing an atomic — and unlike a
+        // `static` inside this generic fn, it's correctly per-instantiation
+        // (a `static` here would NOT be monomorphized per `F`, so every `F`
+        // would share one latch).
+        if !core::mem::replace(&mut rt_checked, true) {
             // SAFETY: `sched_getscheduler(0)` queries the calling thread and has
             // no preconditions.
             if unsafe { libc::sched_getscheduler(0) } != libc::SCHED_FIFO {
