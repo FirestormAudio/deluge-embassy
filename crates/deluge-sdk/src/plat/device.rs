@@ -23,7 +23,9 @@ use rza1l_hal::gpio::{Output, Pin};
 
 /// Run `f` over every audio block, forever. Body moved verbatim from
 /// `Audio::process`'s `#[cfg(target_os = "none")]` arm.
-pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame])>(mut f: F) -> ! {
+pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
+    mut f: F,
+) -> ! {
     // Prime the TX ring with dither, then anchor read/write heads.
     audio_block::prime_tx();
     let mut state = BlockState::new();

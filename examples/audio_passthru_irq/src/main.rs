@@ -23,7 +23,7 @@ fn soft_clip(x: f32) -> f32 {
 async fn main(dlg: Deluge) {
     let drive = 2.5;
     dlg.audio()
-        .process(|block: &mut [StereoFrame]| {
+        .process(move |block: &mut [StereoFrame]| {
             for f in block {
                 f.l = soft_clip(f.l * drive);
                 f.r = soft_clip(f.r * drive);

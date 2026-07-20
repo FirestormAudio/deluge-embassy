@@ -81,12 +81,23 @@ impl Audio {
     /// `f` receives a `BLOCK`-length slice pre-loaded with codec input; whatever
     /// it leaves in the slice is sent to the codec. Never returns.
     ///
+    /// `f` must be `Send + 'static` because the Linux backend runs it on
+    /// libdeluge's audio thread rather than on the app's executor. The bound is
+    /// uniform across backends on purpose: a closure that compiles on device but
+    /// not on linux would hide the portability break until deploy time. Share
+    /// state with the rest of the app through `static` atomics — see the
+    /// `additive_osc` example.
+    ///
+    /// Capability handles ([`Oled`](crate::Oled), [`Pads`](crate::Pads),
+    /// [`SyncLed`](crate::SyncLed), …) are deliberately `!Send`, so capturing one
+    /// here is a compile error rather than a runtime audio stall.
+    ///
     /// ```ignore
-    /// dlg.audio().process(|block| {
+    /// dlg.audio().process(move |block| {
     ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
     /// }).await
     /// ```
-    pub async fn process<F: FnMut(&mut [StereoFrame])>(self, f: F) -> ! {
+    pub async fn process<F: FnMut(&mut [StereoFrame]) + Send + 'static>(self, f: F) -> ! {
         crate::plat::audio_run(f).await
     }
 }

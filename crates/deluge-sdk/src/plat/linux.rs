@@ -10,7 +10,9 @@ use embassy_time::Instant;
 
 /// Linux: not implemented yet — the codec audio path doesn't exist on this
 /// backend.
-pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame])>(mut f: F) -> ! {
+pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
+    mut f: F,
+) -> ! {
     let _ = &mut f;
     unimplemented!("audio_run is not on the linux backend yet")
 }

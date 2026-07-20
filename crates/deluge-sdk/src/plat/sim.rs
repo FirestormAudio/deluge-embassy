@@ -11,7 +11,9 @@ use embassy_time::Instant;
 /// The GUI's audio callback drains output and fills input at the device rate,
 /// so this loop is paced by real time without a hardware clock. Body moved
 /// verbatim from `Audio::process`'s `#[cfg(not(target_os = "none"))]` arm.
-pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame])>(mut f: F) -> ! {
+pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
+    mut f: F,
+) -> ! {
     use deluge_sim_link::audio::{self as au, Consumer, Observer, Producer};
     use embassy_time::{Duration, Timer};
 
