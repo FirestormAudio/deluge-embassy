@@ -158,6 +158,7 @@ mod not_send_assertions {
 
     #[allow(dead_code)]
     fn assertions() {
+        let _ = <crate::Deluge as AmbiguousIfSend<_>>::assert;
         let _ = <crate::Cv as AmbiguousIfSend<_>>::assert;
         let _ = <crate::Gate as AmbiguousIfSend<_>>::assert;
         let _ = <crate::Jacks as AmbiguousIfSend<_>>::assert;
@@ -191,6 +192,14 @@ pub use rza1l_hal;
 /// at a time.
 pub struct Deluge {
     spawner: embassy_executor::Spawner,
+    // Makes `Deluge` itself `!Send` (see [`NotSend`]) — not just its capability
+    // handles. Every capability accessor is `&self`, so a `Send + 'static` DSP
+    // closure that captured `dlg` instead of a specific handle could still reach
+    // every peripheral from libdeluge's audio thread. Today `Spawner` happens to
+    // be `!Send` too (an Embassy implementation detail), so this was only
+    // accidentally enforced; this field makes it a property `Deluge` owns and
+    // proves for itself, in `not_send_assertions`.
+    _not_send: NotSend,
 }
 
 impl Deluge {
@@ -199,7 +208,10 @@ impl Deluge {
     #[doc(hidden)]
     #[inline]
     pub fn __new(spawner: embassy_executor::Spawner) -> Self {
-        Self { spawner }
+        Self {
+            spawner,
+            _not_send: NOT_SEND,
+        }
     }
 
     /// The Embassy task spawner for the app's executor.
