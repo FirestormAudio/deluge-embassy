@@ -56,8 +56,9 @@ where
     debug_assert_eq!(inp.len(), out.len());
     out.copy_from_slice(inp);
     // SAFETY: `StereoFrame` is `#[repr(C)] { l: f32, r: f32 }`, layout-identical
-    // to `[f32; 2]`. Asserted at compile time in `plat::linux::audio_run` and at
-    // run time by `stereoframe_is_layout_compatible_with_f32_pair`.
+    // to `[f32; 2]` — size, alignment, and both field offsets are asserted at
+    // compile time immediately above this function, and again at run time by
+    // `stereoframe_is_layout_compatible_with_f32_pair`.
     f(unsafe { core::mem::transmute::<&mut [[f32; 2]], &mut [StereoFrame]>(out) });
 }
 
