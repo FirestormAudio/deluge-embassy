@@ -31,6 +31,26 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
         // (a `static` here would NOT be monomorphized per `F`, so every `F`
         // would share one latch).
         if !core::mem::replace(&mut rt_checked, true) {
+            // Hard, not `debug_assert!`: `cargo deluge linux` builds `--release`,
+            // so a debug assert here would compile out and this becomes a length
+            // trusted from C with no check at all. If libdeluge's period
+            // (`DELUGE_PERIOD`) is ever raised, SDK apps that size fixed-length
+            // scratch buffers off `EXPECTED_BLOCK_FRAMES` (e.g. `additive_osc`'s
+            // `MAX_BLOCK`, checked only by a `debug_assert!` of its own) would
+            // silently overflow those buffers on this thread instead. Checked
+            // once, on the first callback, via the same latch as the RT check
+            // above — costs nothing per period after that.
+            assert_eq!(
+                inp.len(),
+                crate::audio::EXPECTED_BLOCK_FRAMES,
+                "libdeluge's period (DELUGE_PERIOD) no longer matches the SDK's \
+                 assumed block length ({} frames) — got {} frames per callback; \
+                 apps that size fixed buffers off this assumption will overflow \
+                 them",
+                crate::audio::EXPECTED_BLOCK_FRAMES,
+                inp.len(),
+            );
+
             // SAFETY: `sched_getscheduler(0)` queries the calling thread and has
             // no preconditions.
             match unsafe { libc::sched_getscheduler(0) } {

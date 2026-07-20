@@ -44,6 +44,18 @@ const _: () = {
     assert!(core::mem::offset_of!(StereoFrame, r) == core::mem::size_of::<f32>());
 };
 
+/// The block length (stereo frames per callback) every backend is built
+/// against. Device (`deluge_bsp::audio_block::BLOCK_FRAMES`) and the desktop
+/// simulator (`deluge_sim_link::audio::BLOCK_FRAMES`) each independently hard-code
+/// 128; neither of those constants is reachable from here, though — the former is
+/// `#[cfg(target_os = "none")]` (this module also compiles hosted, for `feature =
+/// "linux"`), and the latter is gated behind the `sim` feature, not `linux`. This
+/// is the SDK-side source of truth apps size fixed-length buffers against on the
+/// Linux backend (e.g. `examples/additive_osc`'s `MAX_BLOCK`); keep it in sync
+/// with the other two by hand if the period ever changes.
+#[cfg(any(feature = "linux", test))]
+pub(crate) const EXPECTED_BLOCK_FRAMES: usize = 128;
+
 #[cfg(any(feature = "linux", test))]
 #[inline]
 pub(crate) fn adapt_block<F>(f: &mut F, inp: &[[f32; 2]], out: &mut [[f32; 2]])
