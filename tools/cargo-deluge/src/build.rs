@@ -16,7 +16,16 @@ pub(crate) fn cmd_build(args: &[String]) -> Result<PathBuf, String> {
         "build",
         "--target",
         TARGET,
-        "-Zbuild-std=core",
+        // `core,alloc`, not just `core`. An app enabling the SDK's `alloc`
+        // feature (the GPL `deluge-ui-toolkit` menu/text apps do) pulls in the
+        // `alloc` crate; with `-Zbuild-std=core` alone, cargo builds `core`
+        // from source but takes `alloc` from the precompiled sysroot, which
+        // references the sysroot's *own* `core` — two `core`s, and the app
+        // dies with `E0152: duplicate lang item`. Building both from source
+        // keeps them consistent. Harmless for apps that never touch `alloc`:
+        // an unreferenced `alloc` is not linked, so no `#[global_allocator]`
+        // is required.
+        "-Zbuild-std=core,alloc",
         "-Zbuild-std-features=compiler-builtins-mem",
     ]);
     if release {
