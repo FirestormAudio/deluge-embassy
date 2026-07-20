@@ -33,11 +33,16 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
         if !core::mem::replace(&mut rt_checked, true) {
             // SAFETY: `sched_getscheduler(0)` queries the calling thread and has
             // no preconditions.
-            if unsafe { libc::sched_getscheduler(0) } != libc::SCHED_FIFO {
-                log::warn!(
-                    "audio thread is NOT SCHED_FIFO — expect xruns under load \
-                     (missing CAP_SYS_NICE?)"
-                );
+            match unsafe { libc::sched_getscheduler(0) } {
+                -1 => log::warn!(
+                    "sched_getscheduler query failed: {}",
+                    std::io::Error::last_os_error()
+                ),
+                libc::SCHED_FIFO | libc::SCHED_RR => {} // real-time: as expected, nothing to report
+                _ => log::warn!(
+                    "audio thread is NOT real-time (SCHED_FIFO/SCHED_RR) — expect \
+                     xruns under load (missing CAP_SYS_NICE?)"
+                ),
             }
         }
         crate::audio::adapt_block(&mut f, inp, out);
