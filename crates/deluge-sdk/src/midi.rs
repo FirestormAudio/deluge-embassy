@@ -16,13 +16,15 @@ fn ensure_init() {
 /// API may come later). RX is DMA-backed, so bytes are captured even while the
 /// app is busy.
 pub struct Midi {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 impl Midi {
     pub(crate) fn new() -> Self {
         ensure_init();
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Send raw MIDI bytes. No-op on the host simulator (no DIN MIDI).

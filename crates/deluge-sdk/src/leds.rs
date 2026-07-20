@@ -6,7 +6,7 @@
 /// LED ids line up with button ids, so lighting the LED under a pressed button
 /// is `leds.set(id, true)`. Names are in [`controls::button`](crate::controls::button).
 pub struct Leds {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 impl Leds {
@@ -17,7 +17,9 @@ impl Leds {
     pub const NUM_GOLD_KNOBS: u8 = 2;
 
     pub(crate) fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Set indicator LED `id` (0–35) on or off.

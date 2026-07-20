@@ -35,12 +35,14 @@ pub(crate) static EVENTS: Channel<CriticalSectionRawMutex, Event, 32> = Channel:
 
 /// The input event stream, taken once from [`Deluge::input`](crate::Deluge::input).
 pub struct Input {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 impl Input {
     pub(crate) fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Await the next input event.

@@ -19,7 +19,7 @@ pub(crate) fn ensure_init() {
 /// codes (~6552 counts per volt); [`set_volts`](Cv::set_volts) is the convenient
 /// form. Writes go over the shared, arbitrated RSPI0 bus.
 pub struct Cv {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 impl Cv {
@@ -28,7 +28,9 @@ impl Cv {
 
     pub(crate) fn new() -> Self {
         ensure_init();
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Write a raw 16-bit DAC code to channel `ch`. On the host simulator the
@@ -50,7 +52,7 @@ impl Cv {
 ///
 /// Taken once from [`Deluge::gate`](crate::Deluge::gate).
 pub struct Gate {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 impl Gate {
@@ -59,7 +61,9 @@ impl Gate {
 
     pub(crate) fn new() -> Self {
         ensure_init();
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Assert (`true`) or release (`false`) gate channel `ch`.

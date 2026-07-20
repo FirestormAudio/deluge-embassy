@@ -15,6 +15,7 @@ pub use deluge_bsp::rgb::Color;
 /// Coordinates match [`Event::Pad`](crate::Event::Pad): `x` 0–17, `y` 0–7.
 pub struct Pads {
     leds: PadLeds,
+    _not_send: crate::NotSend,
 }
 
 impl Pads {
@@ -26,6 +27,7 @@ impl Pads {
     pub(crate) fn new() -> Self {
         Self {
             leds: PadLeds::new(),
+            _not_send: crate::NOT_SEND,
         }
     }
 

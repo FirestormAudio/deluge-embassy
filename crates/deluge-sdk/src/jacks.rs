@@ -19,13 +19,15 @@ fn ensure_init() {
 /// On the host simulator there is no physical panel: all jacks read as not
 /// inserted and the speaker control is a no-op.
 pub struct Jacks {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 impl Jacks {
     pub(crate) fn new() -> Self {
         ensure_init();
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// `true` if the headphone jack is inserted.

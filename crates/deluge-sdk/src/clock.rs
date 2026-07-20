@@ -33,12 +33,16 @@ fn ensure_clock_in_init() {
 pub struct ClockIn {
     /// Embassy-time tick of the previously observed edge, for interval math.
     prev_ticks: Option<u64>,
+    _not_send: crate::NotSend,
 }
 
 impl ClockIn {
     pub(crate) fn new() -> Self {
         ensure_clock_in_init();
-        Self { prev_ticks: None }
+        Self {
+            prev_ticks: None,
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Await the next external clock pulse, returning the interval since the
@@ -80,6 +84,7 @@ const DEFAULT_PULSE_WIDTH: Duration = Duration::from_millis(5);
 pub struct ClockOut {
     channel: u8,
     pulse_width: Duration,
+    _not_send: crate::NotSend,
 }
 
 impl ClockOut {
@@ -89,6 +94,7 @@ impl ClockOut {
         Self {
             channel,
             pulse_width: DEFAULT_PULSE_WIDTH,
+            _not_send: crate::NOT_SEND,
         }
     }
 

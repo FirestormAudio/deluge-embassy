@@ -32,6 +32,7 @@ use embedded_graphics_core::pixelcolor::BinaryColor;
 /// `MenuStyle::top_inset` does this).
 pub struct Oled {
     fb: FrameBuffer,
+    _not_send: crate::NotSend,
 }
 
 impl Oled {
@@ -45,6 +46,7 @@ impl Oled {
     pub(crate) fn new() -> Self {
         Self {
             fb: FrameBuffer::new(),
+            _not_send: crate::NOT_SEND,
         }
     }
 

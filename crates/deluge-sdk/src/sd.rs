@@ -31,13 +31,15 @@ pub(crate) async fn init_card() -> Result<(), SdError> {
 /// On the host simulator the "card root" is a local directory (the
 /// `DELUGE_SIM_SD` env var, default `./sim-sd`), so reads/writes hit real files.
 pub struct Sd {
-    _private: (),
+    _not_send: crate::NotSend,
 }
 
 #[cfg(target_os = "none")]
 impl Sd {
     pub(crate) fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Read a root-directory file into `buf`; returns the number of bytes read
@@ -87,7 +89,9 @@ impl From<std::io::Error> for FatError {
 #[cfg(not(target_os = "none"))]
 impl Sd {
     pub(crate) fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
     }
 
     /// Read a root-directory file into `buf`; returns the number of bytes read.

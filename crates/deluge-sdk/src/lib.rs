@@ -129,6 +129,50 @@ pub use sd::{FatError, SdError};
 /// conversions/multiplies map onto the hardware DSP instructions.
 pub use fixedpoint as fixed;
 
+/// Makes a capability handle `!Send`, so it cannot be captured by the
+/// `Send + 'static` DSP closure passed to [`Audio::process`].
+///
+/// On the Linux backend that closure runs on libdeluge's audio thread; every
+/// hardware op goes through `crate::linux::dev()`, a lock on the process-wide
+/// `Mutex<Deluge>` the UI half also holds. Taking it from the audio thread
+/// would stall the callback. Since every hardware op is a method on an owned
+/// handle (there are no free functions), making the handles `!Send` turns that
+/// stall into a compile error at the `.process()` call site.
+///
+/// Safe on all backends: Embassy's executor is single-threaded, so nothing in
+/// the SDK requires these handles to be `Send`.
+pub(crate) type NotSend = core::marker::PhantomData<*const ()>;
+pub(crate) const NOT_SEND: NotSend = core::marker::PhantomData;
+
+/// Compile-time proof that capability handles are `!Send` (see [`NotSend`]).
+///
+/// If any listed type becomes `Send`, both blanket impls below apply and the
+/// `AmbiguousIfSend<_>` inference in `assertions` fails with "type annotations
+/// needed" — turning an accidental `Send` into a build error.
+mod not_send_assertions {
+    trait AmbiguousIfSend<A> {
+        fn assert() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+    #[allow(dead_code)]
+    fn assertions() {
+        let _ = <crate::Cv as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Gate as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Jacks as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Midi as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Sd as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Leds as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Input as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Pads as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Oled as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::ClockIn as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::ClockOut as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::SyncLed as AmbiguousIfSend<_>>::assert;
+    }
+}
+
 // Re-export the underlying layers so apps can reach lower-level functionality
 // through the single `deluge` dependency while the capability API (M2+) grows.
 // The allocator and HAL are device-only escape hatches (no host equivalent); an

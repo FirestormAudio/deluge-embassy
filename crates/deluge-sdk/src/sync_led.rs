@@ -20,6 +20,7 @@ type SyncLedPin = Pin<6, 7, Output>;
 #[cfg(target_os = "none")]
 pub struct SyncLed {
     pin: SyncLedPin,
+    _not_send: crate::NotSend,
 }
 
 #[cfg(target_os = "none")]
@@ -32,6 +33,7 @@ impl SyncLed {
     pub(crate) fn new() -> Self {
         SyncLed {
             pin: crate::plat::sync_led_init(),
+            _not_send: crate::NOT_SEND,
         }
     }
 
@@ -101,6 +103,7 @@ impl StatefulOutputPin for SyncLed {
 #[cfg(not(target_os = "none"))]
 pub struct SyncLed {
     state: bool,
+    _not_send: crate::NotSend,
 }
 
 #[cfg(not(target_os = "none"))]
@@ -108,6 +111,7 @@ impl SyncLed {
     pub(crate) fn new() -> Self {
         SyncLed {
             state: crate::plat::sync_led_init(),
+            _not_send: crate::NOT_SEND,
         }
     }
 
