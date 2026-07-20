@@ -15,5 +15,11 @@ deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
 
 [features]
 default = []
+## Desktop simulator backend (`cargo deluge sim`). Declared (not default-on) so
+## `#[deluge::app]`'s `cfg(feature = "sim")` branch is a recognised feature
+## value here, not an `unexpected_cfgs` warning.
+sim = ["deluge/sim"]
+## Deluge Linux userland backend (`cargo deluge linux --features linux`).
+linux = ["deluge/linux"]
 ## Opt-in RTT (SEGGER) logging over a debug probe.
 rtt = ["deluge/rtt"]

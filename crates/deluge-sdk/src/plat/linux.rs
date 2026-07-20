@@ -8,13 +8,55 @@ use deluge_bsp::rgb::PadLeds;
 use embassy_executor::Spawner;
 use embassy_time::Instant;
 
-/// Linux: not implemented yet — the codec audio path doesn't exist on this
-/// backend.
+/// Linux: hand the DSP closure to `libdeluge`, which runs it on its own audio
+/// thread, then park.
+///
+/// This is the ring-free path: the app's closure executes *inside* libdeluge's
+/// per-period callback, so there is no buffer or queue between the DSP and the
+/// codec — only [`adapt_block`](crate::audio::adapt_block)'s single memcpy that
+/// converts libdeluge's split slices to the SDK's in-place block contract.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
     mut f: F,
 ) -> ! {
-    let _ = &mut f;
-    unimplemented!("audio_run is not on the linux backend yet")
+    // `adapt_block`'s transmute is sound only under this layout equality, and
+    // libdeluge owns one side of it. Evaluated against the real armv7 musl
+    // target at build time, so a 32-bit divergence cannot slip through.
+    const _: () = assert!(
+        core::mem::size_of::<crate::audio::StereoFrame>() == core::mem::size_of::<[f32; 2]>()
+            && core::mem::align_of::<crate::audio::StereoFrame>()
+                == core::mem::align_of::<[f32; 2]>()
+    );
+
+    static RT_CHECKED: AtomicBool = AtomicBool::new(false);
+
+    let shim = move |inp: &[[f32; 2]], out: &mut [[f32; 2]]| {
+        // libdeluge's audio thread self-elevates to SCHED_FIFO (audio.c), but
+        // that fails *soft* to a stderr warning the appliance never shows. At
+        // 128-frame periods a non-RT thread will xrun under load, so confirm it
+        // once from inside the callback — this is that thread.
+        if !RT_CHECKED.swap(true, Ordering::Relaxed) {
+            // SAFETY: `sched_getscheduler(0)` queries the calling thread and has
+            // no preconditions.
+            if unsafe { libc::sched_getscheduler(0) } != libc::SCHED_FIFO {
+                log::warn!(
+                    "audio thread is NOT SCHED_FIFO — expect xruns under load \
+                     (missing CAP_SYS_NICE?)"
+                );
+            }
+        }
+        crate::audio::adapt_block(&mut f, inp, out);
+    };
+
+    if let Err(e) = crate::linux::dev().audio_start(shim) {
+        // Unlike the sync LED and input pump, missing audio is not survivable:
+        // an app that called `.audio()` needs it, and silent no-sound is harder
+        // to diagnose than an abort naming the cause.
+        panic!("linux audio unavailable: {e} (is the ALSA 'Deluge' card present?)");
+    }
+
+    // The DSP now lives on libdeluge's thread. This task has no further work but
+    // must not return (`-> !`).
+    core::future::pending().await
 }
 
 /// Linux: no panel init sequence needed — `libdeluge` owns the display.

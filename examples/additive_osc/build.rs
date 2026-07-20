@@ -25,10 +25,16 @@ use std::path::{Path, PathBuf};
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     // `CARGO_CFG_TARGET_OS` is "none" only for the embedded firmware triple; the
-    // desktop simulator builds for the host triple.
+    // desktop simulator and the Linux-userland backend both build for hosted
+    // triples.
     let embedded = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none");
+    // Real hardware NEON is available on *any* ARM target — the bare-metal
+    // device and the `armv7-unknown-linux-musleabihf` Linux backend alike —
+    // via the cross toolchain's own `__ARM_NEON`. Only the x86_64 desktop
+    // simulator lacks it and needs SIMDe.
+    let arm = env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("arm");
 
-    build_dsp_core(&manifest_dir, embedded);
+    build_dsp_core(&manifest_dir, embedded, arm);
 
     if embedded {
         link_firmware(&manifest_dir);
@@ -36,7 +42,7 @@ fn main() {
 }
 
 /// Compile `csrc/additive.cpp` (the C++/Argon additive engine) into the app.
-fn build_dsp_core(manifest_dir: &Path, embedded: bool) {
+fn build_dsp_core(manifest_dir: &Path, embedded: bool, arm: bool) {
     // Locate the header-only Argon library.
     let argon = env::var("ARGON_SRC")
         .map(PathBuf::from)
@@ -80,6 +86,18 @@ fn build_dsp_core(manifest_dir: &Path, embedded: bool) {
             .flag("-fno-unwind-tables")
             .flag("-fno-asynchronous-unwind-tables")
             .flag("-fno-common");
+    } else if arm {
+        // Linux-userland backend (`armv7-unknown-linux-musleabihf`): real
+        // hardware NEON via the bundle's cross toolchain (`cc` auto-detects
+        // `arm-linux-g++` from the target triple, same as the rest of the
+        // Linux build — see `cargo-deluge/src/linux.rs`). No SIMDe: adding
+        // `-I /usr/include/simde` (the host sim's flag) trips GCC's "unsafe
+        // header path used in cross-compilation" guard. The toolchain's
+        // *default* FPU for this target is `vfpv3-d16` (VFP only, no NEON —
+        // `__ARM_NEON` stays undefined and Argon can't find a backend), even
+        // though the RZ/A1L's Cortex-A9 has real NEON hardware; override it,
+        // same FPU as the bare-metal branch.
+        build.flag("-mfpu=neon-vfpv3");
     } else {
         // Host (simulator): no `__ARM_NEON`, so Argon includes SIMDe's
         // `<arm/neon.h>` (and self-defines `SIMDE_ENABLE_NATIVE_ALIASES`). SIMDe

@@ -69,6 +69,10 @@ env_logger = "0.11"
 deluge-sim-link = { path = "../deluge-sim-link", optional = true }
 deluge-simulator = { path = "../../tools/deluge-simulator", optional = true }
 deluge-hal-linux = { path = "../deluge-hal-linux", optional = true }
+# `sched_getscheduler`, to confirm libdeluge's audio thread actually got
+# SCHED_FIFO (it degrades to a stderr warning we never see). Linux backend only;
+# already in the tree transitively via deluge-sys.
+libc = { version = "0.2", optional = true }
 
 [features]
 # NOTE: cannot default to "sim" — `cargo build-fw` (device target) does not
@@ -80,7 +84,7 @@ default = []
 ## simulator panel (deluge-sim-link) instead of real peripherals.
 sim = ["dep:deluge-sim-link", "dep:deluge-simulator"]
 ## Linux backend (Phase 1b): drives real hardware via libdeluge/deluge-hal-linux.
-linux = ["dep:deluge-hal-linux"]
+linux = ["dep:deluge-hal-linux", "dep:libc"]
 ## Register the on-chip SRAM heap (`deluge-alloc`) as the global allocator, so
 ## `alloc` collections (`String`, `Vec`, `format!`) work. Needed by apps that use
 ## the GPL `deluge-ui-toolkit`. Off by default — the SDK is otherwise allocator-free.
