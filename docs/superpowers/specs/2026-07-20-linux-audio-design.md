@@ -191,10 +191,16 @@ xrun.
 
 The failure mode is what makes this a goal. If the process lacks `CAP_SYS_NICE`
 / `RLIMIT_RTPRIO`, the elevation fails **soft** — one `fprintf` to stderr, and
-the thread runs at normal priority. The appliance's stderr is not routed
-anywhere the developer sees (`cargo deluge linux --run` is a serial upload path,
-not a console), so the observable result is audio that works when idle and
-glitches under load — indistinguishable from a bug in §3a.
+the thread runs at normal priority. Nothing else distinguishes that from a bug
+in §3a: both look like audio that works when idle and glitches under load.
+
+**Where the warning surfaces.** Appliance stderr reaches the **boot console**,
+so it is visible on an attached serial console — and *only* there. It does not
+come back over `cargo deluge linux --run`, which is a serial *upload* path that
+returns once the image is sent (`tools/cargo-deluge/src/run.rs`); `--log` tails
+the device-firmware USB-log CDC, a different channel entirely. So the check is
+observable during bring-up with a console attached, and invisible without one.
+Bring-up procedure must say which channel to watch (see the plan's Task 5).
 
 So the SDK checks it itself, once, on the first callback:
 

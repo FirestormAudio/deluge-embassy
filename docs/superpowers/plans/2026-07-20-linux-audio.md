@@ -631,11 +631,15 @@ Feed line-in, listen at line-out. Expected: clean passthrough at unity — this 
 
 If there is **no sound at all**, the app panicked — most likely `linux audio unavailable: ...`, meaning the ALSA `Deluge` card is absent. That is a bundle/kernel problem, not a defect in this work.
 
-- [ ] **Step 3: Check for the RT warning**
+- [ ] **Step 3: Check for the RT warning — on the serial console**
 
-Look for `audio thread is NOT SCHED_FIFO` in the app's log output.
+Watch the **attached serial/boot console** as the app starts. That is the only channel that carries it: the warning goes to appliance stderr → boot console. It does **not** come back over `cargo deluge linux --run` (a serial upload path that returns once the image is sent), and `--log` tails the device-firmware USB-log CDC, which is unrelated.
 
-Expected: **absent**. If present, the process did not get `CAP_SYS_NICE`/`RLIMIT_RTPRIO`; resolve that in `deluge-linux` before judging audio quality, because any glitching from here on is a privilege problem, not a defect in this code.
+Expected: **no** line matching `audio thread is NOT SCHED_FIFO`.
+
+If it appears, the process did not get `CAP_SYS_NICE`/`RLIMIT_RTPRIO`. Resolve that in `deluge-linux` before judging audio quality — any glitching from here on is a privilege problem, not a defect in this code. A line reading `sched_getscheduler query failed` instead means the check itself could not run; that is inconclusive, not a pass.
+
+If no console is attached, this step cannot be performed and Step 5's load test yields no verdict on scheduling — say so in the result rather than recording a clean run.
 
 - [ ] **Step 4: Run `additive_osc` under load**
 
