@@ -1,7 +1,27 @@
-//! Native Linux backend ops (real `libdeluge`, via `deluge-hal-linux`). OLED
-//! and input are wired to the real device; everything else is unimplemented
-//! for now (Phase 1b Task 2 scope — OLED + input only).
-use core::sync::atomic::{AtomicBool, Ordering};
+//! Native Linux backend ops (real `libdeluge`, via `deluge-hal-linux`).
+//!
+//! Implemented: audio, OLED, pads, indicator/gold/sync LEDs, pad brightness,
+//! input, jacks, CV/gate, DIN MIDI, trigger-clock input.
+//!
+//! Still `unimplemented!()`: `sd_*`. Not an oversight — the SDK's `Sd` is a
+//! sector-backed FAT abstraction, while on this backend the kernel has already
+//! mounted the card (the appliance's `/init` does `mount -t vfat` on `/sd`), so
+//! raw sector access would mean fighting the VFS for a device it owns. What the
+//! Linux backend should expose instead is an open design question, not a
+//! missing function.
+//!
+//! Two recurring shapes worth knowing before adding to this file:
+//!
+//! - **Coordinate origins differ.** libdeluge/the kernel are top-origin for the
+//!   pad grid; the SDK is bottom-origin (set by the device backend). Anything
+//!   touching pad coordinates must flip, on *both* the input and output paths —
+//!   see `pads_flush` and the input pump.
+//! - **Errors log rather than propagate.** Most `plat` ops are infallible in the
+//!   SDK's signatures, because the device backend cannot fail at them (a GPIO
+//!   write has no error path). Here they can, so they `log::warn!` and continue
+//!   with the least-surprising fallback rather than panicking an app over, say,
+//!   an absent LED.
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use deluge_bsp::oled::FrameBuffer;
 use deluge_bsp::rgb::PadLeds;
@@ -232,40 +252,150 @@ pub(crate) fn sync_led_is_set_low(state: bool) -> bool {
     !state
 }
 
-pub(crate) fn cv_gate_init() {
-    unimplemented!("cv_gate_init is not on the linux backend yet")
+/// Linux: nothing to configure — the kernel owns the CV DAC and gate GPIOs, and
+/// libdeluge opened them when the handle was created. (On device this runs the
+/// DAC's ~10 ms linearity init over RSPI0.)
+pub(crate) fn cv_gate_init() {}
+
+/// Linux: set a CV channel from a raw DAC code.
+///
+/// `code` is the same 16-bit DAC code the device backend writes, so an app
+/// computing codes itself gets identical output on both backends. libdeluge also
+/// offers a volts-based setter; deliberately not used here, because the SDK's
+/// `cv_set` contract is raw codes and routing it through a float conversion
+/// would quantise differently from device.
+pub(crate) async fn cv_set(ch: u8, code: u16) {
+    if let Err(e) = crate::linux::dev().cv_set_raw(ch as i32, code) {
+        log::warn!("cv_set(ch {ch}) failed: {e}");
+    }
 }
-pub(crate) async fn cv_set(_ch: u8, _code: u16) {
-    unimplemented!("cv_set is not on the linux backend yet")
-}
-pub(crate) fn gate_set(_ch: u8, _on: bool) {
-    unimplemented!("gate_set is not on the linux backend yet")
+pub(crate) fn gate_set(ch: u8, on: bool) {
+    if let Err(e) = crate::linux::dev().gate_set(ch as i32, on) {
+        log::warn!("gate_set(ch {ch}) failed: {e}");
+    }
 }
 
-pub(crate) fn midi_init() {
-    unimplemented!("midi_init is not on the linux backend yet")
+/// Received DIN-MIDI bytes not yet handed to the app.
+///
+/// libdeluge's `midi_read` is a non-blocking bulk read over ALSA rawmidi, while
+/// the SDK's receive API is byte-at-a-time. Reading one byte per call would
+/// issue a syscall per byte at 31250 baud; this drains what the kernel has into
+/// a small buffer and serves bytes from it.
+///
+/// A `std::sync::Mutex` rather than a bare `static mut`: the app's tasks all run
+/// on one thread (SDK handles are `!Send`), but `midi_send`/`midi_recv` are
+/// plain functions with no such marker, so nothing structurally prevents a
+/// second thread from calling them.
+static MIDI_RX: std::sync::Mutex<std::collections::VecDeque<u8>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// How long to sleep between polls in [`midi_recv`]. libdeluge exposes no
+/// pollable MIDI fd, so waiting means polling. One DIN byte is ~320 us at 31250
+/// baud, so 500 us keeps worst-case added latency below a byte time while
+/// costing ~2000 wakeups/s when a task is parked on MIDI input.
+const MIDI_POLL_US: u64 = 500;
+
+/// Linux: nothing to configure — libdeluge opened rawmidi at handle creation.
+pub(crate) fn midi_init() {}
+
+pub(crate) async fn midi_send(data: &[u8]) {
+    match crate::linux::dev().midi_write(data) {
+        Ok(n) if n < data.len() => {
+            // Short write: rawmidi is opened non-blocking, so a full output
+            // buffer truncates rather than waiting. Report it — silently
+            // dropping the tail of a SysEx would be very hard to diagnose.
+            log::warn!("midi_send wrote {n}/{} bytes (output buffer full)", data.len());
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("midi_send failed: {e}"),
+    }
 }
-pub(crate) async fn midi_send(_data: &[u8]) {
-    unimplemented!("midi_send is not on the linux backend yet")
-}
-pub(crate) async fn midi_recv() -> u8 {
-    unimplemented!("midi_recv is not on the linux backend yet")
-}
+
 pub(crate) fn midi_try_recv() -> Option<u8> {
-    unimplemented!("midi_try_recv is not on the linux backend yet")
+    let mut q = MIDI_RX.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(b) = q.pop_front() {
+        return Some(b);
+    }
+    let mut buf = [0u8; 64];
+    match crate::linux::dev().midi_read(&mut buf) {
+        Ok(0) => None,
+        Ok(n) => {
+            q.extend(&buf[..n]);
+            q.pop_front()
+        }
+        Err(e) => {
+            log::warn!("midi_read failed: {e}");
+            None
+        }
+    }
 }
 
-pub(crate) fn clock_in_init() {
-    unimplemented!("clock_in_init is not on the linux backend yet")
+/// Linux: wait for one DIN-MIDI byte.
+///
+/// Polls, because libdeluge exposes no MIDI fd to await on. This is the one
+/// place the Linux backend is meaningfully worse than device, where a byte
+/// arrives by DMA + interrupt and the waker fires immediately: here a byte can
+/// sit up to [`MIDI_POLL_US`] before the task observes it.
+pub(crate) async fn midi_recv() -> u8 {
+    loop {
+        if let Some(b) = midi_try_recv() {
+            return b;
+        }
+        embassy_time::Timer::after(embassy_time::Duration::from_micros(MIDI_POLL_US)).await;
+    }
 }
+
+// ── Trigger-clock input ───────────────────────────────────────────────────────
+//
+// The kernel exposes the clock-in pin as an input device ("Deluge Clock In"),
+// so edges arrive through libdeluge's input stream as `DELUGE_EV_CLOCK` (kind 3)
+// rather than needing an API of their own. `input_start_pump` routes them here
+// instead of dropping them. Mirrors the device backend's `trigger_clock`
+// statics, so the SDK-facing semantics are identical — only the edge source
+// differs (evdev callback vs IRQ handler).
+
+static CLOCK_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Embassy tick of the most recent edge; 0 = none seen yet (matching the device
+/// backend's sentinel, where tick 0 is likewise treated as "no edge").
+static CLOCK_LAST_TICKS: AtomicU64 = AtomicU64::new(0);
+static CLOCK_WAKER: embassy_sync::waitqueue::AtomicWaker =
+    embassy_sync::waitqueue::AtomicWaker::new();
+
+/// Record one clock edge. Called from libdeluge's input thread.
+fn clock_note_edge() {
+    CLOCK_LAST_TICKS.store(Instant::now().as_ticks(), Ordering::Relaxed);
+    CLOCK_COUNT.fetch_add(1, Ordering::Relaxed);
+    CLOCK_WAKER.wake();
+}
+
+/// Linux: nothing to arm — the kernel owns the IRQ and the input pump is already
+/// running (the runtime starts it at boot, before any app code).
+pub(crate) fn clock_in_init() {}
+
 pub(crate) async fn clock_in_wait_edge() -> u64 {
-    unimplemented!("clock_in_wait_edge is not on the linux backend yet")
+    // Sample the count first and compare rather than waiting for a "next" flag:
+    // an edge landing between this load and the first poll must still satisfy
+    // the wait, otherwise a fast clock can be missed entirely.
+    let start = CLOCK_COUNT.load(Ordering::Relaxed);
+    core::future::poll_fn(|cx| {
+        CLOCK_WAKER.register(cx.waker());
+        if CLOCK_COUNT.load(Ordering::Relaxed) != start {
+            core::task::Poll::Ready(())
+        } else {
+            core::task::Poll::Pending
+        }
+    })
+    .await;
+    CLOCK_LAST_TICKS.load(Ordering::Relaxed)
 }
 pub(crate) fn clock_in_count() -> u32 {
-    unimplemented!("clock_in_count is not on the linux backend yet")
+    CLOCK_COUNT.load(Ordering::Relaxed)
 }
 pub(crate) fn clock_in_last_edge() -> Option<Instant> {
-    unimplemented!("clock_in_last_edge is not on the linux backend yet")
+    match CLOCK_LAST_TICKS.load(Ordering::Relaxed) {
+        0 => None,
+        t => Some(Instant::from_ticks(t)),
+    }
 }
 
 // `deluge_jack` discriminants (deluge/jacks.h), ordered to match
@@ -358,8 +488,14 @@ pub(crate) fn input_start_pump(_spawner: Spawner) {
     }
     let cb = |ev: deluge_hal_linux::Event| {
         // Kinds mirror `DELUGE_EV_*` in `deluge/input.h`: 0=pad, 1=button,
-        // 2=encoder, 3=clock (not an `Event` variant — dropped, like
-        // `route_pic_event`'s unmapped variants).
+        // 2=encoder, 3=clock. Clock is not an `Event` variant — it feeds the
+        // trigger-clock statics instead, which is how `clock_in_*` is served on
+        // this backend (the kernel exposes the clock pin as an input device, so
+        // edges arrive here rather than through an IRQ of our own).
+        if ev.kind == 3 {
+            clock_note_edge();
+            return;
+        }
         let mapped = match ev.kind {
             0 => crate::input::Event::Pad {
                 x: ev.x as u8,
