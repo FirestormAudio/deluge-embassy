@@ -12,7 +12,8 @@
 //!   mounted Deluge SD card's `/APPS/` instead.
 //! - `cargo deluge log [--port <path>]` — connect to a running app's USB
 //!   serial-log channel (the `usb-log` feature) and stream it to stdout.
-//! - `cargo deluge linux [--bare] [--out <NAME>] [--features <list>] [--no-strip] [--run]`
+//! - `cargo deluge linux [--bare] [--profile <base|platform>] [--out <NAME>]
+//!   [--features <list>] [--no-strip] [--run]`
 //!   — build the current app for the Deluge's Linux userland and pack it with
 //!   the bundle's deluge-mkimage. Needs DELUGE_BASE set to an unpacked bundle.
 //!   `--run` then dev-uploads + launches the packed appliance image from RAM
@@ -118,6 +119,13 @@ Commands:
                              (armv7 musl, static) and pack it with the bundle's
                              deluge-mkimage. Needs DELUGE_BASE=<unpacked bundle>.
                                --bare           emit the bare /LINUX/APPS/ binary
+                               --profile P      rootfs profile to bake into:
+                                                base (default) or platform
+                                                (getty + USB net + SSH)
+                               --overlay DIR    extra files baked over the
+                                                rootfs (test an init/service
+                                                change without a Buildroot
+                                                rebuild)
                                --out N          image basename (else PACKAGE-NAME)
                                --features LIST  cargo --features to build with
                                --no-strip       keep debug info (larger image)

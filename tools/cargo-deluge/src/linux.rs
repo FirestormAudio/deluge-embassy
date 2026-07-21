@@ -21,12 +21,38 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
     let run = args.iter().any(|a| a == "--run");
     let out = arg_value(args, "--out");
     let features = arg_value(args, "--features");
+    // Which bundle rootfs to bake the app into: `base` (the appliance default,
+    // no shell/network) or `platform` (adds console getty, USB NCM, SSH).
+    // Both boot the app from the same /usr/bin/deluge-app slot; left unset,
+    // deluge-mkimage defaults to base.
+    let image_profile = arg_value(args, "--profile");
+    // A directory of extra files baked over the rootfs, passed straight to
+    // deluge-mkimage. The point is testing a rootfs change (a fixed init or
+    // service script) without a full Buildroot rebuild — the overlay wins over
+    // the profile's own copy of the same path.
+    let overlay = arg_value(args, "--overlay");
 
     // `--run` dev-uploads the bootable appliance *image* from RAM; `--bare`
     // emits a `/LINUX/APPS/` binary instead, which isn't a bootable image and
     // can't be launched this way.
     if run && bare {
         return Err("--run uploads the bootable appliance image; drop --bare".to_string());
+    }
+    // `--bare` emits a bare binary, never a rootfs, so neither a profile nor an
+    // overlay means anything — reject rather than silently ignoring the flag.
+    if bare && image_profile.is_some() {
+        return Err("--bare emits a raw binary, not an image; drop --profile".to_string());
+    }
+    if bare && overlay.is_some() {
+        return Err("--bare emits a raw binary, not an image; drop --overlay".to_string());
+    }
+    // Catch the typo'd/missing directory here rather than letting mkimage bake
+    // a silently empty overlay — an image that looks right and behaves as if
+    // the change were never made is the worst outcome for a bring-up test.
+    if let Some(dir) = &overlay
+        && !std::path::Path::new(dir).is_dir()
+    {
+        return Err(format!("--overlay {dir} is not a directory"));
     }
 
     let base = std::env::var("DELUGE_BASE")
@@ -74,6 +100,12 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
 
     let mut mk = Command::new(&mkimage);
     mk.arg(&packed_bin);
+    if let Some(profile) = &image_profile {
+        mk.arg("--profile").arg(profile);
+    }
+    if let Some(dir) = &overlay {
+        mk.arg("--overlay").arg(dir);
+    }
     let product = if bare {
         let p = target_dir()?.join("bare").join(&name);
         if let Some(dir) = p.parent() {
