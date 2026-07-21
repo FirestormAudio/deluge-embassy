@@ -79,10 +79,18 @@ inline Argon<float> ParabolicSine(Argon<float> phase) {
 /// top of the block and write the advanced, wrapped value back so partials stay
 /// phase-locked across blocks. Tracking only the fundamental is enough: harmonic
 /// `h`'s phase is just `fract(h * phase)`.
+/// The envelope arrives as a PAIR and is interpolated across the block. Holding
+/// one `amp` constant for all `n` samples makes the envelope a staircase that
+/// steps every block: silent in steady state (successive values are equal), but
+/// through an attack or release it is a burst of ~10 amplitude discontinuities,
+/// which is audible as static on note onset and release.
+///
+/// Field order must match the Rust `#[repr(C)] struct AdditiveVoice`.
 struct AdditiveVoice {
-  float freq;   ///< fundamental frequency, Hz
-  float amp;    ///< current (envelope-smoothed) amplitude, 0..1
-  float phase;  ///< fundamental phase in cycles, [0, 1); updated in place
+  float freq;       ///< fundamental frequency, Hz
+  float amp_start;  ///< envelope at the first sample of the block
+  float amp;        ///< envelope at the last sample of the block
+  float phase;      ///< fundamental phase in cycles, [0, 1); updated in place
 };
 
 extern "C" {
@@ -136,11 +144,14 @@ void additive_render(float* out,
   for (std::size_t v = 0; v < n_voices; ++v) {
     AdditiveVoice& voice = voices[v];
     const float inc = voice.freq / sample_rate;  // cycles per sample
-    const float amp = voice.amp;
+    const float amp0 = voice.amp_start;
+    const float amp1 = voice.amp;
 
     // Skip silent voices, but still advance their phase so they re-enter in
-    // phase when the envelope opens again.
-    if (amp > 1.0e-5f && voice.freq > 0.0f) {
+    // phase when the envelope opens again. Test BOTH ends: the first block of
+    // an attack starts at 0, and testing only the start would drop it (and
+    // testing only the end would drop the last block of a release).
+    if ((amp0 > 1.0e-5f || amp1 > 1.0e-5f) && voice.freq > 0.0f) {
       // Drop partials that would alias past Nyquist for this voice's pitch.
       std::uint32_t h_max = n_harmonics;
       if (inc > 0.0f) {
@@ -155,17 +166,29 @@ void additive_render(float* out,
       Argon<float> phase = Argon<float>{voice.phase}.MultiplyAdd(Argon<float>::Iota(0.0f), inc);
       const Argon<float> phase_step{inc * 4.0f};
 
+      // Per-lane envelope, ramped linearly from amp_start to amp across the
+      // block: amp0 + damp * {0,1,2,3}, advanced by damp*4 each group — the
+      // same shape as the phase ramp above.
+      const float damp = (amp1 - amp0) / static_cast<float>(n);
+      Argon<float> amp_v = Argon<float>{amp0}.MultiplyAdd(Argon<float>::Iota(0.0f), damp);
+      const Argon<float> amp_step{damp * 4.0f};
+
       for (std::size_t g = 0; g < groups; ++g) {
         Argon<float> acc{0.0f};
         for (std::uint32_t h = 1; h <= h_max; ++h) {
           Argon<float> partial_phase = Fract(phase.Multiply(static_cast<float>(h)));
-          float gain = amp * harm_amp[h - 1] * norm;
+          // Envelope is NOT folded in here: summing the partials unscaled lets
+          // it be applied once per group below instead of once per harmonic,
+          // which is both cheaper and what makes the per-sample ramp possible
+          // (the gain is now a vector, not a scalar).
+          float gain = harm_amp[h - 1] * norm;
           // acc += sine(partial_phase) * gain  — a single NEON FMA.
           acc = acc.MultiplyAdd(ParabolicSine(partial_phase), gain);
         }
         float* slot = out + g * 4;
-        Argon<float>::Load(slot).Add(acc).StoreTo(slot);
+        Argon<float>::Load(slot).MultiplyAdd(acc, amp_v).StoreTo(slot);
         phase = phase.Add(phase_step);
+        amp_v = amp_v.Add(amp_step);
       }
     }
 

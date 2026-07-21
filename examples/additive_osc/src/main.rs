@@ -88,13 +88,27 @@ const SCOPE_CAP: usize = 1024;
 // === FFI boundary: the C++/Argon additive DSP core (csrc/additive.cpp) ===
 
 /// One synth voice, shared field-for-field with the C++ `struct AdditiveVoice`.
-/// `freq`/`amp` are set by Rust each block; `phase` (the fundamental phase in
-/// cycles, [0, 1)) is owned by Rust but advanced *in place* by the C++ renderer
-/// so partials stay phase-locked across blocks.
+/// `freq`/`amp_start`/`amp` are set by Rust each block; `phase` (the fundamental
+/// phase in cycles, [0, 1)) is owned by Rust but advanced *in place* by the C++
+/// renderer so partials stay phase-locked across blocks.
+///
+/// The envelope is a **pair**: `amp_start` is where the block begins and `amp`
+/// where it ends, and the renderer interpolates between them per sample. A
+/// single `amp` held constant for the whole block makes the envelope a
+/// staircase that jumps every 128 frames — inaudible in steady state (where
+/// successive values are equal) but a burst of ~10 audible steps through every
+/// attack and release, which is what "static on note onset and release" turned
+/// out to be on hardware.
+///
+/// Field order is load-bearing: this is `#[repr(C)]` and must match
+/// `csrc/additive.cpp`'s struct exactly.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct AdditiveVoice {
     freq: f32,
+    /// Amplitude at the START of the block (the previous block's `amp`).
+    amp_start: f32,
+    /// Amplitude at the END of the block; also the envelope's running state.
     amp: f32,
     phase: f32,
 }
@@ -158,6 +172,7 @@ async fn main(dlg: Deluge) {
         // blocks (the C++ renderer advances it); `amp` is the smoothed envelope.
         let mut voices = [AdditiveVoice {
             freq: 0.0,
+            amp_start: 0.0,
             amp: 0.0,
             phase: 0.0,
         }; VOICES];
@@ -180,6 +195,10 @@ async fn main(dlg: Deluge) {
                     } else {
                         0.0
                     };
+                    // Hand the renderer both ends of this block's envelope so it
+                    // can interpolate per sample; stepping `amp` alone would
+                    // leave a discontinuity at every block boundary.
+                    voice.amp_start = voice.amp;
                     voice.amp += (target - voice.amp) * AMP_SMOOTH;
                 }
 
