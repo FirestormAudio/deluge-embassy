@@ -299,6 +299,39 @@ impl Deluge {
         if rc == 0 { Ok(()) } else { Err(Error(rc)) }
     }
 
+    /// Pad-LED refresh interval in ms, 0..=25 — **lower is brighter** (it is the
+    /// PIC's refresh period, so a shorter period is a higher duty cycle). Drives
+    /// PIC command 19, the same command and range as the bare-metal backend's
+    /// `pic::set_refresh_time`.
+    pub fn pads_set_refresh(&mut self, interval_ms: i32) -> Result<(), Error> {
+        let h = unsafe { deluge_sys::deluge_display(self.raw.as_ptr()) };
+        if h.is_null() { return Err(Error(-1)); }
+        let rc = unsafe { deluge_sys::deluge_display_pads_set_refresh(h, interval_ms) };
+        if rc == 0 { Ok(()) } else { Err(Error(rc)) }
+    }
+
+    /// Is `jack` inserted? `jack` is a `deluge_jack` discriminant, ordered to
+    /// match `deluge_bsp::jacks::Jack`.
+    pub fn jack_inserted(&mut self, jack: u32) -> Result<bool, Error> {
+        let h = unsafe { deluge_sys::deluge_jacks(self.raw.as_ptr()) };
+        if h.is_null() { return Err(Error(-1)); }
+        let rc = unsafe { deluge_sys::deluge_jacks_get(h, jack) };
+        if rc >= 0 { Ok(rc != 0) } else { Err(Error(rc)) }
+    }
+
+    /// Request the on-board speaker amplifier on/off.
+    ///
+    /// **Advisory, not authoritative.** The kernel owns the policy — the amp is
+    /// energised only when this request is set AND no output jack is inserted —
+    /// so this cannot force the speaker on over plugged-in headphones. The
+    /// bare-metal backend drives the amp GPIO directly and *is* authoritative.
+    pub fn jacks_set_speaker(&mut self, on: bool) -> Result<(), Error> {
+        let h = unsafe { deluge_sys::deluge_jacks(self.raw.as_ptr()) };
+        if h.is_null() { return Err(Error(-1)); }
+        let rc = unsafe { deluge_sys::deluge_jacks_set_speaker(h, on as i32) };
+        if rc == 0 { Ok(()) } else { Err(Error(rc)) }
+    }
+
     pub fn usb_role_get(&mut self) -> Result<UsbRole, Error> {
         let h = unsafe { deluge_sys::deluge_usb(self.raw.as_ptr()) };
         if h.is_null() { return Err(Error(-1)); }

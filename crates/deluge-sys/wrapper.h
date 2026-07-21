@@ -9,3 +9,4 @@
 #include "deluge/usb.h"
 #include "deluge/usb_midi.h"
 #include "deluge/usb_audio.h"
+#include "deluge/jacks.h"

@@ -159,15 +159,28 @@ pub(crate) async fn pads_flush(leds: &mut PadLeds) {
     }
 }
 
-/// Linux: no-op — there is no PIC refresh interval to set.
+/// Linux: set the PIC's pad-LED refresh interval, matching the device backend.
 ///
-/// On device this tunes the PIC's pad-LED refresh period. The Linux pad fb is
-/// driven by the kernel `deluge-pad` driver, which owns its own refresh, so
-/// there is nothing here to configure. A no-op rather than `unimplemented!`
-/// deliberately: apps call this to tune brightness/refresh, and panicking over
-/// a knob that simply does not exist on this backend would break otherwise
-/// portable apps for no benefit.
-pub(crate) async fn pads_set_brightness_interval(_interval: u8) {}
+/// Goes to the same place as `plat::device`'s `pic::set_refresh_time`: PIC
+/// command 19, interval in ms, **lower is brighter** (it is the refresh period,
+/// so a shorter period is a higher duty cycle). Here it travels via libdeluge to
+/// the `deluge-pic` driver's `refresh_time` sysfs attribute rather than over the
+/// SDK's own PIC transport, but it is the identical command and range.
+///
+/// Deliberately NOT wired to `deluge-pad`'s `fb_deferred_io` delay, which is the
+/// other plausible reading of "refresh": that controls how often Linux flushes a
+/// frame, a different knob with a different audible/visible effect. Wiring it
+/// there would appear to work while silently diverging from the device backend.
+///
+/// The kernel rejects values above 25; the SDK's `interval` is a `u8`, so clamp
+/// rather than pass a value that would be refused — matching the device backend,
+/// which likewise cannot express an out-of-range interval.
+pub(crate) async fn pads_set_brightness_interval(interval: u8) {
+    let clamped = interval.min(25);
+    if let Err(e) = crate::linux::dev().pads_set_refresh(clamped as i32) {
+        log::warn!("pads_set_refresh({clamped}) failed: {e}");
+    }
+}
 
 pub(crate) async fn leds_set(id: u8, on: bool) {
     if let Err(e) = crate::linux::dev().leds_indicator(id as i32, on) {
@@ -255,26 +268,71 @@ pub(crate) fn clock_in_last_edge() -> Option<Instant> {
     unimplemented!("clock_in_last_edge is not on the linux backend yet")
 }
 
-pub(crate) fn jacks_init() {
-    unimplemented!("jacks_init is not on the linux backend yet")
+// `deluge_jack` discriminants (deluge/jacks.h), ordered to match
+// `deluge_bsp::jacks::Jack` so both backends enumerate identically.
+const JACK_HEADPHONE: u32 = 0;
+const JACK_LINE_IN: u32 = 1;
+const JACK_MIC: u32 = 2;
+const JACK_LINE_OUT_L: u32 = 3;
+const JACK_LINE_OUT_R: u32 = 4;
+
+/// Read one jack-detect line, reporting "not inserted" if it cannot be read.
+///
+/// These are plain GPIO inputs with no interrupt, so every call samples the pin
+/// — the same polling model as the device backend, just via the sound card's
+/// read-only jack kcontrols instead of a direct register read.
+///
+/// A read failure returns `false` rather than propagating: the SDK's jack API is
+/// infallible `-> bool` (set by the device backend, where a GPIO read cannot
+/// fail), and "no jack detected" is the safe answer — for the speaker policy it
+/// errs toward leaving the speaker enabled rather than silently muting it.
+fn jack_inserted(jack: u32) -> bool {
+    match crate::linux::dev().jack_inserted(jack) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("jack {jack} read failed: {e}");
+            false
+        }
+    }
 }
+
+/// Linux: nothing to configure — the kernel owns the detect GPIOs and exports
+/// them as card controls; libdeluge opened them when the handle was created.
+pub(crate) fn jacks_init() {}
 pub(crate) fn jacks_headphone() -> bool {
-    unimplemented!("jacks_headphone is not on the linux backend yet")
+    jack_inserted(JACK_HEADPHONE)
 }
 pub(crate) fn jacks_line_in() -> bool {
-    unimplemented!("jacks_line_in is not on the linux backend yet")
+    jack_inserted(JACK_LINE_IN)
 }
 pub(crate) fn jacks_mic() -> bool {
-    unimplemented!("jacks_mic is not on the linux backend yet")
+    jack_inserted(JACK_MIC)
 }
 pub(crate) fn jacks_line_out_left() -> bool {
-    unimplemented!("jacks_line_out_left is not on the linux backend yet")
+    jack_inserted(JACK_LINE_OUT_L)
 }
 pub(crate) fn jacks_line_out_right() -> bool {
-    unimplemented!("jacks_line_out_right is not on the linux backend yet")
+    jack_inserted(JACK_LINE_OUT_R)
 }
-pub(crate) fn jacks_set_speaker(_on: bool) {
-    unimplemented!("jacks_set_speaker is not on the linux backend yet")
+/// Linux: request the on-board speaker amplifier on/off.
+///
+/// **Advisory here, authoritative on device — the one place the two backends
+/// genuinely differ.** On device the SDK drives the amp GPIO directly, so
+/// `set_speaker(true)` energises it unconditionally. On Linux the kernel owns
+/// the policy (`deluge-audio.c`: amp on = this request AND no *output* jack
+/// inserted, re-evaluated by a poll), and this sets only the user-intent half
+/// via the card's "Speaker Playback Switch". So with headphones plugged in,
+/// `set_speaker(true)` leaves the speaker muted.
+///
+/// That divergence is deliberate rather than an oversight: the kernel already
+/// implements this policy for its own ALSA users, and having the SDK bypass it
+/// would let an app drive the speaker while headphones are inserted. Apps that
+/// need the true state should read the jacks and decide, which works on both
+/// backends.
+pub(crate) fn jacks_set_speaker(on: bool) {
+    if let Err(e) = crate::linux::dev().jacks_set_speaker(on) {
+        log::warn!("jacks_set_speaker({on}) failed: {e}");
+    }
 }
 
 pub(crate) async fn sd_init_card() -> Result<(), crate::sd::SdError> {
