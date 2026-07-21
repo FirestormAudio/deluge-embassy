@@ -105,21 +105,92 @@ pub(crate) async fn oled_flush(fb: &FrameBuffer) {
     }
 }
 
-pub(crate) async fn pads_flush(_leds: &mut PadLeds) {
-    unimplemented!("pads_flush is not on the linux backend yet")
-}
-pub(crate) async fn pads_set_brightness_interval(_interval: u8) {
-    unimplemented!("pads_set_brightness_interval is not on the linux backend yet")
+/// Bytes per pad-fb row: 18 px × 3 (24bpp RGB). libdeluge calls this the fb's
+/// `line_length`; `DELUGE_PADS_BYTES` (432) is `ROWS * LINE_BYTES`.
+const PAD_LINE_BYTES: usize = deluge_bsp::rgb::COLS * 3;
+/// Full pad-fb frame size. Must equal libdeluge's `DELUGE_PADS_BYTES` — a
+/// mismatch is rejected by `deluge_display_pads_write`, which requires the
+/// exact frame length, so this would fail at run time rather than silently
+/// blit garbage.
+const PAD_FRAME_BYTES: usize = deluge_bsp::rgb::ROWS * PAD_LINE_BYTES;
+const _: () = assert!(PAD_FRAME_BYTES == 432);
+
+/// Linux: push the pad-LED grid to the `deluge-pad` framebuffer.
+///
+/// Transposes like [`oled_flush`], for the same reason: the SDK's [`PadLeds`]
+/// stores `grid[col][row]` (the PIC's column-pair wire order), while
+/// libdeluge's pad fb is **row-major** 24bpp RGB — 8 rows of 18 pixels,
+/// `line_length` 54.
+///
+/// **Flips the row axis**, because the two backends anchor row 0 to opposite
+/// physical rows and the SDK coordinate must mean the same pad on both:
+///
+/// - Device: `PadLeds::pack_pair` copies `grid[col][0..8]` straight into the
+///   PIC wire order, and PIC rows run bottom-up — so SDK row 0 is the
+///   **bottom** row.
+/// - Linux: the `deluge-pad` fb is documented top-left origin, y-down, and the
+///   driver re-flips it (`led_index = (PAD_H-1) - row`) — so fb row 0 is the
+///   **top** row.
+///
+/// Writing `y` straight through renders every app vertically mirrored versus
+/// device: caught on hardware because `additive_osc`'s highest pitch appeared
+/// bottom-right instead of top-right. Nothing in the type system or the frame
+/// length catches this — a mirrored frame is exactly as valid as a correct one.
+///
+/// Blits the whole frame every call, ignoring `PadLeds`' `last_sent` /
+/// `dirty_all` cache. That cache exists to skip unchanged column-pairs on the
+/// device's slow 31250-baud PIC link; here the whole frame is a 432-byte write
+/// to a memory-mapped fb, so tracking dirtiness would cost more than it saves.
+pub(crate) async fn pads_flush(leds: &mut PadLeds) {
+    use deluge_bsp::rgb::{COLS, ROWS};
+    let mut out = [0u8; PAD_FRAME_BYTES];
+    let grid = leds.grid();
+    for y in 0..ROWS {
+        for x in 0..COLS {
+            let [r, g, b] = grid[x][y];
+            let o = (ROWS - 1 - y) * PAD_LINE_BYTES + x * 3;
+            out[o] = r;
+            out[o + 1] = g;
+            out[o + 2] = b;
+        }
+    }
+    if let Err(e) = crate::linux::dev().pads_write(&out) {
+        log::warn!("pads_write failed: {e}");
+    }
 }
 
-pub(crate) async fn leds_set(_id: u8, _on: bool) {
-    unimplemented!("leds_set is not on the linux backend yet")
+/// Linux: no-op — there is no PIC refresh interval to set.
+///
+/// On device this tunes the PIC's pad-LED refresh period. The Linux pad fb is
+/// driven by the kernel `deluge-pad` driver, which owns its own refresh, so
+/// there is nothing here to configure. A no-op rather than `unimplemented!`
+/// deliberately: apps call this to tune brightness/refresh, and panicking over
+/// a knob that simply does not exist on this backend would break otherwise
+/// portable apps for no benefit.
+pub(crate) async fn pads_set_brightness_interval(_interval: u8) {}
+
+pub(crate) async fn leds_set(id: u8, on: bool) {
+    if let Err(e) = crate::linux::dev().leds_indicator(id as i32, on) {
+        log::warn!("leds_indicator({id}) failed: {e}");
+    }
 }
 pub(crate) async fn leds_clear() {
-    unimplemented!("leds_clear is not on the linux backend yet")
+    for id in 0..crate::leds::Leds::NUM_INDICATOR_LEDS {
+        leds_set(id, false).await;
+    }
 }
-pub(crate) async fn leds_gold_knob(_knob: u8, _brightness: [u8; 4]) {
-    unimplemented!("leds_gold_knob is not on the linux backend yet")
+/// Linux: set a gold-knob column's four indicator LEDs.
+///
+/// `brightness[i]` maps to libdeluge's `deluge_leds_gold(col, i, brightness)`
+/// (col 0..1, i 0..3, brightness 0..255) — the SDK's per-knob array is exactly
+/// that column's four LEDs, so this is a straight fan-out.
+pub(crate) async fn leds_gold_knob(knob: u8, brightness: [u8; 4]) {
+    for (i, b) in brightness.iter().enumerate() {
+        if let Err(e) = crate::linux::dev().leds_gold(knob as i32, i as i32, *b as i32) {
+            log::warn!("leds_gold(knob {knob}, {i}) failed: {e}");
+            break;
+        }
+    }
 }
 
 /// Linux: no PIC co-processor to wait on.
@@ -234,7 +305,20 @@ pub(crate) fn input_start_pump(_spawner: Spawner) {
         let mapped = match ev.kind {
             0 => crate::input::Event::Pad {
                 x: ev.x as u8,
-                y: ev.y as u8,
+                // Flip the row axis, exactly as `pads_flush` does and for the
+                // same reason: libdeluge reports pads **top-origin** (the
+                // kernel's `pad_id_to_coord` documents "PIC rows run bottom-up;
+                // report top-left"), while the SDK's convention — fixed by the
+                // device backend, where `pack_pair` feeds the PIC's bottom-up
+                // rows straight through — is y=0 at the **bottom**.
+                //
+                // Flipping only one of the two paths is worse than flipping
+                // neither: input and output then disagree by a mirror, so a
+                // pressed pad lights up its reflection. That is how this was
+                // found on hardware, after `pads_flush` was fixed alone.
+                y: (deluge_bsp::rgb::ROWS as isize - 1 - ev.y as isize)
+                    .clamp(0, deluge_bsp::rgb::ROWS as isize - 1)
+                    as u8,
                 pressed: ev.value != 0,
             },
             1 => crate::input::Event::Button {
