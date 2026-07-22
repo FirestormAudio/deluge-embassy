@@ -289,14 +289,49 @@ pub(crate) fn gate_set(ch: u8, on: bool) {
 static MIDI_RX: std::sync::Mutex<std::collections::VecDeque<u8>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
 
-/// How long to sleep between polls in [`midi_recv`]. libdeluge exposes no
-/// pollable MIDI fd, so waiting means polling. One DIN byte is ~320 us at 31250
-/// baud, so 500 us keeps worst-case added latency below a byte time while
-/// costing ~2000 wakeups/s when a task is parked on MIDI input.
-const MIDI_POLL_US: u64 = 500;
+/// Woken by libdeluge's MIDI reader thread when bytes land in [`MIDI_RX`].
+static MIDI_WAKER: embassy_sync::waitqueue::AtomicWaker =
+    embassy_sync::waitqueue::AtomicWaker::new();
+static MIDI_PUMP_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Linux: nothing to configure — libdeluge opened rawmidi at handle creation.
-pub(crate) fn midi_init() {}
+/// Linux: start libdeluge's MIDI reader thread.
+///
+/// Push delivery, not polling: the thread blocks in `poll()` on the rawmidi
+/// descriptors and hands bytes over as they arrive, so [`midi_recv`] parks on a
+/// waker instead of sleeping and retrying. Idempotent — the runtime may call
+/// this and `Deluge::midi()` may call it again.
+///
+/// Falling back to `midi_try_recv`'s direct read if the thread cannot start
+/// keeps MIDI *working* (the SDK's poll-free path is an optimisation, not a
+/// correctness requirement), which is why this logs rather than panics.
+pub(crate) fn midi_init() {
+    if MIDI_PUMP_STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let cb = |bytes: &[u8]| {
+        let mut q = MIDI_RX.lock().unwrap_or_else(|e| e.into_inner());
+        // Bound the queue: a device sending MIDI that no task ever reads must
+        // not grow this without limit. Dropping the OLDEST keeps the newest
+        // (most relevant) bytes, and a MIDI stream that far behind is already
+        // unrecoverable — but say so, because silently dropping MIDI is exactly
+        // the kind of fault that gets blamed on the hardware.
+        const MAX_QUEUED: usize = 4096;
+        if q.len() + bytes.len() > MAX_QUEUED {
+            let drop_n = (q.len() + bytes.len()) - MAX_QUEUED;
+            log::warn!("midi rx queue full — dropping {drop_n} oldest byte(s)");
+            for _ in 0..drop_n {
+                q.pop_front();
+            }
+        }
+        q.extend(bytes);
+        drop(q);
+        MIDI_WAKER.wake();
+    };
+    if let Err(e) = crate::linux::dev().midi_start(cb) {
+        log::warn!("midi_start failed: {e} — falling back to polled reads");
+        MIDI_PUMP_STARTED.store(false, Ordering::Relaxed);
+    }
+}
 
 pub(crate) async fn midi_send(data: &[u8]) {
     match crate::linux::dev().midi_write(data) {
@@ -316,6 +351,13 @@ pub(crate) fn midi_try_recv() -> Option<u8> {
     if let Some(b) = q.pop_front() {
         return Some(b);
     }
+    // Only read the device directly when the reader thread is NOT running.
+    // With the pump up, libdeluge's thread is the sole consumer of the rawmidi
+    // handle; a second reader here would race it and the two would split the
+    // stream between them, losing bytes non-deterministically.
+    if MIDI_PUMP_STARTED.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut buf = [0u8; 64];
     match crate::linux::dev().midi_read(&mut buf) {
         Ok(0) => None,
@@ -332,17 +374,22 @@ pub(crate) fn midi_try_recv() -> Option<u8> {
 
 /// Linux: wait for one DIN-MIDI byte.
 ///
-/// Polls, because libdeluge exposes no MIDI fd to await on. This is the one
-/// place the Linux backend is meaningfully worse than device, where a byte
-/// arrives by DMA + interrupt and the waker fires immediately: here a byte can
-/// sit up to [`MIDI_POLL_US`] before the task observes it.
+/// Parks on a waker that libdeluge's reader thread signals, so a byte wakes the
+/// task directly — no polling interval, and no wakeups while the line is idle.
+/// Structurally the same as the device backend, which is woken by the UART's
+/// DMA interrupt; only the edge source differs.
 pub(crate) async fn midi_recv() -> u8 {
-    loop {
-        if let Some(b) = midi_try_recv() {
-            return b;
+    core::future::poll_fn(|cx| {
+        // Register BEFORE the final check. Registering after would let a byte
+        // that lands in between be missed, parking the task until the *next*
+        // byte — a stall that only shows up under sparse MIDI traffic.
+        MIDI_WAKER.register(cx.waker());
+        match midi_try_recv() {
+            Some(b) => core::task::Poll::Ready(b),
+            None => core::task::Poll::Pending,
         }
-        embassy_time::Timer::after(embassy_time::Duration::from_micros(MIDI_POLL_US)).await;
-    }
+    })
+    .await
 }
 
 // ── Trigger-clock input ───────────────────────────────────────────────────────

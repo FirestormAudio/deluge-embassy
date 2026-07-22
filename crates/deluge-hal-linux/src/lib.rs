@@ -231,6 +231,35 @@ impl Deluge {
         if rc < 0 { Err(Error(rc)) } else { Ok(rc as usize) }
     }
 
+    /// Start push delivery of received MIDI bytes.
+    ///
+    /// `cb` runs on libdeluge's MIDI reader thread — hence `Send + 'static` —
+    /// and must be short and non-blocking: queue and signal, don't do work.
+    /// Mirrors [`input_start`](Self::input_start); the same leak note applies,
+    /// the closure lives for the process.
+    pub fn midi_start(&mut self, cb: impl FnMut(&[u8]) + Send + 'static) -> Result<(), Error> {
+        let m = unsafe { deluge_sys::deluge_midi(self.raw.as_ptr()) };
+        if m.is_null() { return Err(Error(-1)); }
+
+        unsafe extern "C" fn trampoline(
+            data: *const u8,
+            n: usize,
+            ctx: *mut core::ffi::c_void,
+        ) {
+            // SAFETY: `ctx` is the Box we leaked below, and libdeluge calls this
+            // only from the reader thread it owns, which is joined before the
+            // handle is freed — so the closure outlives every call.
+            let f = unsafe { &mut *(ctx as *mut Box<dyn FnMut(&[u8]) + Send>) };
+            let bytes = unsafe { core::slice::from_raw_parts(data, n) };
+            f(bytes);
+        }
+
+        let boxed: Box<Box<dyn FnMut(&[u8]) + Send>> = Box::new(Box::new(cb));
+        let ctx = Box::into_raw(boxed) as *mut core::ffi::c_void;
+        let rc = unsafe { deluge_sys::deluge_midi_start(m, Some(trampoline), ctx) };
+        if rc == 0 { Ok(()) } else { Err(Error(rc)) }
+    }
+
     pub fn leds_indicator(&mut self, id: i32, on: bool) -> Result<(), Error> {
         let h = unsafe { deluge_sys::deluge_leds(self.raw.as_ptr()) };
         if h.is_null() { return Err(Error(-1)); }
