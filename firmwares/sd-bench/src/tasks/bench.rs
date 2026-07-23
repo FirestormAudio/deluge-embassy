@@ -86,13 +86,17 @@ pub async fn bench_task() {
     // Safe regardless of card mode: a High-Speed card also runs at 16.7 MHz.
     // SDHI port 1 = Deluge SD slot
     unsafe { sdhi::set_clock_div(1, sdhi::CLK_DIV_4) };
-    let _ = measure_read("P1/4 16.7MHz").await;
+    if let Err(e) = measure_read("P1/4 16.7MHz").await {
+        error!("bench[P1/4 16.7MHz]: FAILED: {:?}", e);
+    }
 
     // ---- Throughput: high-speed clock (P1/2 = 33.3 MHz) ----
     if sd::is_hs() {
         // SDHI port 1 = Deluge SD slot
         unsafe { sdhi::set_clock_div(1, sdhi::CLK_DIV_2) };
-        let _ = measure_read("P1/2 33.3MHz").await;
+        if let Err(e) = measure_read("P1/2 33.3MHz").await {
+            error!("bench[P1/2 33.3MHz]: FAILED: {:?}", e);
+        }
     } else {
         warn!("sd-bench: card not in High-Speed mode; skipping 33.3 MHz run");
     }

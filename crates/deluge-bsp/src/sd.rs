@@ -296,6 +296,9 @@ mod device {
         // ResponseTimeout and the card looks dead.  Clearing it here makes re-init
         // behave exactly like the first boot.
         CARD_RCA.store(0, Ordering::Release);
+        // Reset the High-Speed flag too: if this (re-)init fails, is_hs() must not
+        // report a stale `true` from the previous session.
+        CARD_HS.store(false, Ordering::Release);
 
         // ---- Bring up the SDHI controller + pins (once) ----
         unsafe {
