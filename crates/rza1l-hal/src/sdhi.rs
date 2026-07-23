@@ -916,6 +916,88 @@ pub async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Res
 }
 
 // ---------------------------------------------------------------------------
+// Short (64-byte) status-block transfer — CMD6 switch-function status
+// ---------------------------------------------------------------------------
+
+/// Issue an extended-mode single-block read command whose data phase is the
+/// 64-byte switch-function status block (CMD6), and read that block.
+///
+/// Unlike [`read_blocks_sw`], this issues the command itself: `SD_SIZE` must
+/// be programmed to 64 *before* the command starts the data transfer.  It is
+/// restored to 512 afterwards — on the error path too.
+///
+/// `cmd_val` must be an extended-mode single-block-read encoding: for CMD6
+/// this is `0x1C06` (TRM table 38.7 — MD[2:0]=100 extended/R1, MD3=with-data,
+/// MD4=read, MD5=0 single-block).  `arg` is the CMD6 mode/function argument.
+///
+/// # Safety
+/// Reads/writes SDHI peripheral registers.  Must not be called concurrently
+/// for the same port.
+pub async unsafe fn read_status_block_sw(
+    port: u8,
+    cmd_val: u16,
+    arg: u32,
+    buf: &mut [u8; 64],
+) -> Result<(), SdhiError> {
+    unsafe {
+        let base = port_base(port);
+
+        // SD_SIZE ← 64 before the command (TRM §38.2.11; single-block
+        // transfers accept 1–512 bytes).  Never while SCLKDIVEN = 0.
+        wait_clk_stable(port);
+        reg16(base, OFF_SIZE).write_volatile(64);
+        // Single block: SEC (block-count enable) off.
+        reg16(base, OFF_STOP).write_volatile(0x0000);
+        reg16(base, OFF_SECCNT).write_volatile(1);
+
+        set_arg(port, arg);
+        let result = read_status_block_inner(port, cmd_val, buf).await;
+
+        // Quiesce interrupts and restore the 512-byte sector block size —
+        // error path included, so a failed CMD6 can't poison later sector IO.
+        reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
+        reg16(base, OFF_INFO2_MASK).write_volatile(0xFFFF);
+        clear_info(port);
+        wait_clk_stable(port);
+        reg16(base, OFF_SIZE).write_volatile(512);
+
+        result
+    }
+}
+
+/// Body of [`read_status_block_sw`]: command issue + 64-byte FIFO drain.
+/// Split out so the caller can restore `SD_SIZE` on every exit path.
+async unsafe fn read_status_block_inner(
+    port: u8,
+    cmd_val: u16,
+    buf: &mut [u8; 64],
+) -> Result<(), SdhiError> {
+    unsafe {
+        let base = port_base(port);
+
+        // Issue the command and await the R1 response.
+        send_cmd(port, cmd_val).await?;
+
+        // Enable DATA_TRNS (access end), BRE, and all errors.
+        // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
+        reg16(base, OFF_INFO1_MASK).write_volatile(!INFO1_DATA_TRNS);
+        reg16(base, OFF_INFO2_MASK).write_volatile(!(INFO2_ERR_ALL | INFO2_BRE));
+
+        // Wait for FIFO data (BRE), drain 64 bytes (16 × 32-bit reads).
+        wait_buf_ready(port, INFO2_BRE).await?;
+        let fifo = reg32(base, OFF_BUF0);
+        for w in 0..16usize {
+            let word = fifo.read_volatile();
+            let p = buf.as_mut_ptr().add(w * 4) as *mut u32;
+            p.write_unaligned(word);
+        }
+
+        // Wait for access end.
+        wait_access_end(port).await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DMA data transfer
 // ---------------------------------------------------------------------------
 
