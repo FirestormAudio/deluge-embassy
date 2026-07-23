@@ -19,8 +19,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge-audio-graph"
+version = "0.1.0"
+dependencies = [
+ "deluge-dsp-kernels",
+]
+
+[[package]]
+name = "deluge-dsp-kernels"
+version = "0.1.0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "deluge-fft"
+version = "0.1.0"
+
+[[package]]
 name = "deluge-wren-core"
 version = "0.1.0"
+dependencies = [
+ "deluge-audio-graph",
+ "deluge-dsp-kernels",
+ "libm",
+ "mipgen",
+]
 
 [[package]]
 name = "equivalent"
@@ -80,6 +104,15 @@ name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+
+[[package]]
+name = "mipgen"
+version = "0.1.0"
+dependencies = [
+ "deluge-dsp-kernels",
+ "deluge-fft",
+ "libm",
+]
 
 [[package]]
 name = "proc-macro2"
