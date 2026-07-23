@@ -2,8 +2,8 @@
 //!
 //! Performs the PIC baud-rate handshake and relays only the OLED chip-select
 //! echo (`OledSelected` / `OledDeselected`) that [`deluge_bsp::oled`] waits on
-//! during init and frame writes.  All other PIC events are discarded — the WP
-//! probe needs nothing else from the front panel.
+//! during init and frame writes.  All other PIC events are discarded — the SD
+//! bench needs nothing else from the front panel.
 
 use log::info;
 

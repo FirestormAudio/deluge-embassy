@@ -101,7 +101,7 @@ pub async fn bench_task() {
         warn!("sd-bench: card not in High-Speed mode; skipping 33.3 MHz run");
     }
 
-    // ---- CRC soak at the final (fastest working) clock ----
+    // ---- CRC soak at the final configured clock ----
     let sectors = BENCH_MIB * 2048;
     let mut reference: Option<u64> = None;
     let mut failures = 0u32;

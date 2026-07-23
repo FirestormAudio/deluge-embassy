@@ -16,8 +16,9 @@
 //!
 //! Each port has one [`embassy_sync::waitqueue::AtomicWaker`].  The GIC
 //! handler captures INFO1/INFO2 into atomics, then wakes the waker.
-//! `send_cmd`, `read_blocks_sw`, and `write_blocks_sw` use `poll_fn` to
-//! sleep until the expected interrupt bits arrive.
+//! `send_cmd`, `read_blocks_sw`, and `write_blocks_sw` use the shared wait
+//! helpers (`wait_resp`, `wait_buf_ready`, `wait_access_end`) to sleep until
+//! the expected interrupt bits arrive.
 //!
 //! ## Usage
 //!
@@ -1501,7 +1502,7 @@ impl<const PORT: u8> Sdhi<PORT> {
         unsafe { init(PORT, sd_option) }
     }
 
-    /// Switch the SD clock to high speed (~16.7 MHz, P1/4).
+    /// Switch the SD clock to the default-speed data clock (~16.7 MHz, P1/4).
     ///
     /// # Safety
     /// Writes memory-mapped SDHI registers.
