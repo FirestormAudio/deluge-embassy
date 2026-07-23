@@ -479,7 +479,16 @@ mod device {
                 sdhi::send_cmd(SD_PORT, CMD16).await?;
             }
 
-            // ---- Clock: try CMD6 High-Speed (33.3 MHz), else default (16.7) ----
+            // ---- Clock: default-speed data clock BEFORE CMD6 ----
+            // CMD6 is a *transfer-mode* command: it must not run at the 130 kHz
+            // identification clock.  Some cards never deliver its 64-byte data
+            // block there (observed on hardware: the controller then sits in
+            // the data-phase wait until the SD_OPTION timeout — 2^27 SD_CLK
+            // cycles ≈ 17 minutes at 130 kHz).  16.7 MHz is legal for every
+            // card in Transfer state, and puts that timeout at ~8 s.
+            sdhi::set_clock_fast(SD_PORT);
+
+            // ---- Try CMD6 High-Speed (33.3 MHz), else stay at 16.7 MHz ----
             // The card is in Transfer state; CMD6 needs the data lines, so this
             // must come after ACMD6 (4-bit bus).  The SD spec allows the new
             // timing 8 clocks after the switch-status end bit — DATA_TRNS
@@ -491,7 +500,7 @@ mod device {
                     log::info!("sd: High-Speed mode, SD_CLK = 33.3 MHz (P1/2)");
                 }
                 Err(e) => {
-                    sdhi::set_clock_fast(SD_PORT);
+                    // Already at the default-speed clock; nothing to restore.
                     CARD_HS.store(false, Ordering::Release);
                     log::info!("sd: default speed, SD_CLK = 16.7 MHz (P1/4): {:?}", e);
                 }
