@@ -23,7 +23,9 @@
 //!   CMD7  → select card
 //!   ACMD6 → switch to 4-bit bus
 //!   CMD16 → set block length to 512 (needed for SDSC cards)
-//!   Switch clock from ~130 kHz (P1/512) to ~16.7 MHz (P1/4)
+//!   CMD6  → query + switch to High-Speed mode (skipped on old cards)
+//!   Switch clock from ~130 kHz (P1/512) to 33.3 MHz (P1/2, High-Speed) or
+//!   16.7 MHz (P1/4) if the CMD6 switch is unsupported/refused
 //!
 //! Sector addressing:
 //!   - SDHC/SDXC cards: block address (LBA directly)
@@ -96,7 +98,7 @@ pub(crate) fn parse_switch_status(buf: &[u8; 64]) -> SwitchStatus {
 
 #[cfg(target_os = "none")]
 pub use device::{
-    DelugeBlockDevice, DelugeTimeSource, PartitionShim, init, is_hc, is_inserted, is_ready,
+    DelugeBlockDevice, DelugeTimeSource, PartitionShim, init, is_hc, is_hs, is_inserted, is_ready,
     is_write_protected, read_sectors, total_sectors, write_sectors,
 };
 #[cfg(not(target_os = "none"))]
@@ -143,6 +145,18 @@ mod device {
     const CMD24: u16 = 24; // WRITE_BLOCK — R1 + data
     const CMD25: u16 = 25; // WRITE_MULTIPLE_BLOCK — R1 + data
     const CMD55: u16 = 55; // APP_CMD (prefix for ACMD) — R1
+
+    /// CMD6 (SWITCH_FUNC) — extended mode, single-block read, R1 + 64-byte data.
+    /// SD_CMD encoding 0x1C06 per TRM table 38.7 (MD[2:0]=100 extended/R1,
+    /// MD3 = with-data, MD4 = read, MD5 = 0 single-block).  Normal mode cannot
+    /// be used: the SDHI does not auto-decode CMD6 as a data command.
+    const CMD6_DATA: u16 = 0x1C06;
+
+    /// CMD6 mode-0 (query) argument: group 1 → function 1, groups 2–6 = 0xF
+    /// (no change).  Answers "is High-Speed switchable?" without switching.
+    const CMD6_ARG_QUERY_HS: u32 = 0x00FF_FF01;
+    /// CMD6 mode-1 (switch) argument: switch group 1 to function 1 (High-Speed).
+    const CMD6_ARG_SWITCH_HS: u32 = 0x80FF_FF01;
 
     /// ACMD6 (0x40 | 6): SET_BUS_WIDTH — R1
     const ACMD6: u16 = 0x40 | 6;
@@ -191,6 +205,9 @@ mod device {
     static CARD_RCA: AtomicU16 = AtomicU16::new(0);
     /// `true` if the card is SDHC/SDXC (uses block addressing).
     static CARD_HC: AtomicBool = AtomicBool::new(false);
+    /// `true` if the card accepted the CMD6 switch to High-Speed mode
+    /// (SD_CLK = 33.3 MHz).  `false` = default speed (16.7 MHz).
+    static CARD_HS: AtomicBool = AtomicBool::new(false);
     /// `true` once `init()` has completed successfully.
     static CARD_READY: AtomicBool = AtomicBool::new(false);
 
@@ -222,6 +239,36 @@ mod device {
             sdhi::send_cmd(SD_PORT, CMD55).await?;
             sdhi::set_arg(SD_PORT, arg);
             sdhi::send_cmd(SD_PORT, acmd).await?;
+            Ok(())
+        }
+    }
+
+    /// Attempt the CMD6 switch to High-Speed mode (SD spec ≥ 1.10 cards).
+    ///
+    /// Runs after the card is in Transfer state (post CMD7/ACMD6).  On success
+    /// the *card* is in High-Speed mode and the caller may raise SD_CLK to
+    /// P1/2 (33.3 MHz).  Every error is non-fatal to init: the caller falls
+    /// back to the default-speed clock.  Pre-1.10 cards reject CMD6 as an
+    /// illegal command → surfaces here as a response error → fallback.
+    async unsafe fn try_high_speed() -> Result<(), SdError> {
+        unsafe {
+            let mut status = [0u8; 64];
+
+            // Mode 0 (query): does the card support group-1 function 1?
+            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_QUERY_HS, &mut status)
+                .await?;
+            let st = super::parse_switch_status(&status);
+            if !st.hs_supported {
+                return Err(SdError::UnsupportedCard);
+            }
+
+            // Mode 1 (switch): actually switch to High-Speed.
+            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_SWITCH_HS, &mut status)
+                .await?;
+            let st = super::parse_switch_status(&status);
+            if st.group1_selected != 0x1 {
+                return Err(SdError::Protocol);
+            }
             Ok(())
         }
     }
@@ -429,8 +476,23 @@ mod device {
                 sdhi::send_cmd(SD_PORT, CMD16).await?;
             }
 
-            // ---- Switch to high-speed clock ----
-            sdhi::set_clock_fast(SD_PORT);
+            // ---- Clock: try CMD6 High-Speed (33.3 MHz), else default (16.7) ----
+            // The card is in Transfer state; CMD6 needs the data lines, so this
+            // must come after ACMD6 (4-bit bus).  The SD spec allows the new
+            // timing 8 clocks after the switch-status end bit — DATA_TRNS
+            // (awaited inside read_status_block_sw) is past that point.
+            match try_high_speed().await {
+                Ok(()) => {
+                    sdhi::set_clock_div(SD_PORT, sdhi::CLK_DIV_2);
+                    CARD_HS.store(true, Ordering::Release);
+                    log::info!("sd: High-Speed mode, SD_CLK = 33.3 MHz (P1/2)");
+                }
+                Err(e) => {
+                    sdhi::set_clock_fast(SD_PORT);
+                    CARD_HS.store(false, Ordering::Release);
+                    log::info!("sd: default speed, SD_CLK = 16.7 MHz (P1/4): {:?}", e);
+                }
+            }
         }
 
         Ok(())
@@ -599,6 +661,11 @@ mod device {
     /// Only valid after [`init()`] has returned `Ok(())`.
     pub fn is_hc() -> bool {
         CARD_HC.load(Ordering::Relaxed)
+    }
+
+    /// Return `true` if the card is running in High-Speed mode (33.3 MHz SD_CLK).
+    pub fn is_hs() -> bool {
+        CARD_HS.load(Ordering::Acquire)
     }
 
     /// Returns `true` if a card is physically present (CD pin).
