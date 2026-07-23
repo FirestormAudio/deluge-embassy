@@ -67,6 +67,33 @@ impl From<rza1l_hal::sdhi::SdhiError> for SdError {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CMD6 (SWITCH_FUNC) status block (shared: parsed on device, tested on host)
+// ---------------------------------------------------------------------------
+
+/// Decoded fields of the CMD6 (SWITCH_FUNC) 512-bit status block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SwitchStatus {
+    /// Function group 1 (access mode) supports function 1 (High-Speed).
+    pub hs_supported: bool,
+    /// Function group 1 selected-function nibble
+    /// (0x1 = High-Speed selected, 0xF = switch refused / function error).
+    pub group1_selected: u8,
+}
+
+/// Parse the CMD6 switch-function status block.
+///
+/// The block arrives MSB-first: `buf[0]` holds status bits 511:504.
+///   - Group-1 support mask = status bits 415:400 → bytes 12–13;
+///     function 1 (High-Speed) = bit 401 = byte 13, bit 1.
+///   - Group-1 selected function = status bits 379:376 → byte 16 low nibble.
+pub(crate) fn parse_switch_status(buf: &[u8; 64]) -> SwitchStatus {
+    SwitchStatus {
+        hs_supported: buf[13] & 0x02 != 0,
+        group1_selected: buf[16] & 0x0F,
+    }
+}
+
 #[cfg(target_os = "none")]
 pub use device::{
     DelugeBlockDevice, DelugeTimeSource, PartitionShim, init, is_hc, is_inserted, is_ready,
@@ -1179,5 +1206,43 @@ mod tests {
         let err = embassy_futures::block_on(read_sectors(0, 1, &mut too_small))
             .expect_err("buffer is one byte short of a sector");
         assert_eq!(err, SdError::Protocol);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests (host-side)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, not(target_os = "none")))]
+mod switch_status_tests {
+    use super::*;
+
+    #[test]
+    fn hs_supported_and_selected() {
+        let mut buf = [0u8; 64];
+        buf[13] = 0x03; // group 1 supports functions 0 and 1
+        buf[16] = 0x01; // group 1 switched to function 1 (High-Speed)
+        let st = parse_switch_status(&buf);
+        assert!(st.hs_supported);
+        assert_eq!(st.group1_selected, 0x1);
+    }
+
+    #[test]
+    fn hs_unsupported() {
+        let mut buf = [0u8; 64];
+        buf[13] = 0x01; // only function 0 (default speed)
+        let st = parse_switch_status(&buf);
+        assert!(!st.hs_supported);
+        assert_eq!(st.group1_selected, 0x0);
+    }
+
+    #[test]
+    fn switch_refused_is_0xf_and_nibbles_do_not_leak() {
+        let mut buf = [0u8; 64];
+        buf[13] = 0x03;
+        buf[16] = 0x0F; // 0xF = function error / switch refused
+        assert_eq!(parse_switch_status(&buf).group1_selected, 0xF);
+        buf[16] = 0xF1; // upper nibble belongs to group 2 — must not leak
+        assert_eq!(parse_switch_status(&buf).group1_selected, 0x1);
     }
 }
