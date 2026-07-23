@@ -210,7 +210,11 @@ const fn chcfg_sdhi_rx(dma_ch: u8) -> u32 {
 //   0x00 = P1/2   ≈ 33.3 MHz
 // ---------------------------------------------------------------------------
 const CLK_DIV_512: u16 = 0x80; // P1/512 ≈ 130 kHz  (identification clock)
-const CLK_DIV_4: u16 = 0x01; // P1/4   ≈ 16.7 MHz (fast mode)
+/// P1/4 ≈ 16.7 MHz — default-speed data clock (any card).
+pub const CLK_DIV_4: u16 = 0x01;
+/// P1/2 ≈ 33.3 MHz — requires the card in High-Speed mode (CMD6) first.
+/// The sole legal non-one-hot divider encoding (TRM §38.2.10: 0x00 = P1/2).
+pub const CLK_DIV_2: u16 = 0x00;
 const CLK_ENABLE: u16 = 1 << 8; // Bit 8 (SCLKEN) = clock output enable
 
 // ---------------------------------------------------------------------------
@@ -383,13 +387,17 @@ pub unsafe fn init(port: u8, sd_option: u16) {
     }
 }
 
-/// Switch the SD clock to high-speed mode (~16.7 MHz, P1/4).
+/// Set the SD clock divider (`CLK_DIV_*` constant).
 ///
-/// Call after successful card initialization.
+/// Waits for `SCLKDIVEN` before and after the change per TRM §38.2.10
+/// ("Do not write to SD_CLK_CTRL while the SCLKDIVEN bit in SD_INFO2 is 0").
+///
+/// `CLK_DIV_2` (33.3 MHz) exceeds the 25 MHz default-speed limit — only set
+/// it after the card has been switched to High-Speed mode via CMD6.
 ///
 /// # Safety
 /// Writes to memory-mapped SDHI register.
-pub unsafe fn set_clock_fast(port: u8) {
+pub unsafe fn set_clock_div(port: u8, div: u16) {
     unsafe {
         let base = port_base(port);
         // Wait for clock divider change to settle (SCLKDIVEN = 1 means ready).
@@ -401,9 +409,9 @@ pub unsafe fn set_clock_fast(port: u8) {
             }
         }
         if !ok {
-            log::warn!("sdhi{}: set_clock_fast: SCLKDIVEN pre-change timeout", port);
+            log::warn!("sdhi{}: set_clock_div: SCLKDIVEN pre-change timeout", port);
         }
-        reg16(base, OFF_CLK_CTRL).write_volatile(CLK_DIV_4 | CLK_ENABLE);
+        reg16(base, OFF_CLK_CTRL).write_volatile(div | CLK_ENABLE);
         ok = false;
         for _ in 0..10_000u32 {
             if reg16(base, OFF_INFO2).read_volatile() & INFO2_SCLKDIVEN != 0 {
@@ -412,12 +420,19 @@ pub unsafe fn set_clock_fast(port: u8) {
             }
         }
         if !ok {
-            log::warn!(
-                "sdhi{}: set_clock_fast: SCLKDIVEN post-change timeout",
-                port
-            );
+            log::warn!("sdhi{}: set_clock_div: SCLKDIVEN post-change timeout", port);
         }
     }
+}
+
+/// Switch the SD clock to the default-speed data clock (~16.7 MHz, P1/4).
+///
+/// Call after successful card initialization.
+///
+/// # Safety
+/// Writes to memory-mapped SDHI register.
+pub unsafe fn set_clock_fast(port: u8) {
+    unsafe { set_clock_div(port, CLK_DIV_4) }
 }
 
 /// Register GIC interrupt handlers for `port`.
@@ -1519,6 +1534,14 @@ impl<const PORT: u8> Sdhi<PORT> {
         unsafe { set_clock_fast(PORT) }
     }
 
+    /// Set the SD clock divider (`CLK_DIV_*` constant).
+    ///
+    /// # Safety
+    /// Writes memory-mapped SDHI registers.
+    pub unsafe fn set_clock_div(&self, div: u16) {
+        unsafe { set_clock_div(PORT, div) }
+    }
+
     /// Register GIC IRQs for this port's interrupt handler.
     ///
     /// # Safety
@@ -1673,10 +1696,13 @@ mod tests {
     }
 
     #[test]
-    fn clock_dividers_are_one_hot_per_trm() {
-        // SD_CLK_CTRL[7:0] is a one-hot divider select (TRM ch.38).
+    fn clock_dividers_match_trm() {
+        // SD_CLK_CTRL[7:0] divider select (TRM ch.38 §38.2.10).
         assert_eq!(CLK_DIV_512, 0x80); // ~130 kHz identification clock
-        assert_eq!(CLK_DIV_4, 0x01); //  ~16.7 MHz fast mode
+        assert_eq!(CLK_DIV_4, 0x01); //  ~16.7 MHz default-speed clock
+        assert_eq!(CLK_DIV_2, 0x00); //  ~33.3 MHz high-speed clock
+        // Non-zero encodings are one-hot; 0x00 (= P1/2) is the sole legal
+        // all-zero encoding.
         assert_eq!(CLK_DIV_512.count_ones(), 1);
         assert_eq!(CLK_DIV_4.count_ones(), 1);
     }
