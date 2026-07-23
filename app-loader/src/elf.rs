@@ -165,7 +165,7 @@ where
     let phnum = e_phnum;
 
     // 2. Seek to and read all program headers into a stack buffer.
-    //    MAX_PHDRS × 32 bytes = 256 bytes stack.
+    //    MAX_PHDRS × 32 bytes = 512 bytes stack.
     vm.file_seek_from_start(file, e_phoff)?;
     let mut phdr_buf = [0u8; MAX_PHDRS * 32];
     read_exact(vm, file, &mut phdr_buf[..phnum * e_phentsize])?;

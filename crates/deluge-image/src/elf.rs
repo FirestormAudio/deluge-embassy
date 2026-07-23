@@ -50,7 +50,13 @@ pub const SDRAM_STAGE_BASE: u32 = SDRAM_TOP - (SRAM_HI - SRAM_LOAD_ORIGIN);
 pub const SDRAM_HI: u32 = SDRAM_STAGE_BASE;
 
 /// Maximum program headers the loader processes.
-pub const MAX_PHDRS: usize = 8;
+///
+/// Bounds the front-matter buffers (`52 + MAX_PHDRS × 32` bytes) and the
+/// routed-segment tables, so it caps `e_phnum` — including non-LOAD entries
+/// (`GNU_STACK`, `ARM_EXIDX`, …), which the parsers skip but must still buffer.
+/// A real RTT-enabled firmware ELF carries 9 phdrs (7 `PT_LOAD` + 2 non-LOAD);
+/// 16 leaves headroom while keeping the buffers small (564 bytes).
+pub const MAX_PHDRS: usize = 16;
 
 /// Where a `PT_LOAD` segment is allowed to land.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -909,6 +915,38 @@ mod tests {
             ],
         );
         assert_eq!(StreamRouter::new(&front), Err(PlanError::Unordered));
+    }
+
+    #[test]
+    fn router_accepts_rtt_firmware_phdr_table() {
+        // The phdr table of a real RTT-enabled firmware ELF (sd-bench, rustc
+        // 1.8x + lld): 7 PT_LOAD — including filesz-0 BSS segments and one
+        // addressed via the 0x4000_0000 uncached mirror — plus trailing
+        // GNU_STACK and ARM_EXIDX. 9 phdrs total; the loader must not reject
+        // a table merely because non-LOAD entries push it past 8.
+        const PT_GNU_STACK: u32 = 0x6474_E551;
+        const PT_ARM_EXIDX: u32 = 0x7000_0001;
+        let front = elf_front(
+            0x2005_0020,
+            &[
+                (PT_LOAD, 0x010000, 0x202B_0000, 0, 0x10000),
+                (PT_LOAD, 0x010000, 0x602B_0000, 0, 0x4030),
+                (PT_LOAD, 0x010000, 0x2002_0000, 0, 0x30008),
+                (PT_LOAD, 0x010020, 0x2005_0020, 0xFFD8, 0xFFD8),
+                (PT_LOAD, 0x01FFF8, 0x2005_FFF8, 0x6218, 0x6218),
+                (PT_LOAD, 0x026210, 0x2006_6210, 0x18, 0x18),
+                (PT_LOAD, 0x026228, 0x2006_6228, 0x10, 0x0029_9DD8),
+                (PT_GNU_STACK, 0, 0, 0, 0),
+                (PT_ARM_EXIDX, 0x026228, 0x2006_6228, 0x10, 0x10),
+            ],
+        );
+        let r = StreamRouter::new(&front).unwrap();
+        assert_eq!(r.entry(), 0x2005_0020);
+        // All 7 PT_LOADs routed (none in retention RAM); non-LOAD entries skipped.
+        assert_eq!(r.segments().len(), 7);
+        // The mirror-addressed segment resolves into the SRAM staging window.
+        assert!(r.segments()[1].sram);
+        assert_eq!(r.segments()[1].final_dst, 0x602B_0000);
     }
 
 }
