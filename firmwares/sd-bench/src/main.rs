@@ -56,7 +56,11 @@ pub extern "C" fn main() -> ! {
             section_cb: ".rtt_buffer"
         };
         rtt_target::set_print_channel(channels.up.0);
-        rtt_target::init_logger_with_level(log::LevelFilter::Debug);
+        // Info, not Debug: the HAL logs one DEBUG line per DMA chunk, which
+        // floods the 16 KiB RTT ring (~90 KB per 64 MiB measurement) and, with
+        // no host draining, blocks the firmware mid-bench. At Info the whole
+        // bench log is ~3 KB and always fits.
+        rtt_target::init_logger_with_level(log::LevelFilter::Info);
     }
     info!("Deluge sd-bench firmware starting");
 
