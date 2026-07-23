@@ -16,8 +16,9 @@
 //!
 //! Each port has one [`embassy_sync::waitqueue::AtomicWaker`].  The GIC
 //! handler captures INFO1/INFO2 into atomics, then wakes the waker.
-//! `send_cmd`, `read_blocks_sw`, and `write_blocks_sw` use `poll_fn` to
-//! sleep until the expected interrupt bits arrive.
+//! `send_cmd`, `read_blocks_sw`, and `write_blocks_sw` use the shared wait
+//! helpers (`wait_resp`, `wait_buf_ready`, `wait_access_end`) to sleep until
+//! the expected interrupt bits arrive.
 //!
 //! ## Usage
 //!
@@ -210,7 +211,11 @@ const fn chcfg_sdhi_rx(dma_ch: u8) -> u32 {
 //   0x00 = P1/2   ≈ 33.3 MHz
 // ---------------------------------------------------------------------------
 const CLK_DIV_512: u16 = 0x80; // P1/512 ≈ 130 kHz  (identification clock)
-const CLK_DIV_4: u16 = 0x01; // P1/4   ≈ 16.7 MHz (fast mode)
+/// P1/4 ≈ 16.7 MHz — default-speed data clock (any card).
+pub const CLK_DIV_4: u16 = 0x01;
+/// P1/2 ≈ 33.3 MHz — requires the card in High-Speed mode (CMD6) first.
+/// The sole legal non-one-hot divider encoding (TRM §38.2.10: 0x00 = P1/2).
+pub const CLK_DIV_2: u16 = 0x00;
 const CLK_ENABLE: u16 = 1 << 8; // Bit 8 (SCLKEN) = clock output enable
 
 // ---------------------------------------------------------------------------
@@ -383,13 +388,17 @@ pub unsafe fn init(port: u8, sd_option: u16) {
     }
 }
 
-/// Switch the SD clock to high-speed mode (~16.7 MHz, P1/4).
+/// Set the SD clock divider (`CLK_DIV_*` constant).
 ///
-/// Call after successful card initialization.
+/// Waits for `SCLKDIVEN` before and after the change per TRM §38.2.10
+/// ("Do not write to SD_CLK_CTRL while the SCLKDIVEN bit in SD_INFO2 is 0").
+///
+/// `CLK_DIV_2` (33.3 MHz) exceeds the 25 MHz default-speed limit — only set
+/// it after the card has been switched to High-Speed mode via CMD6.
 ///
 /// # Safety
 /// Writes to memory-mapped SDHI register.
-pub unsafe fn set_clock_fast(port: u8) {
+pub unsafe fn set_clock_div(port: u8, div: u16) {
     unsafe {
         let base = port_base(port);
         // Wait for clock divider change to settle (SCLKDIVEN = 1 means ready).
@@ -401,9 +410,9 @@ pub unsafe fn set_clock_fast(port: u8) {
             }
         }
         if !ok {
-            log::warn!("sdhi{}: set_clock_fast: SCLKDIVEN pre-change timeout", port);
+            log::warn!("sdhi{}: set_clock_div: SCLKDIVEN pre-change timeout", port);
         }
-        reg16(base, OFF_CLK_CTRL).write_volatile(CLK_DIV_4 | CLK_ENABLE);
+        reg16(base, OFF_CLK_CTRL).write_volatile(div | CLK_ENABLE);
         ok = false;
         for _ in 0..10_000u32 {
             if reg16(base, OFF_INFO2).read_volatile() & INFO2_SCLKDIVEN != 0 {
@@ -412,12 +421,19 @@ pub unsafe fn set_clock_fast(port: u8) {
             }
         }
         if !ok {
-            log::warn!(
-                "sdhi{}: set_clock_fast: SCLKDIVEN post-change timeout",
-                port
-            );
+            log::warn!("sdhi{}: set_clock_div: SCLKDIVEN post-change timeout", port);
         }
     }
+}
+
+/// Switch the SD clock to the default-speed data clock (~16.7 MHz, P1/4).
+///
+/// Call after successful card initialization.
+///
+/// # Safety
+/// Writes to memory-mapped SDHI register.
+pub unsafe fn set_clock_fast(port: u8) {
+    unsafe { set_clock_div(port, CLK_DIV_4) }
 }
 
 /// Register GIC interrupt handlers for `port`.
@@ -527,6 +543,95 @@ fn clear_info(port: u8) {
     let st = &STATE[port as usize];
     st.info1.store(0, Ordering::Release);
     st.info2.store(0, Ordering::Release);
+}
+
+// ---------------------------------------------------------------------------
+// Shared async wait primitives
+// ---------------------------------------------------------------------------
+//
+// Each helper is the interrupt-driven wait used by the command/data paths:
+// check accumulated state, register the waker, then re-check (closing the
+// race where the interrupt fires between the load and the register).
+
+/// Await response end (`INFO1_RESP`), surfacing INFO2 errors.
+async fn wait_resp(port: u8) -> Result<(), SdhiError> {
+    poll_fn(|cx| {
+        let st = &STATE[port as usize];
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_RESP != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        st.waker.register(cx.waker());
+        // Re-check in case the interrupt fired between the load and register.
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_RESP != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Await a FIFO-ready bit (`INFO2_BRE` or `INFO2_BWE`) and consume it.
+async fn wait_buf_ready(port: u8, ready_bit: u16) -> Result<(), SdhiError> {
+    poll_fn(|cx| {
+        let st = &STATE[port as usize];
+        let i2 = st.info2.load(Ordering::Acquire);
+        if i2 & ready_bit != 0 {
+            st.info2.fetch_and(!ready_bit, Ordering::AcqRel);
+            return Poll::Ready(Ok::<(), SdhiError>(()));
+        }
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        st.waker.register(cx.waker());
+        // Re-check in case the interrupt fired between the load and register.
+        let i2 = st.info2.load(Ordering::Acquire);
+        if i2 & ready_bit != 0 {
+            st.info2.fetch_and(!ready_bit, Ordering::AcqRel);
+            return Poll::Ready(Ok(()));
+        }
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Await access end (`INFO1_DATA_TRNS`), surfacing INFO2 errors.
+async fn wait_access_end(port: u8) -> Result<(), SdhiError> {
+    poll_fn(|cx| {
+        let st = &STATE[port as usize];
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_DATA_TRNS != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        st.waker.register(cx.waker());
+        // Re-check in case the interrupt fired between the load and register.
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_DATA_TRNS != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -661,33 +766,7 @@ pub async unsafe fn send_cmd(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
         reg16(base, OFF_CMD).write_volatile(cmd_val);
 
         // Async wait
-        let result = poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-
-            // Check errors first
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            // Check success
-            if i1 & INFO1_RESP != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            // Still waiting — register waker
-            st.waker.register(cx.waker());
-            // Re-check in case interrupt fired between the load and register
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_RESP != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await;
+        let result = wait_resp(port).await;
 
         // Disable all interrupts (0 = enabled, 1 = masked → 0xFFFF masks all)
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
@@ -766,30 +845,7 @@ pub async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result
         let mut dst = buf;
         for _block in 0..count {
             // Wait for Buffer Read Enable
-            poll_fn(|cx| {
-                let st = &STATE[port as usize];
-                let i2 = st.info2.load(Ordering::Acquire);
-                if i2 & INFO2_BRE != 0 {
-                    // Consume the BRE bit only
-                    st.info2.fetch_and(!INFO2_BRE, Ordering::AcqRel);
-                    return Poll::Ready(Ok::<(), SdhiError>(()));
-                }
-                if let Err(e) = check_info2_errors(i2) {
-                    return Poll::Ready(Err(e));
-                }
-                st.waker.register(cx.waker());
-                // Double-check
-                let i2 = st.info2.load(Ordering::Acquire);
-                if i2 & INFO2_BRE != 0 {
-                    st.info2.fetch_and(!INFO2_BRE, Ordering::AcqRel);
-                    return Poll::Ready(Ok(()));
-                }
-                if let Err(e) = check_info2_errors(i2) {
-                    return Poll::Ready(Err(e));
-                }
-                Poll::Pending
-            })
-            .await?;
+            wait_buf_ready(port, INFO2_BRE).await?;
 
             // Drain 512 bytes from 32-bit FIFO (128 reads)
             let fifo = reg32(base, OFF_BUF0);
@@ -802,28 +858,7 @@ pub async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result
         }
 
         // Wait for access end (DATA_TRNS)
-        poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            st.waker.register(cx.waker());
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await?;
+        wait_access_end(port).await?;
 
         // Disable all interrupts (0xFFFF = all masked)
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
@@ -854,28 +889,7 @@ pub async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Res
         let mut src = buf;
         for _block in 0..count {
             // Wait for Buffer Write Enable
-            poll_fn(|cx| {
-                let st = &STATE[port as usize];
-                let i2 = st.info2.load(Ordering::Acquire);
-                if i2 & INFO2_BWE != 0 {
-                    st.info2.fetch_and(!INFO2_BWE, Ordering::AcqRel);
-                    return Poll::Ready(Ok::<(), SdhiError>(()));
-                }
-                if let Err(e) = check_info2_errors(i2) {
-                    return Poll::Ready(Err(e));
-                }
-                st.waker.register(cx.waker());
-                let i2 = st.info2.load(Ordering::Acquire);
-                if i2 & INFO2_BWE != 0 {
-                    st.info2.fetch_and(!INFO2_BWE, Ordering::AcqRel);
-                    return Poll::Ready(Ok(()));
-                }
-                if let Err(e) = check_info2_errors(i2) {
-                    return Poll::Ready(Err(e));
-                }
-                Poll::Pending
-            })
-            .await?;
+            wait_buf_ready(port, INFO2_BWE).await?;
 
             // Fill 512 bytes into 32-bit FIFO (128 writes)
             let fifo = reg32(base, OFF_BUF0);
@@ -887,28 +901,7 @@ pub async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Res
         }
 
         // Wait for access end
-        poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            st.waker.register(cx.waker());
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await?;
+        wait_access_end(port).await?;
 
         // No separate card-busy wait is needed here: per the RZ/A1 TRM (§38.2.6,
         // SD_INFO1 Access End), the Access End flag we awaited above is only set
@@ -920,6 +913,88 @@ pub async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Res
         clear_info(port);
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Short (64-byte) status-block transfer — CMD6 switch-function status
+// ---------------------------------------------------------------------------
+
+/// Issue an extended-mode single-block read command whose data phase is the
+/// 64-byte switch-function status block (CMD6), and read that block.
+///
+/// Unlike [`read_blocks_sw`], this issues the command itself: `SD_SIZE` must
+/// be programmed to 64 *before* the command starts the data transfer.  It is
+/// restored to 512 afterwards — on the error path too.
+///
+/// `cmd_val` must be an extended-mode single-block-read encoding: for CMD6
+/// this is `0x1C06` (TRM table 38.7 — MD[2:0]=100 extended/R1, MD3=with-data,
+/// MD4=read, MD5=0 single-block).  `arg` is the CMD6 mode/function argument.
+///
+/// # Safety
+/// Reads/writes SDHI peripheral registers.  Must not be called concurrently
+/// for the same port.
+pub async unsafe fn read_status_block_sw(
+    port: u8,
+    cmd_val: u16,
+    arg: u32,
+    buf: &mut [u8; 64],
+) -> Result<(), SdhiError> {
+    unsafe {
+        let base = port_base(port);
+
+        // SD_SIZE ← 64 before the command (TRM §38.2.11; single-block
+        // transfers accept 1–512 bytes).  Never while SCLKDIVEN = 0.
+        wait_clk_stable(port);
+        reg16(base, OFF_SIZE).write_volatile(64);
+        // Single block: SEC (block-count enable) off.
+        reg16(base, OFF_STOP).write_volatile(0x0000);
+        reg16(base, OFF_SECCNT).write_volatile(1);
+
+        set_arg(port, arg);
+        let result = read_status_block_inner(port, cmd_val, buf).await;
+
+        // Quiesce interrupts and restore the 512-byte sector block size —
+        // error path included, so a failed CMD6 can't poison later sector IO.
+        reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
+        reg16(base, OFF_INFO2_MASK).write_volatile(0xFFFF);
+        clear_info(port);
+        wait_clk_stable(port);
+        reg16(base, OFF_SIZE).write_volatile(512);
+
+        result
+    }
+}
+
+/// Body of [`read_status_block_sw`]: command issue + 64-byte FIFO drain.
+/// Split out so the caller can restore `SD_SIZE` on every exit path.
+async unsafe fn read_status_block_inner(
+    port: u8,
+    cmd_val: u16,
+    buf: &mut [u8; 64],
+) -> Result<(), SdhiError> {
+    unsafe {
+        let base = port_base(port);
+
+        // Issue the command and await the R1 response.
+        send_cmd(port, cmd_val).await?;
+
+        // Enable DATA_TRNS (access end), BRE, and all errors.
+        // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
+        reg16(base, OFF_INFO1_MASK).write_volatile(!INFO1_DATA_TRNS);
+        reg16(base, OFF_INFO2_MASK).write_volatile(!(INFO2_ERR_ALL | INFO2_BRE));
+
+        // Wait for FIFO data (BRE), drain 64 bytes (16 × 32-bit reads).
+        wait_buf_ready(port, INFO2_BRE).await?;
+        let fifo = reg32(base, OFF_BUF0);
+        for w in 0..16usize {
+            let word = fifo.read_volatile();
+            let p = buf.as_mut_ptr().add(w * 4) as *mut u32;
+            p.write_unaligned(word);
+        }
+
+        // Wait for access end.
+        wait_access_end(port).await
     }
 }
 
@@ -968,28 +1043,7 @@ pub async unsafe fn read_blocks_dma(
         reg16(base, OFF_INFO2_MASK).write_volatile(!INFO2_ERR_ALL);
         reg16(base, OFF_CMD).write_volatile(cmd_val);
 
-        let cmd_result = poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_RESP != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            st.waker.register(cx.waker());
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_RESP != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await;
+        let cmd_result = wait_resp(port).await;
 
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
         reg16(base, OFF_INFO2_MASK).write_volatile(0xFFFF);
@@ -1009,28 +1063,7 @@ pub async unsafe fn read_blocks_dma(
         crate::dmac::start_transfer_rx(dma_ch, buf as u32, count * 512);
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
-        let data_result = poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            st.waker.register(cx.waker());
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await;
+        let data_result = wait_access_end(port).await;
 
         // 5b. For RX: wait for the DMAC to drain its final burst into memory.
         // DATA_TRNS fires when the SD-bus transfer ends; the DMAC may still
@@ -1090,28 +1123,7 @@ pub async unsafe fn write_blocks_dma(
         reg16(base, OFF_INFO2_MASK).write_volatile(!INFO2_ERR_ALL);
         reg16(base, OFF_CMD).write_volatile(cmd_val);
 
-        let cmd_result = poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_RESP != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            st.waker.register(cx.waker());
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_RESP != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await;
+        let cmd_result = wait_resp(port).await;
 
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
         reg16(base, OFF_INFO2_MASK).write_volatile(0xFFFF);
@@ -1131,28 +1143,7 @@ pub async unsafe fn write_blocks_dma(
         crate::dmac::start_transfer(dma_ch, buf as u32, count * 512);
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
-        let data_result = poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            st.waker.register(cx.waker());
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await;
+        let data_result = wait_access_end(port).await;
 
         // No separate card-busy wait is needed here: per the RZ/A1 TRM (§38.2.6,
         // SD_INFO1 Access End), the Access End flag we awaited above (DATA_TRNS) is
@@ -1511,12 +1502,20 @@ impl<const PORT: u8> Sdhi<PORT> {
         unsafe { init(PORT, sd_option) }
     }
 
-    /// Switch the SD clock to high speed (~16.7 MHz, P1/4).
+    /// Switch the SD clock to the default-speed data clock (~16.7 MHz, P1/4).
     ///
     /// # Safety
     /// Writes memory-mapped SDHI registers.
     pub unsafe fn set_clock_fast(&self) {
         unsafe { set_clock_fast(PORT) }
+    }
+
+    /// Set the SD clock divider (`CLK_DIV_*` constant).
+    ///
+    /// # Safety
+    /// Writes memory-mapped SDHI registers.
+    pub unsafe fn set_clock_div(&self, div: u16) {
+        unsafe { set_clock_div(PORT, div) }
     }
 
     /// Register GIC IRQs for this port's interrupt handler.
@@ -1673,10 +1672,13 @@ mod tests {
     }
 
     #[test]
-    fn clock_dividers_are_one_hot_per_trm() {
-        // SD_CLK_CTRL[7:0] is a one-hot divider select (TRM ch.38).
+    fn clock_dividers_match_trm() {
+        // SD_CLK_CTRL[7:0] divider select (TRM ch.38 §38.2.10).
         assert_eq!(CLK_DIV_512, 0x80); // ~130 kHz identification clock
-        assert_eq!(CLK_DIV_4, 0x01); //  ~16.7 MHz fast mode
+        assert_eq!(CLK_DIV_4, 0x01); //  ~16.7 MHz default-speed clock
+        assert_eq!(CLK_DIV_2, 0x00); //  ~33.3 MHz high-speed clock
+        // Non-zero encodings are one-hot; 0x00 (= P1/2) is the sole legal
+        // all-zero encoding.
         assert_eq!(CLK_DIV_512.count_ones(), 1);
         assert_eq!(CLK_DIV_4.count_ones(), 1);
     }
