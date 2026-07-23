@@ -157,16 +157,151 @@ git commit -m "feat(rza1l-hal): parameterized SD clock divider with CLK_DIV_2 (3
 
 ---
 
-### Task 2: HAL 64-byte status-block read (`read_status_block_sw`)
+### Task 2A: HAL shared async wait primitives (behavior-preserving refactor)
 
 **Files:**
-- Modify: `crates/rza1l-hal/src/sdhi.rs` (insert after `write_blocks_sw`, ~line 924)
+- Modify: `crates/rza1l-hal/src/sdhi.rs` (new helpers after `clear_info` ~line 530; call-site conversions in `send_cmd`, `read_blocks_sw`, `write_blocks_sw`, `read_blocks_dma`, `write_blocks_dma`)
 
 **Interfaces:**
-- Consumes: existing `send_cmd`, `set_arg`, `wait_clk_stable`, `clear_info`, poll_fn/STATE machinery, `INFO2_ERR_ALL`/`INFO2_BRE`/`INFO1_DATA_TRNS` masks.
+- Consumes: existing `STATE`, `check_info2_errors`, `INFO1_RESP`/`INFO1_DATA_TRNS`/`INFO2_BRE`/`INFO2_BWE` masks.
+- Produces: private `async fn wait_resp(port: u8) -> Result<(), SdhiError>`, `async fn wait_buf_ready(port: u8, ready_bit: u16) -> Result<(), SdhiError>`, `async fn wait_access_end(port: u8) -> Result<(), SdhiError>`. Task 2B uses all three.
+
+The file currently contains five near-identical inline `poll_fn` wait blocks. This task factors them into three named helpers and converts every async call site, so Task 2B doesn't add a sixth copy. **This is a strict behavior-preserving refactor**: the helper bodies are the existing poll_fn blocks verbatim (including the register-then-re-check pattern — it closes a wake race; do not "simplify" it); no register access, mask write, or error path may change. The synchronous `*_poll` functions (spin loops, no waker) are a different mechanism and stay untouched.
+
+- [ ] **Step 1: Add the three helpers**
+
+Insert after `clear_info` (~line 530), before the "Command/argument helpers" section:
+
+```rust
+// ---------------------------------------------------------------------------
+// Shared async wait primitives
+// ---------------------------------------------------------------------------
+//
+// Each helper is the interrupt-driven wait used by the command/data paths:
+// check accumulated state, register the waker, then re-check (closing the
+// race where the interrupt fires between the load and the register).
+
+/// Await response end (`INFO1_RESP`), surfacing INFO2 errors.
+async fn wait_resp(port: u8) -> Result<(), SdhiError> {
+    poll_fn(|cx| {
+        let st = &STATE[port as usize];
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_RESP != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        st.waker.register(cx.waker());
+        // Re-check in case the interrupt fired between the load and register.
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_RESP != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Await a FIFO-ready bit (`INFO2_BRE` or `INFO2_BWE`) and consume it.
+async fn wait_buf_ready(port: u8, ready_bit: u16) -> Result<(), SdhiError> {
+    poll_fn(|cx| {
+        let st = &STATE[port as usize];
+        let i2 = st.info2.load(Ordering::Acquire);
+        if i2 & ready_bit != 0 {
+            st.info2.fetch_and(!ready_bit, Ordering::AcqRel);
+            return Poll::Ready(Ok::<(), SdhiError>(()));
+        }
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        st.waker.register(cx.waker());
+        // Re-check in case the interrupt fired between the load and register.
+        let i2 = st.info2.load(Ordering::Acquire);
+        if i2 & ready_bit != 0 {
+            st.info2.fetch_and(!ready_bit, Ordering::AcqRel);
+            return Poll::Ready(Ok(()));
+        }
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Await access end (`INFO1_DATA_TRNS`), surfacing INFO2 errors.
+async fn wait_access_end(port: u8) -> Result<(), SdhiError> {
+    poll_fn(|cx| {
+        let st = &STATE[port as usize];
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_DATA_TRNS != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        st.waker.register(cx.waker());
+        // Re-check in case the interrupt fired between the load and register.
+        let i1 = st.info1.load(Ordering::Acquire);
+        let i2 = st.info2.load(Ordering::Acquire);
+        if let Err(e) = check_info2_errors(i2) {
+            return Poll::Ready(Err(e));
+        }
+        if i1 & INFO1_DATA_TRNS != 0 {
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
+    })
+    .await
+}
+```
+
+- [ ] **Step 2: Convert the five async call sites**
+
+Each conversion replaces an inline `poll_fn(…).await` block with the matching helper call. The surrounding mask writes, FIFO loops, and cleanup code stay byte-identical.
+
+1. `send_cmd` (~line 664): `let result = poll_fn(…).await;` → `let result = wait_resp(port).await;`
+2. `read_blocks_sw`: the per-block BRE wait → `wait_buf_ready(port, INFO2_BRE).await?;` and the final access-end wait → `wait_access_end(port).await?;`
+3. `write_blocks_sw`: the per-block BWE wait → `wait_buf_ready(port, INFO2_BWE).await?;` and the final access-end wait → `wait_access_end(port).await?;`
+4. `read_blocks_dma`: `let cmd_result = poll_fn(…).await;` → `let cmd_result = wait_resp(port).await;` and `let data_result = poll_fn(…).await;` → `let data_result = wait_access_end(port).await;`
+5. `write_blocks_dma`: same two conversions as `read_blocks_dma`.
+
+After this step the only remaining `poll_fn` calls in the file should be inside the three helpers — verify with `grep -n "poll_fn" crates/rza1l-hal/src/sdhi.rs`.
+
+- [ ] **Step 3: Run host tests and target build**
+
+Run: `cargo test -p rza1l-hal --target x86_64-unknown-linux-gnu`
+Expected: PASS.
+
+Run: `cargo build-fw -p rza1l-hal` and `cargo build-fw -p msc-firmware`
+Expected: clean builds (msc-firmware exercises the SD paths end-to-end at compile time).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/rza1l-hal/src/sdhi.rs
+git commit -m "refactor(rza1l-hal): factor shared SDHI async wait primitives"
+```
+
+---
+
+### Task 2B: HAL 64-byte status-block read (`read_status_block_sw`)
+
+**Files:**
+- Modify: `crates/rza1l-hal/src/sdhi.rs` (insert after `write_blocks_sw`, before the "DMA data transfer" section header)
+
+**Interfaces:**
+- Consumes: existing `send_cmd`, `set_arg`, `wait_clk_stable`, `clear_info`; Task 2A's `wait_buf_ready`, `wait_access_end`; `INFO2_ERR_ALL`/`INFO2_BRE`/`INFO1_DATA_TRNS` masks.
 - Produces: `pub async unsafe fn read_status_block_sw(port: u8, cmd_val: u16, arg: u32, buf: &mut [u8; 64]) -> Result<(), SdhiError>`. Task 4 calls it with `cmd_val = 0x1C06`.
 
-There is no host-testable behavior here (pure MMIO); the verification is compile + the existing register-offset tests + on-device Task 6. Copy the BRE/DATA_TRNS wait code *exactly* from `read_blocks_sw` — it is the proven-on-hardware pattern.
+There is no host-testable behavior here (pure MMIO); the verification is compile + the existing register-offset tests + on-device Task 6.
 
 - [ ] **Step 1: Implement the function pair**
 
@@ -241,32 +376,8 @@ async unsafe fn read_status_block_inner(
         reg16(base, OFF_INFO1_MASK).write_volatile(!INFO1_DATA_TRNS);
         reg16(base, OFF_INFO2_MASK).write_volatile(!(INFO2_ERR_ALL | INFO2_BRE));
 
-        // Wait for Buffer Read Enable (identical pattern to read_blocks_sw).
-        poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i2 = st.info2.load(Ordering::Acquire);
-            if i2 & INFO2_BRE != 0 {
-                st.info2.fetch_and(!INFO2_BRE, Ordering::AcqRel);
-                return Poll::Ready(Ok::<(), SdhiError>(()));
-            }
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            st.waker.register(cx.waker());
-            // Re-check in case the interrupt fired between load and register.
-            let i2 = st.info2.load(Ordering::Acquire);
-            if i2 & INFO2_BRE != 0 {
-                st.info2.fetch_and(!INFO2_BRE, Ordering::AcqRel);
-                return Poll::Ready(Ok(()));
-            }
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            Poll::Pending
-        })
-        .await?;
-
-        // Drain 64 bytes from the 32-bit FIFO (16 reads).
+        // Wait for FIFO data (BRE), drain 64 bytes (16 × 32-bit reads).
+        wait_buf_ready(port, INFO2_BRE).await?;
         let fifo = reg32(base, OFF_BUF0);
         for w in 0..16usize {
             let word = fifo.read_volatile();
@@ -274,29 +385,8 @@ async unsafe fn read_status_block_inner(
             p.write_unaligned(word);
         }
 
-        // Wait for access end (identical pattern to read_blocks_sw).
-        poll_fn(|cx| {
-            let st = &STATE[port as usize];
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            st.waker.register(cx.waker());
-            let i1 = st.info1.load(Ordering::Acquire);
-            let i2 = st.info2.load(Ordering::Acquire);
-            if let Err(e) = check_info2_errors(i2) {
-                return Poll::Ready(Err(e));
-            }
-            if i1 & INFO1_DATA_TRNS != 0 {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
-        })
-        .await
+        // Wait for access end.
+        wait_access_end(port).await
     }
 }
 ```
