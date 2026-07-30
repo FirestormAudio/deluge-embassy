@@ -1787,8 +1787,22 @@ unsafe fn process_bus_reset(port: u8) {
                     wr(ctr, 0);
 
                     // Signal transfer failure to any waiting task.
+                    //
+                    // Test `buf`, not `remaining`: an IN transfer that has
+                    // staged all of its data sits at `remaining == 0` while it
+                    // waits for the transmit-complete interrupt, so `remaining`
+                    // alone does not mean "idle".  `buf` is the documented
+                    // in-flight marker — dangling when idle, and only set
+                    // dangling again on completion or abort.
+                    //
+                    // The reset above clears BEMPENB wholesale, so a transfer
+                    // missed here loses the interrupt it is blocked on and can
+                    // never complete: `write_packet` hangs forever.  That
+                    // stranded the CDC greeting, which runs before the session
+                    // loops, so bulk OUT was never drained either and every
+                    // host write after the first timed out.
                     let state = &mut *PIPE_XFER[n].borrow(cs).get();
-                    if state.remaining != 0 {
+                    if state.buf != core::ptr::NonNull::dangling() {
                         state.remaining = 0;
                         state.buf = core::ptr::NonNull::dangling();
                         abort_mask |= 1u16 << n;

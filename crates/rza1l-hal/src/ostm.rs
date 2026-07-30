@@ -9,8 +9,8 @@
 //!
 //! ## Usage
 //! ```rust,no_run
-//! # use rza1::ostm;
-//! # use rza1::ostm::OSTM_HZ;
+//! # use rza1l_hal::ostm;
+//! # use rza1l_hal::ostm::OSTM_HZ;
 //! unsafe {
 //!     ostm::enable_clock();          // ungate OSTM0+OSTM1 in CPG
 //!     ostm::start_free_running(0);   // start OSTM0 in free-running mode

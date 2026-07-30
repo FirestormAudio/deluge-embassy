@@ -13,7 +13,7 @@ pub(crate) async fn sd_task() {
         Ok(()) => {
             info!("SD: card ready (HC={})", sd::is_hc());
             let mut buf = [0u8; 512];
-            match sd::read_sector(0, &mut buf).await {
+            match sd::read_sectors(0, 1, &mut buf).await {
                 Ok(()) => {
                     info!(
                         "SD: sector 0 first 16 bytes: {:02x} {:02x} {:02x} {:02x} \
@@ -37,7 +37,7 @@ pub(crate) async fn sd_task() {
                         buf[15],
                     );
                 }
-                Err(e) => error!("SD: read_sector(0) failed: {:?}", e),
+                Err(e) => error!("SD: read_sectors(0, 1) failed: {:?}", e),
             }
         }
         Err(e) => error!("SD: init failed: {:?}", e),

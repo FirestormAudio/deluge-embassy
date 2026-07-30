@@ -3,6 +3,24 @@ name = "mipgen"
 version = "0.1.0"
 edition = "2021"
 
+# The static-wavetable generator (src/bin/gen_tables.rs). A std-only host tool:
+# it prints the generated table source to stdout, so it can only build for the
+# host triple, never for the workspace's default armv7a-none-eabihf target.
+# Gated behind the `gen-tables` feature via `required-features` so a plain
+# `cargo build` (which uses the ARM target) skips it instead of failing on the
+# missing `std`. The lib itself is `#![no_std]` and IS a device dependency
+# (deluge-dsp-kernels, deluge-audio-graph, deluge-wren-core), so the crate
+# stays a workspace member — only this bin is host-only.
+[[bin]]
+name = "gen_tables"
+required-features = ["gen-tables"]
+
+[features]
+# Marker feature that turns on the host-only generator bin. No code depends on
+# it; it exists so `required-features` can keep the bin out of the default
+# (ARM) build. See the run command at the top of src/bin/gen_tables.rs.
+gen-tables = []
+
 [dependencies]
 deluge-fft = { path = "../deluge-fft" }
 deluge-dsp-kernels = { path = "../deluge-dsp-kernels" }

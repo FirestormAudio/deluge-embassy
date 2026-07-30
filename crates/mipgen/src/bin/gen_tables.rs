@@ -1,7 +1,12 @@
 // Emits crates/deluge-dsp-kernels/src/wavetables_generated.rs to stdout.
-// Run: cargo run -p mipgen --bin gen_tables --target x86_64-unknown-linux-gnu > crates/deluge-dsp-kernels/src/wavetables_generated.rs
-//   (the --target is required: the workspace defaults to the ARM no_std target,
-//    which can't build this std-using generator binary.)
+// Run: cargo gen-tables > crates/deluge-dsp-kernels/src/wavetables_generated.rs
+//   (or in full: cargo run -p mipgen --bin gen_tables --features gen-tables
+//    --target x86_64-unknown-linux-gnu)
+//   The --target is required: the workspace defaults to the ARM no_std target,
+//   which can't build this std-using generator binary.  --features gen-tables
+//   is required too: the bin is gated behind that feature via
+//   `required-features` (see crates/mipgen/Cargo.toml) so a plain `cargo build`
+//   on the ARM target skips it rather than failing on the missing `std`.
 //
 // Six named single-cycle bases, each expanded into a flat, compact
 // (per-level-length) band-limited mip pyramid via

@@ -17,7 +17,7 @@
 //! ## Quick start — device mode
 //!
 //! ```rust,no_run
-//! use rza1l_hal::usb::{init_device_mode, UsbMode};
+//! use rza1l_hal::usb::init_device_mode;
 //!
 //! let (port, driver) = unsafe { init_device_mode(0) };
 //! // pass `driver` to `embassy_usb::UsbDevice::new(driver, config, ...)`
@@ -25,7 +25,11 @@
 //!
 //! ## Quick start — host mode
 //!
-//! ```rust,no_run
+//! `ignore`d rather than compiled: `embassy-usb-host` is a
+//! `cfg(target_os = "none")` dependency, so this example cannot build during a
+//! host-target `cargo test`.
+//!
+//! ```ignore
 //! use rza1l_hal::usb::init_host_mode;
 //! use embassy_usb_host::{bus, BusState, handler::BusRoute};
 //!
@@ -41,16 +45,23 @@
 //! You must call `dcd_int_handler` (device mode) or `hcd_int_handler` (host
 //! mode) from your GIC interrupt dispatcher:
 //!
+//! Both handlers take the port number.  A firmware that only ever runs one
+//! mode can call that handler directly; one that switches at runtime dispatches
+//! on a flag, as below.
+//!
 //! ```rust,no_run
+//! use core::sync::atomic::{AtomicBool, Ordering};
 //! use rza1l_hal::usb::{dcd_int_handler, hcd_int_handler};
 //!
-//! #[no_mangle]
-//! extern "C" fn irq73_handler() {  // USB0 — device mode
-//!     unsafe { dcd_int_handler(0); }
-//! }
-//! #[no_mangle]
-//! extern "C" fn irq73_handler() {  // USB0 — host mode
-//!     unsafe { hcd_int_handler(0); }
+//! static HOST_MODE: AtomicBool = AtomicBool::new(false);
+//!
+//! #[unsafe(no_mangle)]
+//! extern "C" fn irq73_handler() {  // USB0
+//!     if HOST_MODE.load(Ordering::Relaxed) {
+//!         unsafe { hcd_int_handler(0) }
+//!     } else {
+//!         unsafe { dcd_int_handler(0) }
+//!     }
 //! }
 //! ```
 

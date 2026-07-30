@@ -22,5 +22,16 @@ log = { workspace = true }
 rtt-target = { workspace = true, optional = true }
 
 [features]
-default = ["rtt"]
+# `rtt` must NOT be a default feature, even though this firmware is normally
+# flashed with RTT on.  Cargo unifies features across every workspace member
+# built for the same target, so a default-on `rtt` here turns on
+# `rza1l-hal/rtt` in the ONE shared rza1l-hal rlib that all firmwares link.
+# That compiles the hal's RTT panic/abort assembly (crates/rza1l-hal/src/
+# startup.rs), which references `_SEGGER_RTT` — a symbol only a firmware's own
+# `rtt_init!` defines.  Every other member defaults `rtt` off and so has no
+# `rtt_init!`, making a workspace-wide `cargo build` fail to link them all with
+# `undefined symbol: _SEGGER_RTT`.  Keeping this opt-in (matching every other
+# member) is what makes a plain `cargo build` work.
+# `cargo build-uac` passes `--features rtt` so the usual dev build is unchanged.
+default = []
 rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

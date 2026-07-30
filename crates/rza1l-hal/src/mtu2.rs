@@ -17,7 +17,7 @@
 //!
 //! ## Usage (free-running counters)
 //! ```rust,no_run
-//! # use rza1::mtu2;
+//! # use rza1l_hal::mtu2;
 //! unsafe {
 //!     mtu2::enable_write();                   // unlock MTU2 registers
 //!     mtu2::start_free_running(1, 1);         // ch1 @ 33.3 MHz (superfast)
@@ -32,8 +32,9 @@
 //!
 //! ## Usage (one-shot)
 //! ```rust,no_run
-//! # use rza1::mtu2;
-//! unsafe fn gate_handler() { mtu2::clear_flag(2); /* ... */ }
+//! # use rza1l_hal::mtu2;
+//! // `gic::Handler` is a safe `fn()`, so the unsafe work goes inside.
+//! fn gate_handler() { unsafe { mtu2::clear_flag(2) } /* ... */ }
 //! unsafe {
 //!     mtu2::enable_write();
 //!     mtu2::setup_one_shot(2, 64, gate_handler, 5); // configure ch2
