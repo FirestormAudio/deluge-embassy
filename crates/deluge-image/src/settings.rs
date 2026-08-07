@@ -40,7 +40,7 @@ use crate::crc::crc32;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AutoBoot {
     /// Launch the default entry immediately — the menu is never drawn.  Only the
-    /// recovery gesture (SELECT held at power-on) can reach the menu on a unit
+    /// recovery gesture (LOAD held at power-on) can reach the menu on a unit
     /// set this way.
     Instant,
     /// Draw the menu and auto-boot the default entry after `1..=MAX_AUTO_BOOT_SECS`
@@ -143,7 +143,7 @@ pub enum BootMode {
 /// * `boot_total` — the number of real boot targets (the flash image, if any,
 ///   plus the SD `/APPS` entries).  The synthetic `DATA TRANSFER` / `SETTINGS`
 ///   entries do not count.
-/// * `recovery` — SELECT was pressed or held between power-on and this decision.
+/// * `recovery` — LOAD was pressed or held between power-on and this decision.
 /// * `auto_boot_allowed` — this is the *first* pass of the boot loop.  Later
 ///   passes (returning from `DATA TRANSFER`, from the settings screen, or from a
 ///   flash write) are user-driven: the loader must not launch behind their back,

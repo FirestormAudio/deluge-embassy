@@ -33,7 +33,7 @@ The menu also exposes two synthetic entries:
 - **`SETTINGS`** — opens the settings screen: the `AUTO-BOOT` delay
   (`INSTANT` / `1S`–`20S` / `NEVER`) and the persistent dev-mode flag. Written to
   flash on exit.
-- **Recovery** — hold **SELECT** while powering on to force the boot menu with no
+- **Recovery** — hold **LOAD** while powering on to force the boot menu with no
   countdown, whatever `AUTO-BOOT` is set to.
 
 ### Dev mode (USB upload-and-run)

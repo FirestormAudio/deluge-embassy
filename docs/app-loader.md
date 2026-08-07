@@ -132,7 +132,7 @@ entry.
 | Store an SD app to flash | **Long-press** SELECT (hold ≥ 0.7 s) on an SD entry |
 | Cancel the auto-boot countdown | Turn the encoder (any movement) |
 | Exit a USB mode back to the menu | Press **BACK** |
-| **Force the boot menu (recovery)** | **Hold SELECT while powering on** |
+| **Force the boot menu (recovery)** | **Hold LOAD while powering on** |
 
 The countdown auto-boots the default entry after the delay set in
 [`SETTINGS`](#settings--auto-boot-and-dev-mode) — **5 seconds** out of the box.
@@ -143,7 +143,7 @@ will not boot out from under you).
 
 ### Recovery — always reach the menu
 
-**Hold the SELECT encoder button down while powering the unit on.** The loader
+**Hold the LOAD button down while powering the unit on.** The loader
 shows `RECOVERY`, then the boot menu with no countdown, waiting indefinitely —
 whatever the auto-boot setting says.
 
@@ -185,7 +185,7 @@ SETTINGS
 
   | Value | Behaviour |
   |-------|-----------|
-  | `INSTANT` | The menu is **never drawn** — the default entry launches at once. Hold SELECT at power-on to get the menu back. |
+  | `INSTANT` | The menu is **never drawn** — the default entry launches at once. Hold LOAD at power-on to get the menu back. |
   | `1S` … `20S` | The menu is shown and counts down, then boots the default entry. |
   | `NEVER` | The menu is shown and waits indefinitely. Dev mode's menu behaviour, without dev mode's USB listener. |
 

@@ -38,18 +38,19 @@ use core::sync::atomic::AtomicBool;
 /// exit back to the boot menu (see [`usbmsc`]).
 pub(crate) static BACK_PRESSED: AtomicBool = AtomicBool::new(false);
 
-/// Latched by `pic_rx_task` on the first SELECT press — including a SELECT held
+/// Latched by `pic_rx_task` on the first LOAD press — including a LOAD held
 /// down at power-on, which the PIC reports in response to the
 /// `CMD_RESEND_BUTTON_STATES` that `pic::init` sends.
 ///
 /// `boot_task` samples this once, at the boot decision, as the **recovery
 /// gesture**: it forces the boot menu no matter what the persisted auto-boot
 /// setting says.  A latch rather than a level check, so the gesture is forgiving
-/// — any SELECT press between reset and the decision counts, and the user does
-/// not have to guess when the loader looks.  Without it, a unit set to
-/// `AUTO-BOOT: INSTANT` with broken firmware in its flash slot would be
-/// unrecoverable.
-pub(crate) static SELECT_SEEN: AtomicBool = AtomicBool::new(false);
+/// — any LOAD press between reset and the decision counts, and the user does
+/// not have to guess when the loader looks.  LOAD rather than SELECT, so the
+/// gesture cannot be confused with the SELECT presses that drive the menu
+/// itself.  Without it, a unit set to `AUTO-BOOT: INSTANT` with broken firmware
+/// in its flash slot would be unrecoverable.
+pub(crate) static LOAD_SEEN: AtomicBool = AtomicBool::new(false);
 use core::panic::PanicInfo;
 
 use deluge_alloc as allocator;
@@ -153,14 +154,16 @@ async fn pic_rx_task() {
             Some(Event::OledSelected) => pic::notify_oled_selected(),
             Some(Event::OledDeselected) => pic::notify_oled_deselected(),
             // Track the SELECT button held-state so the selector can tell a
-            // short tap (confirm) from a long-press (write-to-flash), and latch
-            // the first press as the recovery gesture (see SELECT_SEEN).
+            // short tap (confirm) from a long-press (write-to-flash).
             Some(Event::ButtonPress { id }) if id == controls::encoder_button::SELECT => {
-                ui::SELECT_DOWN.store(true, Ordering::Release);
-                crate::SELECT_SEEN.store(true, Ordering::Release);
+                ui::SELECT_DOWN.store(true, Ordering::Release)
             }
             Some(Event::ButtonRelease { id }) if id == controls::encoder_button::SELECT => {
                 ui::SELECT_DOWN.store(false, Ordering::Release)
+            }
+            // Latch the first LOAD press as the recovery gesture (see LOAD_SEEN).
+            Some(Event::ButtonPress { id }) if id == controls::button::LOAD => {
+                crate::LOAD_SEEN.store(true, Ordering::Release)
             }
             // BACK exits an active USB mode back to the boot menu.
             Some(Event::ButtonPress { id }) if id == controls::button::BACK => {
@@ -319,14 +322,14 @@ async fn boot_task(spawner: Spawner) {
     oled::init().await;
     info!("OLED: ready");
 
-    // Recovery gesture: SELECT pressed or held at any point between reset and
-    // here (see SELECT_SEEN).  Sampled once — later menu passes are user-driven
+    // Recovery gesture: LOAD pressed or held at any point between reset and
+    // here (see LOAD_SEEN).  Sampled once — later menu passes are user-driven
     // and must not re-trigger it.  The splash matters most on an INSTANT unit,
     // which otherwise gives no sign that the *hold* — rather than a failed boot —
     // is why the menu appeared.  Nothing is persisted: the user's setting stands.
-    let recovery = SELECT_SEEN.load(core::sync::atomic::Ordering::Acquire);
+    let recovery = LOAD_SEEN.load(core::sync::atomic::Ordering::Acquire);
     if recovery {
-        info!("Recovery: SELECT held at boot — forcing the boot menu");
+        info!("Recovery: LOAD held at boot — forcing the boot menu");
         ui::show_message(b"RECOVERY", b"BOOT MENU").await;
         embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
     }

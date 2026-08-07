@@ -215,8 +215,8 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
     // long-press threshold we fire immediately.
     let mut press_at: Option<Instant> = None;
 
-    // A SELECT press held from before the selector opened — the recovery gesture,
-    // or the press that confirmed a previous screen — is not a new press.  Wait
+    // A SELECT press held from before the selector opened — e.g. the press that
+    // confirmed a previous screen — is not a new press.  Wait
     // for the release before acting on the button at all; otherwise the hold
     // crosses the long-press threshold below and fires a write-to-flash prompt.
     let mut armed = !SELECT_DOWN.load(Ordering::Acquire);
