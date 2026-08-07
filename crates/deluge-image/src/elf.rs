@@ -322,11 +322,17 @@ impl StreamRouter {
             let file_end = p_offset.checked_add(p_filesz).ok_or(PlanError::WrongFormat)?;
 
             // Streaming cannot seek backward: segments must arrive in
-            // non-decreasing, non-overlapping file order.
-            if p_offset < prev_file_end {
-                return Err(PlanError::Unordered);
+            // non-decreasing, non-overlapping file order. Only file-backed
+            // segments carry that constraint — a `p_filesz` 0 (pure BSS)
+            // segment reads no upload bytes, and linkers give it a `p_offset`
+            // from its alignment rather than from any file content, which can
+            // point anywhere (GNU ld emits backward ones for trailing .bss).
+            if p_filesz > 0 {
+                if p_offset < prev_file_end {
+                    return Err(PlanError::Unordered);
+                }
+                prev_file_end = file_end;
             }
-            prev_file_end = file_end;
 
             match place_segment(p_paddr, p_memsz).map_err(|_| PlanError::BadLoadAddress)? {
                 SegmentPlacement::Skip => continue,
@@ -373,6 +379,12 @@ impl StreamRouter {
     /// `None`. The caller advances `off` by `min(run, chunk_remaining)`.
     pub fn route_at(&self, off: u32) -> RouteStep {
         for seg in &self.segs[..self.n_segs] {
+            // Pure-BSS segments hold no upload bytes and are not required to be
+            // in file order (see `new`), so they must not claim a byte or open
+            // a discard run — they are here only to have their tails zeroed.
+            if seg.file_start == seg.file_end {
+                continue;
+            }
             if off < seg.file_start {
                 return RouteStep {
                     dst: None,
@@ -949,4 +961,47 @@ mod tests {
         assert_eq!(r.segments()[1].final_dst, 0x602B_0000);
     }
 
+    #[test]
+    fn router_accepts_trailing_bss_segments_with_backward_offsets() {
+        // The phdr table of a real DelugeFirmware `dbt run debug` ELF (GNU ld).
+        // Its three filesz-0 BSS segments (.frunk_bss, .sdram_bss,
+        // .program_stack) carry a `p_offset` from their alignment, not from any
+        // file content — two of them point *backwards* past the file-backed
+        // segments. A segment with no file bytes imposes no streaming order, so
+        // the router must not read those offsets as backward seeks.
+        let front = elf_front(
+            0x2006_1AC0,
+            &[
+                (PT_LOAD, 0x001000, 0x2000_0000, 0, 0x05250),
+                (PT_LOAD, 0x004000, 0x2002_0000, 0x1C9CE8, 0x1C9CE8),
+                (PT_LOAD, 0x1CE000, 0x201E_9CE8, 0x2ABDC, 0x2ABDC),
+                (PT_LOAD, 0x000BE0, 0x2021_48E0, 0, 0x0B660),
+                (PT_LOAD, 0x001000, 0x202F_8000, 0, 0x08000),
+            ],
+        );
+        let r = StreamRouter::new(&front).unwrap();
+        assert_eq!(r.entry(), 0x2006_1AC0);
+        // The retention-RAM segment is skipped; the other four stage into SRAM.
+        assert_eq!(r.segments().len(), 4);
+
+        // Routing follows the two file-backed segments only: the zero-length
+        // BSS segments never claim a byte or open a spurious discard run.
+        assert_eq!(r.route_at(0), RouteStep { dst: None, run: 0x4000 });
+        assert_eq!(
+            r.route_at(0x004000),
+            RouteStep { dst: Some(sram_stage_addr(0x2002_0000)), run: 0x1C9CE8 }
+        );
+        assert_eq!(r.route_at(0x1CDCE8), RouteStep { dst: None, run: 0x318 });
+        assert_eq!(
+            r.route_at(0x1CE000),
+            RouteStep { dst: Some(sram_stage_addr(0x201E_9CE8)), run: 0x2ABDC }
+        );
+        assert_eq!(r.route_at(0x1F8BDC), RouteStep { dst: None, run: u32::MAX });
+
+        // The BSS segments still reach the loader so their tails get zeroed.
+        let bss = r.segments().last().unwrap();
+        assert_eq!(bss.final_dst, 0x202F_8000);
+        assert_eq!(bss.file_end - bss.file_start, 0);
+        assert_eq!(bss.memsz, 0x08000);
+    }
 }
