@@ -24,7 +24,7 @@ pub mod encoder_detent;
 // `fat` builds on `sd`, and `midi_gate` pulls in `cortex_ar` — both depend on
 // items only available on the bare-metal target, so they are excluded from the
 // host/QEMU test build (the pure-logic modules below still compile there).
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "none", feature = "fat"))]
 pub mod fat;
 /// Deluge SPI-NOR flash profile (chip geometry + board memory map).  Pure
 /// data + re-exports over the SoC `rza1l_hal::spibsc` controller.  Opt-in via

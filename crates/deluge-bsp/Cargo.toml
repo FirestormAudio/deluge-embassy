@@ -23,6 +23,11 @@ default-target = "armv7a-none-eabihf"
 test = false
 
 [features]
+## The synchronous embedded-sdmmc FAT stack (`fat` module + the BlockDevice/TimeSource adapters in
+## `sd`). Off by default: DelugeFirmware replaced it with the async `embedded-fatfs` mount in R4 and
+## references none of it, so the whole second filesystem -- and its heapless 0.8 pin -- stays out of
+## the dependency graph unless something actually asks for it.
+fat = ["dep:embedded-sdmmc"]
 default = []
 ## Drive `audio::init_direct` from a per-block RX DMA interrupt (the audio SDK's
 ## v2 cadence) instead of the default poll loop. Selected by `deluge/audio-irq`.
@@ -43,7 +48,7 @@ usb-host = ["dep:embassy-usb-host"]
 
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
-embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"] }
+embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"], optional = true }
 critical-section = { workspace = true }
 log = { workspace = true }
 embedded-graphics-core = { version = "0.4", optional = true }

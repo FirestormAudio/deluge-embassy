@@ -98,9 +98,12 @@ pub(crate) fn parse_switch_status(buf: &[u8; 64]) -> SwitchStatus {
 
 #[cfg(target_os = "none")]
 pub use device::{
-    DelugeBlockDevice, DelugeTimeSource, PartitionShim, init, is_hc, is_hs, is_inserted, is_ready,
-    is_write_protected, read_sectors, total_sectors, write_sectors,
+    init, is_hc, is_hs, is_inserted, is_ready, is_write_protected, read_sectors, total_sectors,
+    write_sectors,
 };
+// The embedded-sdmmc adapters only exist when the `fat` feature pulls that crate in.
+#[cfg(all(target_os = "none", feature = "fat"))]
+pub use device::{DelugeBlockDevice, DelugeTimeSource, PartitionShim};
 #[cfg(not(target_os = "none"))]
 pub use host::{
     init, is_inserted, is_ready, is_write_protected, read_sectors, total_sectors, write_sectors,
@@ -774,8 +777,10 @@ mod device {
     /// have completed successfully before any method is called.
     ///
     /// Construct with `DelugeBlockDevice` (it is a ZST).
+    #[cfg(feature = "fat")]
     pub struct DelugeBlockDevice;
 
+    #[cfg(feature = "fat")]
     impl embedded_sdmmc::BlockDevice for DelugeBlockDevice {
         type Error = SdError;
 
@@ -871,6 +876,7 @@ mod device {
 
     /// Internal mode for [`PartitionShim`], decided once at construction time.
     #[derive(Clone, Copy)]
+    #[cfg(feature = "fat")]
     enum ShimMode {
         /// The card has a real MBR (or we couldn't probe it): forward every
         /// request to [`DelugeBlockDevice`] unchanged.
@@ -898,11 +904,13 @@ mod device {
     /// VBR. MBR-partitioned cards are passed straight through with no shift.
     ///
     /// [`init`] must have completed successfully before this is constructed.
+    #[cfg(feature = "fat")]
     pub struct PartitionShim {
         inner: DelugeBlockDevice,
         mode: ShimMode,
     }
 
+    #[cfg(feature = "fat")]
     impl PartitionShim {
         /// Probe LBA 0 and pick a [`ShimMode`]. Any read error or ambiguous layout
         /// falls back to [`ShimMode::Passthrough`] (the previous behaviour).
@@ -967,6 +975,7 @@ mod device {
         }
     }
 
+    #[cfg(feature = "fat")]
     impl Default for PartitionShim {
         fn default() -> Self {
             Self::new()
@@ -989,6 +998,7 @@ mod device {
         buf[511] = 0xAA;
     }
 
+    #[cfg(feature = "fat")]
     impl embedded_sdmmc::BlockDevice for PartitionShim {
         type Error = SdError;
 
@@ -1059,8 +1069,10 @@ mod device {
     ///
     /// File modification times will not be recorded accurately. No RTC peripheral
     /// is currently available on this BSP.
+    #[cfg(feature = "fat")]
     pub struct DelugeTimeSource;
 
+    #[cfg(feature = "fat")]
     impl embedded_sdmmc::TimeSource for DelugeTimeSource {
         fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
             embedded_sdmmc::Timestamp {
