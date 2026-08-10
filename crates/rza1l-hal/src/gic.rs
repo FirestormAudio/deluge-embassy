@@ -98,6 +98,18 @@ impl HandlerCell {
     }
 }
 
+/// Could `addr` be the entry point of a function in this image?
+///
+/// Deliberately coarse — the point is to reject a corrupted slot before branching to
+/// it, not to validate a symbol. Code on this part lives in on-chip SRAM
+/// (`0x2000_0000`, 3 MB) or SDRAM (`0x0C00_0000`, 64 MB); an ARM entry point is also
+/// 4-byte aligned. Anything else is corruption, and calling it aborts.
+fn is_plausible_code_address(addr: usize) -> bool {
+    const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
+    const SDRAM: core::ops::Range<usize> = 0x0C00_0000..0x1000_0000;
+    addr % 4 == 0 && (SRAM.contains(&addr) || SDRAM.contains(&addr))
+}
+
 /// IRQ handler dispatch table — one slot per interrupt ID.
 /// Initialized to `None` (unhandled = silently EOI'd).
 ///
@@ -403,10 +415,34 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
 
         if (int_id as usize) < INT_ID_TOTAL {
             if let Some(f) = HANDLERS[int_id as usize].get() {
-                // Re-enable IRQ to allow higher-priority interrupts to preempt.
-                cortex_ar::interrupt::enable();
-                f();
-                cortex_ar::interrupt::disable();
+                // Refuse to branch to an address that cannot be code. A corrupted slot
+                // here is a wild `blx` into nothing, which on device shows up as an
+                // undefined-instruction abort whose only clue is `LR` pointing back at
+                // this function -- a dead panel with no explanation. Checking the target
+                // first turns that into a log line naming the interrupt whose slot was
+                // clobbered, which is the evidence needed to find whoever clobbered it,
+                // and leaves the machine running.
+                if !is_plausible_code_address(f as usize) {
+                    // Count the other damaged slots too: one bad slot points at a stray
+                    // write or a bad index, many at a bulk overrun through the table.
+                    let damaged = HANDLERS
+                        .iter()
+                        .filter(|c| c.get().is_some_and(|h| !is_plausible_code_address(h as usize)))
+                        .count();
+                    log::error!(
+                        "GIC: id={} handler pointer {:#010x} is not a code address - REFUSING to call \
+                         it. {} of {} slots damaged. The dispatch table has been corrupted at runtime.",
+                        int_id,
+                        f as usize,
+                        damaged,
+                        INT_ID_TOTAL,
+                    );
+                } else {
+                    // Re-enable IRQ to allow higher-priority interrupts to preempt.
+                    cortex_ar::interrupt::enable();
+                    f();
+                    cortex_ar::interrupt::disable();
+                }
             } else {
                 log::warn!("GIC: id={} no handler — EOI only", int_id);
             }

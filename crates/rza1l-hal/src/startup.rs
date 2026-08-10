@@ -504,6 +504,15 @@ _pabt_rtt:
 global_asm!(
     r#"
 _undef_rtt:
+    /* Give Undefined mode a stack before touching one. Boot deliberately never
+       initialises SP_und (see the note in the reset sequence), so the push below was
+       writing 28 bytes to whatever SP_und happened to hold -- corrupting arbitrary
+       memory on the way to reporting the fault, which is how a dump ends up with a
+       garbage LR in it. Borrow the abort stack: UND and ABT are both terminal here
+       (neither handler ever returns), so they cannot legitimately be live at once, and
+       an abort taken while reporting an undefined instruction is unrecoverable anyway.
+       Clobbering SP_und is free for the same reason. */
+    ldr  sp, =abt_stack_end
     /* On UNDEF entry: LR_und = faulting PC + 4 (ARM) or +2 (Thumb) */
     push {{r5, r6, r7, r8, r9, r10, r11}}
     sub  r5, lr, #4               /* faulting PC (ARM; Thumb: #2) */
@@ -515,6 +524,8 @@ _undef_rtt:
     mov  r6, sp                   /* r6 = app SP */
     mov  r7, lr                   /* r7 = app LR (wild-call return address) */
     cps  #0x1B                    /* back to Undefined mode */
+    mov  r4, r6                   /* keep the UNMOVED app SP: the STK walk advances r6,
+                                     and handle_cpu_fault below needs the original */
     ldr  r0, =_SEGGER_RTT
     ldr  r1, [r0, #0x1C]          /* buffer base */
     ldr  r2, [r0, #0x24]          /* WrOff */
@@ -582,9 +593,27 @@ _undef_rtt:
     write_char_u #0x0A
     str  r2, [r0, #0x24]
     pop  {{r5, r6, r7, r8, r9, r10, r11}}
-    b    _boot_fault_loop
+    /* Hand over to the application's crash reporter, which draws the fault pointers
+       onto the pad grid so a crash is legible with no debug probe attached. Weakly
+       referenced: a consumer of this HAL that has no reporter (the SDK examples) links
+       it as 0, so check before branching and fall back to the bare spin. Arguments
+       match handle_cpu_fault(SYSLR, SYSSP, USRLR, USRSP); USR mode is unused here. */
+    ldr  r12, =handle_cpu_fault
+    cmp  r12, #0
+    beq  _boot_fault_loop
+    mov  r0, r7                   /* SYS LR — the wild-call return address */
+    mov  r1, r4                   /* SYS SP — pre-walk, for the stack scan */
+    mov  r2, #0                   /* USR LR (unused) */
+    mov  r3, #0                   /* USR SP (unused) */
+    bx   r12
 "#
 );
+
+// `handle_cpu_fault` is the application's pad-grid crash reporter (see
+// src/deluge/io/debug/fault_pattern.c). Weak so this HAL still links for consumers that
+// don't provide one — the UNDEF handler tests for null before branching.
+#[cfg(feature = "rtt")]
+global_asm!(".weak handle_cpu_fault");
 
 // RTT-enabled prefetch-abort handler: dumps "PABT\n  PC=XXXXXXXX IFSR=XXXXXXXX\n"
 #[cfg(feature = "rtt")]

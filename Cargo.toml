@@ -94,7 +94,15 @@ embassy-usb-host = "0.1.0"
 # Shared platform / utility crates.
 cortex-ar = "0.3"
 critical-section = "1"
-log = { version = "0.4", features = ["release_max_level_off"] }
+# NOT `release_max_level_off`. Cargo features are additive and unify across the whole
+# graph, so declaring that here compiled out every `log::` macro in every crate of a
+# release build -- and release is the only profile that fits in the RZ/A1L's SRAM, so it
+# silenced the BSP's logging entirely on the only profile anyone can run. That cost a
+# debugging session: a Rust panic inside the storage fiber left no trace at all, and
+# presented as a dead front panel with audio still playing.
+# `info` keeps the bulky `debug!`/`trace!` call sites out of the image while leaving the
+# lines that matter for a device post-mortem.
+log = { version = "0.4", features = ["release_max_level_info"] }
 rtt-target = { version = "0.6", features = ["log"] }
 
 gdbstub = { version = "0.7" }
