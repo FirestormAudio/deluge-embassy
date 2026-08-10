@@ -98,15 +98,16 @@ pub(crate) fn parse_switch_status(buf: &[u8; 64]) -> SwitchStatus {
 
 #[cfg(target_os = "none")]
 pub use device::{
-    init, is_hc, is_hs, is_inserted, is_ready, is_write_protected, read_sectors, total_sectors,
-    write_sectors,
+    init, invalidate, is_hc, is_hs, is_inserted, is_ready, is_write_protected, read_sectors,
+    take_card_detect_events, total_sectors, write_sectors,
 };
 // The embedded-sdmmc adapters only exist when the `fat` feature pulls that crate in.
 #[cfg(all(target_os = "none", feature = "fat"))]
 pub use device::{DelugeBlockDevice, DelugeTimeSource, PartitionShim};
 #[cfg(not(target_os = "none"))]
 pub use host::{
-    init, is_inserted, is_ready, is_write_protected, read_sectors, total_sectors, write_sectors,
+    init, invalidate, is_inserted, is_ready, is_write_protected, read_sectors,
+    take_card_detect_events, total_sectors, write_sectors,
 };
 
 // ---------------------------------------------------------------------------
@@ -354,6 +355,16 @@ mod device {
             match run_protocol().await {
                 Ok(()) => {
                     CARD_READY.store(true, Ordering::Release);
+                    // Consume the card-detect edges accumulated up to here: they
+                    // describe the arrival of the card we have just identified, so
+                    // reporting them onward would ask a caller to redo this work.
+                    // Must come after the bring-up above, not before it —
+                    // `sdhi::init` is what ungates the SDHI module clock, and the
+                    // INFO1 read is only valid once it has. If the card was pulled
+                    // mid-init this discards that removal edge too, which is what
+                    // `deluge_block_poll_card_event`'s level check is there to
+                    // catch.
+                    unsafe { sdhi::take_card_detect_events(SD_PORT) };
                     log::debug!(
                         "sd: card ready on attempt {}/{} (HC={})",
                         attempt,
@@ -377,6 +388,41 @@ mod device {
             last_err
         );
         Err(last_err)
+    }
+
+    /// Discard everything cached about the card, so no transfer is attempted until
+    /// [`init`] has run again.
+    ///
+    /// Call this the moment a removal is detected. Every cached value here — the
+    /// RCA assigned by CMD3, the SDHC/high-speed flags, the CSD-derived capacity —
+    /// describes *that* card, and none of it carries over to whatever is inserted
+    /// next. Left in place, the driver keeps addressing the old card's RCA: the new
+    /// card never answers, so reads fail (and, because the SDHI command waits are
+    /// interrupt-driven with no deadline of their own, a transfer that draws neither
+    /// a completion nor an error interrupt does not fail but simply never returns).
+    /// Clearing `CARD_READY` makes [`read_sectors`]/[`write_sectors`] refuse with
+    /// [`SdError::NotInitialized`] instead, so the failure is immediate and visible.
+    ///
+    /// [`is_ready`] reads false afterwards, which is also what tells a caller
+    /// polling for the card to come back that it has not come back *yet*.
+    pub fn invalidate() {
+        CARD_READY.store(false, Ordering::Release);
+        CARD_RCA.store(0, Ordering::Release);
+        CARD_HC.store(false, Ordering::Release);
+        CARD_HS.store(false, Ordering::Release);
+        // total_sectors() must not answer with the old card's capacity either.
+        sdhi::set_card_blocks(SD_PORT, 0);
+    }
+
+    /// Consume the latched card insert/remove edges: `(removed, inserted)`.
+    ///
+    /// Edges, not levels — see [`sdhi::take_card_detect_events`] for why that
+    /// distinction matters (a swap between two polls is invisible to a level read).
+    /// Both `true` means the card was replaced.
+    pub fn take_card_detect_events() -> (bool, bool) {
+        // SAFETY: reads/clears SD_INFO1's card-detect latch for the port this
+        // module owns; the clear is written so no other status flag is disturbed.
+        unsafe { sdhi::take_card_detect_events(SD_PORT) }
     }
 
     /// Run the SD v2 card bring-up protocol (CMD0 … high-speed clock) once against
@@ -1183,6 +1229,23 @@ mod host {
         false
     }
 
+    /// Host stand-in for [`invalidate`](super::invalidate): drops the ready flag,
+    /// so [`is_ready`] reads false until [`init`] runs again (it re-opens the same
+    /// backing file, so recovery works). Unreachable in practice — the only caller
+    /// acts on a removal event, and [`take_card_detect_events`] never reports one
+    /// here — but kept behaviourally faithful rather than a silent no-op.
+    pub fn invalidate() {
+        READY.store(false, Ordering::Release);
+    }
+
+    /// Host stand-in for
+    /// [`take_card_detect_events`](super::take_card_detect_events): the backing
+    /// file stands in for the card for the whole process lifetime, so it is never
+    /// removed and never re-inserted — there is no edge to report.
+    pub fn take_card_detect_events() -> (bool, bool) {
+        (false, false)
+    }
+
     /// Host stand-in for [`total_sectors`](super::total_sectors): the backing
     /// file's sector count (fixed at creation time).
     pub fn total_sectors() -> u32 {
@@ -1240,6 +1303,19 @@ mod tests {
     fn host_reports_always_inserted_and_not_write_protected() {
         assert!(is_inserted());
         assert!(!is_write_protected());
+    }
+
+    /// The host backing file is never removed, so there is never a card-detect
+    /// edge to report — and, since a `(removed, _)` report is what drives
+    /// `invalidate()`, that is also why nothing on host ever invalidates the
+    /// card. (`invalidate()` itself is deliberately untested here: it clears the
+    /// shared `READY` flag the other tests in this module rely on, and these run
+    /// concurrently.)
+    #[test]
+    fn host_never_reports_a_card_detect_edge() {
+        assert_eq!(take_card_detect_events(), (false, false));
+        // Idempotent: repeated draining does not manufacture an edge either.
+        assert_eq!(take_card_detect_events(), (false, false));
     }
 
     #[test]

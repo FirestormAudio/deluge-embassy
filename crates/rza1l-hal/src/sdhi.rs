@@ -33,7 +33,7 @@
 //! ```
 
 use core::future::poll_fn;
-use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -235,6 +235,19 @@ struct SdhiState {
     info1: AtomicU16,
     /// Accumulated INFO2 bits from ISR.
     info2: AtomicU16,
+    /// Card-detect removal edge seen by [`interrupt_handler`], for
+    /// [`take_card_detect_events`] to consume.
+    ///
+    /// The ISR clears the whole latched INFO1 word in hardware and `clear_info`
+    /// wipes the [`Self::info1`] accumulator at the start of every transfer, so a
+    /// card-detect edge that happened to be latched when an unrelated SDHI
+    /// interrupt fired would otherwise be destroyed before anyone read it. These
+    /// two flags are the ISR's hand-off for exactly that case, and nothing but
+    /// [`take_card_detect_events`] consumes them.
+    cd_removed: AtomicBool,
+    /// Card-detect insertion edge seen by [`interrupt_handler`]. See
+    /// [`Self::cd_removed`].
+    cd_inserted: AtomicBool,
 }
 
 unsafe impl Sync for SdhiState {}
@@ -244,11 +257,15 @@ static STATE: [SdhiState; NUM_PORTS] = [
         waker: AtomicWaker::new(),
         info1: AtomicU16::new(0),
         info2: AtomicU16::new(0),
+        cd_removed: AtomicBool::new(false),
+        cd_inserted: AtomicBool::new(false),
     },
     SdhiState {
         waker: AtomicWaker::new(),
         info1: AtomicU16::new(0),
         info2: AtomicU16::new(0),
+        cd_removed: AtomicBool::new(false),
+        cd_inserted: AtomicBool::new(false),
     },
 ];
 
@@ -512,6 +529,15 @@ pub unsafe fn interrupt_handler(port: u8) {
         let st = &STATE[port as usize];
         st.info1.fetch_or(info1, Ordering::Release);
         st.info2.fetch_or(info2, Ordering::Release);
+        // The clear above took the card-detect edge latches down with everything
+        // else, and `clear_info` wipes the accumulator at each transfer start —
+        // so hand any edge over to `take_card_detect_events` separately.
+        if info1 & INFO1_REM_CD != 0 {
+            st.cd_removed.store(true, Ordering::Release);
+        }
+        if info1 & INFO1_INS_CD != 0 {
+            st.cd_inserted.store(true, Ordering::Release);
+        }
         st.waker.wake();
     }
 }
@@ -1239,6 +1265,47 @@ pub unsafe fn card_write_protected(port: u8) -> bool {
     unsafe {
         let base = port_base(port);
         reg16(base, OFF_INFO1).read_volatile() & INFO1_WP == 0
+    }
+}
+
+/// Consume the latched card-detect *edges* for `port`, as `(removed, inserted)`.
+///
+/// Unlike [`card_inserted`], which reads the steady-state SD_CD level, these are
+/// hardware edge latches — so a card removed and a different one inserted entirely
+/// between two calls still reports `(true, true)`, where two level reads would
+/// compare equal and look like nothing happened. Callers must handle both being
+/// set: it means the card present now is not the one present before, and anything
+/// cached about the old card (RCA, capacity, mounted filesystem) is stale.
+///
+/// Both sources of an edge are drained:
+/// - the hardware INFO1 latch, which is the usual one — card-detect interrupts sit
+///   masked almost all the time (every transfer restores `INFO1_MASK = 0xFFFF`), so
+///   normally no ISR runs for these and the bits just accumulate in the register;
+/// - the sticky flags [`interrupt_handler`] sets when an unrelated SDHI interrupt
+///   happened to clear the latch first.
+///
+/// # Safety
+/// Reads and writes the SDHI INFO1 register.
+pub unsafe fn take_card_detect_events(port: u8) -> (bool, bool) {
+    unsafe {
+        let base = port_base(port);
+        let latched = reg16(base, OFF_INFO1).read_volatile() & INFO1_DET_CD;
+        if latched != 0 {
+            // Write-0-to-clear: `!latched` writes 0 to exactly the bits we read as
+            // set and 1 (= leave alone) everywhere else, so a response or
+            // transfer-end flag that gets set between the read and this write is
+            // not cleared out from under the waiter blocked on it.
+            reg16(base, OFF_INFO1).write_volatile(!latched);
+        }
+        let st = &STATE[port as usize];
+        // Swap both before combining: `||` would short-circuit past the second
+        // swap and leave a stale sticky flag set for the next caller to re-report.
+        let sticky_removed = st.cd_removed.swap(false, Ordering::AcqRel);
+        let sticky_inserted = st.cd_inserted.swap(false, Ordering::AcqRel);
+        (
+            latched & INFO1_REM_CD != 0 || sticky_removed,
+            latched & INFO1_INS_CD != 0 || sticky_inserted,
+        )
     }
 }
 
