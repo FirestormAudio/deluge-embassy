@@ -45,6 +45,8 @@ pub mod stb;
 // device-only to avoid a faulting driver and a duplicate-symbol link error.
 #[cfg(target_os = "none")]
 pub mod time_driver;
+/// Pure arithmetic for the time driver — always compiled so its tests run on the host.
+pub mod time_math;
 pub mod uart;
 pub mod usb;
 

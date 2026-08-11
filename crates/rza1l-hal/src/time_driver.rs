@@ -14,11 +14,12 @@
 //!
 //! ## Overflow handling for `now()`
 //!
-//! OSTM0 is 32-bit and wraps every ~128 s. An overflow interrupt fires when
-//! CNT == 0 (i.e. the cycle just wrapped). The ISR bumps `EPOCH_HI`.
-//!
-//! `now()` uses a double-read of `EPOCH_HI` around the CNT read to detect the
-//! wrap race and retry if necessary.
+//! OSTM0 is 32-bit and wraps every ~129.9 s. The 64-bit clock is extended **in software**:
+//! `raw_ostm_ticks` compares each CNT sample against the last published one and treats CNT going
+//! backwards as a wrap, so the extension is monotonic by construction and no interrupt is on the
+//! correctness path. [`LAST_RAW`] explains why that matters — the previous ISR-maintained epoch
+//! could read an epoch low whenever its interrupt ran late, which stalled every timer-driven task
+//! for 129.9 s. The wrap arithmetic lives in [`crate::time_math`], where it is host-tested.
 //!
 //! ## Alarm
 //!
@@ -29,11 +30,13 @@
 //! for that if needed.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
 
 use critical_section::{CriticalSection, Mutex};
 use embassy_time_driver::Driver;
+
+use crate::time_math::{MAX_ARM_OSTM_TICKS, extend, ostm_ticks_to_us, us_to_ostm_ticks};
 use embassy_time_queue_utils::Queue;
 
 use crate::gic;
@@ -44,41 +47,39 @@ const OSTM0_IRQ: u16 = 134;
 const OSTM1_IRQ: u16 = 135;
 const OSTM_IRQ_PRIORITY: u8 = 14;
 
-/// OSTM0 ticks per Embassy tick (1 µs), as an exact rational.
+/// Last value [`OstmDriver::raw_ostm_ticks`] published, as `(epoch << 32) | CNT`.
 ///
-/// P0φ on the Deluge is 13,225,625 Hz × 30 / 12 = 33,064,062.5 Hz, so
-/// ticks-per-µs = 33,064,062.5 / 1e6 = 21,161 / 640 exactly.  Using the
-/// rational avoids the ~0.2% drift that truncating to 33 ticks/µs caused.
-/// Effective resolution: 1 OSTM tick ≈ 30 ns, rounded to 1 µs at output.
-const OSTM_PER_US_NUM: u64 = 21_161;
-const OSTM_PER_US_DEN: u64 = 640;
-
-/// Convert a raw OSTM0 tick count to Embassy µs ticks (`ticks × 640 / 21161`).
-/// The multiply overflows u64 only after ~28 years of uptime at 33.064 MHz.
-#[inline]
-fn ostm_ticks_to_us(ticks: u64) -> u64 {
-    ticks * OSTM_PER_US_DEN / OSTM_PER_US_NUM
-}
-
-/// Convert an Embassy µs delta to OSTM0 ticks, rounding **up** so a short
-/// alarm never fires early (`ceil(delta_us × 21161 / 640)`). Saturating to
-/// avoid overflow; callers clamp the result to the OSTM 32-bit counter range.
-#[inline]
-fn us_to_ostm_ticks(delta_us: u64) -> u64 {
-    delta_us
-        .saturating_mul(OSTM_PER_US_NUM)
-        .div_ceil(OSTM_PER_US_DEN)
-}
-
-// ---------------------------------------------------------------------------
-// Overflow counter
-// ---------------------------------------------------------------------------
-
-/// Upper epoch: each increment represents 2^32 OSTM0 ticks (~128 s).
+/// The 64-bit clock is extended from the 32-bit OSTM0 counter **in software**, by comparing each
+/// CNT sample against the previous one: CNT going backwards means the counter wrapped. The wrap is
+/// therefore detected by whoever reads the clock, not by an interrupt.
 ///
-/// The OSTM0 ISR fires when CNT == 0 (immediately after the wrap to 0) and
-/// increments this counter.
-static EPOCH_HI: AtomicU32 = AtomicU32::new(0);
+/// # Why not an ISR-maintained epoch counter
+///
+/// It used to be one (`EPOCH_HI`, incremented by the OSTM0 CMP==0 ISR), read as
+/// `(EPOCH_HI << 32) | CNT` under a double-read of EPOCH_HI to catch a wrap racing the two reads.
+/// That guard covers the wrong window. It does nothing about the OSTM0 ISR being **late** — pending
+/// behind a same-or-higher-priority handler, or a critical section — and while it is late, CNT has
+/// already wrapped to a small value whereas the epoch has not advanced. Both reads then agree on a
+/// stale epoch, the guard passes, and `now()` silently returns a value **one full epoch (2^32 ticks,
+/// 129.9 s) in the past**.
+///
+/// That is not a cosmetic error. `try_set_alarm` computes `at - now`, so a rewound `now` yields a
+/// delta of ~129.9 s, which saturates the u32 tick clamp and arms OSTM1 for its maximum. Every
+/// timer-driven task in the system then waits that long. It was observed on device as a total
+/// freeze — no audio, no UI, no fault — whose measured duration was 129.900029 s against a
+/// theoretical maximum arm of 129.898353 s: a match to five significant figures.
+///
+/// Software extension removes the ISR from the correctness path: monotonicity is guaranteed by
+/// construction, so `now()` can never jump backwards and a spurious epoch-sized delta cannot arise
+/// however late any interrupt is.
+///
+/// # Requirement
+///
+/// The clock must be read at least once per wrap period (~129.9 s), or a wrap goes unobserved and
+/// time loses an epoch. Satisfied structurally — the audio render path reads it continuously — and
+/// guaranteed regardless by [`ostm0_overflow_isr`], which exists now only to force one read per
+/// wrap.
+static LAST_RAW: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Driver struct + timer queue
@@ -95,22 +96,35 @@ impl OstmDriver {
         }
     }
 
-    /// Raw OSTM0 tick count as a 64-bit value by splicing `EPOCH_HI` and CNT.
+    /// Raw OSTM0 tick count as a monotonic 64-bit value, extending the 32-bit counter in software.
     ///
-    /// Uses a double-read of EPOCH_HI to survive the wrap race: if the high
-    /// word changed between the two reads, a wrap occurred around our CNT
-    /// sample so we retry.
+    /// Never returns less than a previously returned value, for any interleaving of callers and any
+    /// interrupt latency — see [`LAST_RAW`] for why that property is load-bearing rather than
+    /// merely tidy.
     #[inline]
     fn raw_ostm_ticks() -> u64 {
         loop {
-            let hi1 = EPOCH_HI.load(Ordering::Acquire);
+            let last = LAST_RAW.load(Ordering::Acquire);
             // Safety: OSTM0 is initialised before interrupts are enabled.
             let cnt = unsafe { ostm::count(0) };
-            let hi2 = EPOCH_HI.load(Ordering::Acquire);
-            if hi1 == hi2 {
-                return ((hi1 as u64) << 32) | (cnt as u64);
+            let val = extend(last, cnt);
+            if val <= last {
+                // A concurrent reader (or an ISR that preempted us mid-read) already published a
+                // value at or ahead of ours. Hand back theirs: it is at least as current as ours,
+                // and going backwards is the one thing this function must never do.
+                return last;
             }
-            // Wrap raced with our reads — retry.
+            match LAST_RAW.compare_exchange_weak(
+                last,
+                val,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return val,
+                // Lost the race; re-read and retry. Bounded in practice: every retry means another
+                // caller published, so the loop cannot spin without the clock advancing.
+                Err(_) => continue,
+            }
         }
     }
 
@@ -125,9 +139,9 @@ impl OstmDriver {
         }
         // Convert delta from Embassy µs ticks to OSTM0 ticks.
         let delta_us = at - now;
-        // Clamp to u32 range (~128 s); if the alarm is farther out it will
-        // be re-armed after the intermediate ISR fires.
-        let delta_ostm = us_to_ostm_ticks(delta_us).min(u32::MAX as u64) as u32;
+        // Clamp to MAX_ARM_OSTM_TICKS; a farther alarm is re-armed when that intermediate ISR
+        // fires, so capping only costs wakeups, never accuracy.
+        let delta_ostm = us_to_ostm_ticks(delta_us).min(MAX_ARM_OSTM_TICKS as u64) as u32;
 
         if delta_ostm == 0 {
             return false;
@@ -146,7 +160,7 @@ impl Driver for OstmDriver {
     fn now(&self) -> u64 {
         // ticks × 640 / 21161; the multiply overflows u64 only after ~28
         // years of uptime at 33.064 MHz.
-        Self::raw_ostm_ticks() * OSTM_PER_US_DEN / OSTM_PER_US_NUM
+        ostm_ticks_to_us(Self::raw_ostm_ticks())
     }
 
     fn schedule_wake(&self, at: u64, waker: &Waker) {
@@ -170,11 +184,17 @@ embassy_time_driver::time_driver_impl!(static DRIVER: OstmDriver = OstmDriver::n
 // ISR handlers registered with the GIC
 // ---------------------------------------------------------------------------
 
-/// OSTM0 compare-match ISR — fires when CNT == 0 (after 32-bit wrap).
+/// OSTM0 compare-match ISR — fires when CNT == 0 (after each 32-bit wrap).
 ///
-/// Increments the epoch counter so `now()` stays monotonic across wraps.
+/// Reads the clock, and nothing else. The wrap itself is detected in software by
+/// [`OstmDriver::raw_ostm_ticks`]; this ISR exists only to guarantee the "read at least once per
+/// wrap period" requirement [`LAST_RAW`] documents, so the epoch cannot be skipped on a system that
+/// somehow stopped reading the clock for 129.9 s.
+///
+/// Its latency is therefore no longer a correctness concern — which is the entire point of the
+/// change. Previously this ISR owned the epoch, and being late made `now()` jump backwards an epoch.
 fn ostm0_overflow_isr() {
-    EPOCH_HI.fetch_add(1, Ordering::Release);
+    let _ = OstmDriver::raw_ostm_ticks();
 }
 
 /// OSTM1 interval ISR — fires when the one-shot alarm expires.
@@ -227,49 +247,3 @@ pub unsafe fn init() {
     }
 }
 
-#[cfg(all(test, not(target_os = "none")))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tick_ratio_reflects_deluge_p0_clock() {
-        // P0phi = 33,064,062.5 Hz => 21161/640 OSTM ticks per microsecond.
-        // (The earlier 33-ticks/us truncation caused ~0.2% clock drift.)
-        assert_eq!(OSTM_PER_US_NUM, 21_161);
-        assert_eq!(OSTM_PER_US_DEN, 640);
-        // The rational is 33.0640625 ticks/us — verify to 4 dp.
-        let ratio = OSTM_PER_US_NUM as f64 / OSTM_PER_US_DEN as f64;
-        assert!((ratio - 33.0640625).abs() < 1e-9);
-    }
-
-    #[test]
-    fn ticks_to_us_uses_the_rational_not_33() {
-        // One second of OSTM ticks = 33,064,062 (floor) -> ~1e6 us.
-        let one_second_ticks = 33_064_062u64;
-        let us = ostm_ticks_to_us(one_second_ticks);
-        // Within 1 us of a million (floor division).
-        assert!((999_999..=1_000_000).contains(&us), "got {us}");
-        // A naive /33 would give 1_001_941 us — a 0.19% error we must avoid.
-        assert!(us < 1_001_000);
-    }
-
-    #[test]
-    fn us_to_ticks_rounds_up_so_alarms_never_fire_early() {
-        // 1 us must round up to at least 1 tick, never 0.
-        assert!(us_to_ostm_ticks(1) >= 1);
-        // ceil: 640 us = exactly 21161 ticks; 641 us strictly more.
-        assert_eq!(us_to_ostm_ticks(640), 21_161);
-        assert!(us_to_ostm_ticks(641) > 21_161);
-        // 0 us -> 0 ticks.
-        assert_eq!(us_to_ostm_ticks(0), 0);
-    }
-
-    #[test]
-    fn conversions_round_trip_within_one_us() {
-        for &us in &[1u64, 1000, 1_000_000, 5_000_000] {
-            let ticks = us_to_ostm_ticks(us);
-            let back = ostm_ticks_to_us(ticks);
-            assert!(back >= us && back <= us + 1, "us={us} back={back}");
-        }
-    }
-}
