@@ -32,12 +32,21 @@ TTB_SIZE = 0x8000;
 SECTIONS {
     /* _SEGGER_RTT control block in the uncached SRAM mirror so the debug
        probe can always see RTT writes, even after D-cache is enabled.
-       RTT_RAM (cached) and NCACHE_RTT_RAM (uncached) map to the same physical
-       page; reserving both prevents BSS or stacks from being placed there. */
-    .rtt_cached_reserve (NOLOAD) : ALIGN(4) { . += 0x10000; } > RTT_RAM
+       RTT_RAM (cached) and NCACHE_RTT_RAM (uncached) are the same physical
+       bytes — the mirror is a hardware alias at +0x40000000, not an MMU mapping
+       — so reserving the cached view too is what stops BSS or stacks landing on
+       top of the buffer.
+       LENGTH(RTT_RAM) rather than a literal: the region size and the reserve must
+       agree, and the memory map sizes the region to the actual buffer (see
+       memory_rtt.x). A literal here would silently under- or over-reserve the
+       moment that size changed. */
+    .rtt_cached_reserve (NOLOAD) : ALIGN(4) { . += LENGTH(RTT_RAM); } > RTT_RAM
     .rtt_buffer (NOLOAD) : ALIGN(4) {
         KEEP(*(.rtt_buffer .rtt_buffer.*))
-        . = ALIGN(4);
+        /* 32-byte cache line: keeps any cached allocation above the buffer from
+           sharing a line with it, so a fill/evict through the cached alias cannot
+           write back over what the CPU wrote uncached. */
+        . = ALIGN(32);
     } > NCACHE_RTT_RAM
 
     /* Match the vendor Deluge layout more closely: reserve low SRAM for the
