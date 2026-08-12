@@ -12,7 +12,9 @@ test = false
 [dependencies]
 rza1l-hal = { path = "../crates/rza1l-hal" }
 deluge-alloc = { path = "../crates/deluge-alloc" }
-deluge-bsp = { path = "../crates/deluge-bsp", features = ["flash"] }
+# `fat`: the app-loader's ELF loader and file browser read apps off the card
+# through `deluge_bsp::fat`, so the sync embedded-sdmmc stack is not optional here.
+deluge-bsp = { path = "../crates/deluge-bsp", features = ["flash", "fat"] }
 deluge-image = { path = "../crates/deluge-image" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }

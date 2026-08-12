@@ -51,6 +51,12 @@ embassy-executor = { workspace = true, features = [
     "platform-cortex-ar",
     "executor-thread",
 ] }
+# `Sd`/`FatError` (and the `plat::device` file ops behind them) are part of the
+# unconditional SDK surface on the device, and they are built on
+# `deluge_bsp::fat` — so the BSP's `fat` feature is required here. Requested only
+# for the device target: the host simulator backs `Sd` with real host files and
+# never touches embedded-sdmmc, so the sim build's dependency graph stays clear of it.
+deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", features = ["fat"] }
 
 # ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
 # Same source, but the executor is std-backed and the capability modules drive
