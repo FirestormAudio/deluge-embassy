@@ -26,7 +26,10 @@ required-features = ["threads"]
 threads = []
 
 [dependencies]
-wren-core = { path = "../../../wren-rs/crates/wren-core", features = ["debug"] }
+# Pinned by rev so this tool builds from a bare clone (no sibling wren-rs
+# checkout needed). To iterate against local wren-rs changes, temporarily flip
+# to `path = "../../../wren-rs/crates/wren-core"` — but don't commit that.
+wren-core = { git = "https://github.com/FirestormAudio/wren-rs", rev = "189765a123a3a194f5982b3a4ec6bf08776fbd70", features = ["debug"] }
 # default-features = false is MANDATORY: it disables `wren-sys-backend` so this
 # crate links ONLY wren-core's C VM (no double-VM). We use the backend-agnostic
 # SlotApi trait + generic binding bodies, never deluge-wren-core's Vm surface or

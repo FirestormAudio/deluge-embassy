@@ -222,6 +222,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 [[package]]
 name = "wren-core"
 version = "0.4.0"
+source = "git+https://github.com/FirestormAudio/wren-rs?rev=189765a123a3a194f5982b3a4ec6bf08776fbd70#189765a123a3a194f5982b3a4ec6bf08776fbd70"
 dependencies = [
  "cc",
  "hashbrown",
@@ -234,6 +235,7 @@ dependencies = [
 [[package]]
 name = "wren-syntax"
 version = "0.4.0"
+source = "git+https://github.com/FirestormAudio/wren-rs?rev=189765a123a3a194f5982b3a4ec6bf08776fbd70#189765a123a3a194f5982b3a4ec6bf08776fbd70"
 dependencies = [
  "log",
 ]

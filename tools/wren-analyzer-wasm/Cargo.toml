@@ -1,4 +1,4 @@
-# Wasm wrapper around wren-analyzer (from the sibling wren-rs checkout), for the
+# Wasm wrapper around wren-analyzer (pinned from the wren-rs repo), for the
 # web editor's live diagnostics. Pure Rust → builds for wasm32-unknown-unknown
 # with no wasi-libc, so the module is import-light and runs in a plain Web Worker.
 # Excluded from the no_std cross-compiled workspace, like the other web tools.
@@ -15,10 +15,12 @@ name = "wren_analyzer_wasm"
 crate-type = ["cdylib"]
 
 [dependencies]
-# The static analyzer + its parser, from the sibling wren-rs repo (same pattern
-# as wren-sys reaching the wren VM sources). Default features include `std`.
-wren-analyzer = { path = "../../../wren-rs/crates/wren-analyzer" }
-wren-syntax = { path = "../../../wren-rs/crates/wren-syntax" }
+# The static analyzer + its parser, pinned by rev so this builds from a bare
+# clone. Default features include `std`. Keep the rev in lockstep with
+# wren-web-debug's wren-core pin. For local wren-rs iteration, temporarily flip
+# to `path = "../../../wren-rs/crates/…"` — but don't commit that.
+wren-analyzer = { git = "https://github.com/FirestormAudio/wren-rs", rev = "189765a123a3a194f5982b3a4ec6bf08776fbd70" }
+wren-syntax = { git = "https://github.com/FirestormAudio/wren-rs", rev = "189765a123a3a194f5982b3a4ec6bf08776fbd70" }
 
 [profile.release]
 opt-level = "s"
