@@ -25,7 +25,7 @@ jobs:
       - name: Install QEMU + ARM cross toolchain + libudev (for serialport)
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf libudev-dev
+          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf libudev-dev pkg-config libasound2-dev
 
       - name: Run test suite
         run: ./tools/test.sh
