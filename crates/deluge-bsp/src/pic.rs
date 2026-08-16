@@ -97,6 +97,25 @@ const CMD_SET_COLOUR_FOR_COLS_BASE: u8 = 1;
 /// Sent after all column-pair data to trigger the PIC display refresh.
 const CMD_DONE_SENDING_ROWS: u8 = 240;
 
+/// Smooth-scroll animation opcodes. The PIC keeps its own off-screen framebuffer and smears it to
+/// animate a scroll, so the app sends one colour per row per tick instead of resending the grid —
+/// that bandwidth saving is the whole reason these exist rather than reusing
+/// [`set_column_pair_rgb`].
+///
+/// `SET_SCROLL_ROW` is a base: the row index is ADDED to it (228..=235 for the 8 rows).
+const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
+/// Horizontal-scroll setup is also a base with the app's flag bits ADDED: bit 0 = scrolling
+/// right/positive, bit 1 = the scrolled area includes the sidebar (18 columns rather than 16).
+///
+/// Encoded arithmetically, exactly as the legacy C++ BSP does (`PIC::setupHorizontalScroll`), and
+/// deliberately NOT via named per-combination constants: the legacy header names 238/239
+/// `SET_SCROLL_RIGHT_FULL`/`SET_SCROLL_LEFT_FULL`, which are transposed with respect to that flag
+/// encoding. The PIC's interpretation of `base + flags` is authoritative, so reproduce the
+/// arithmetic and leave the naming alone.
+const CMD_SET_SCROLL_HORIZONTAL_BASE: u8 = 236;
+const CMD_SET_SCROLL_UP: u8 = 241;
+const CMD_SET_SCROLL_DOWN: u8 = 242;
+
 // ── Response byte sentinels ───────────────────────────────────────────────────
 
 const RESP_NEXT_PAD_OFF: u8 = 252;
@@ -381,6 +400,57 @@ pub async fn set_column_pair_rgb(pair: u8, colours: &[[u8; 3]; 16]) {
         buf[3 + i * 3] = *b;
     }
     tx(&buf).await;
+}
+
+/// Begin a horizontal scroll animation.
+///
+/// `flags` is the app's encoding: bit 0 set = scrolling right (positive direction), bit 1 set = the
+/// scrolled area spans all 18 columns (main grid plus sidebar) rather than the 16 main columns. See
+/// [`CMD_SET_SCROLL_HORIZONTAL_BASE`] for why this is `base + flags` arithmetic.
+#[inline]
+pub async fn setup_horizontal_scroll(flags: u8) {
+    // Mask to the two meaningful bits so a stray high bit cannot walk into DONE_SENDING_ROWS (240).
+    tx(&[CMD_SET_SCROLL_HORIZONTAL_BASE + (flags & 0b11)]).await;
+}
+
+/// Supply the incoming colour for one row of an in-progress horizontal scroll.
+///
+/// `row` is 0–7. Called once per row per animation tick, after
+/// [`setup_horizontal_scroll`]; finish the tick with [`done_sending_rows`].
+#[inline]
+pub async fn send_scroll_row(row: u8, colour: [u8; 3]) {
+    if row >= 8 {
+        return; // out of range would collide with the horizontal-scroll opcodes at 236
+    }
+    tx(&[
+        CMD_SET_SCROLL_ROW_BASE + row,
+        colour[0],
+        colour[1],
+        colour[2],
+    ])
+    .await;
+}
+
+/// Perform a vertical scroll, supplying the whole incoming row in one command.
+///
+/// `up` picks the direction. `colours` is the incoming row, one entry per column — the Deluge sends
+/// all 18 (16 main + 2 sidebar). Unlike the horizontal case this is a single command, so there is no
+/// per-row follow-up.
+pub async fn vertical_scroll(up: bool, colours: &[[u8; 3]]) {
+    // 1 command byte + 18 x 3 colour bytes.
+    let mut buf = [0u8; 1 + 18 * 3];
+    buf[0] = if up {
+        CMD_SET_SCROLL_UP
+    } else {
+        CMD_SET_SCROLL_DOWN
+    };
+    let n = colours.len().min(18);
+    for (i, [r, g, b]) in colours.iter().take(n).enumerate() {
+        buf[1 + i * 3] = *r;
+        buf[2 + i * 3] = *g;
+        buf[3 + i * 3] = *b;
+    }
+    tx(&buf[..1 + n * 3]).await;
 }
 
 /// Signal the PIC that all column-pair colour data has been sent for this
