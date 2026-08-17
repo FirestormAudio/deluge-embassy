@@ -100,14 +100,28 @@ impl HandlerCell {
 
 /// Could `addr` be the entry point of a function in this image?
 ///
-/// Deliberately coarse — the point is to reject a corrupted slot before branching to
-/// it, not to validate a symbol. Code on this part lives in on-chip SRAM
-/// (`0x2000_0000`, 3 MB) or SDRAM (`0x0C00_0000`, 64 MB); an ARM entry point is also
-/// 4-byte aligned. Anything else is corruption, and calling it aborts.
+/// Deliberately coarse — the point is to reject a corrupted slot before branching to it, not to
+/// validate a symbol. Code on this part lives in on-chip SRAM (`0x2000_0000`, 3 MB) or SDRAM
+/// (`0x0C00_0000`, 64 MB), and the range check is what actually catches corruption.
+///
+/// # Thumb pointers
+///
+/// This used to also require `addr % 4 == 0`, on the reasoning that "an ARM entry point is
+/// 4-byte aligned". That silently assumes the whole image is built for ARM mode. It is not: a
+/// Thumb function pointer carries the interworking bit in bit 0, and a Thumb entry point is only
+/// 2-byte aligned — so under a Thumb build EVERY registered handler failed this check and was
+/// refused as "corruption", leaving no interrupt dispatched at all. It reported as
+/// "N of 587 slots damaged", where N was simply the number of handlers registered.
+///
+/// Strip the interworking bit before range-checking, and require only 2-byte alignment, which
+/// both ISAs satisfy. Bit 0 is deliberately NOT treated as evidence either way: a corrupted slot
+/// is overwhelmingly likely to land outside the two code regions, which is what the range test
+/// is for.
 fn is_plausible_code_address(addr: usize) -> bool {
     const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
     const SDRAM: core::ops::Range<usize> = 0x0C00_0000..0x1000_0000;
-    addr % 4 == 0 && (SRAM.contains(&addr) || SDRAM.contains(&addr))
+    let target = addr & !1; // drop the Thumb interworking bit
+    target % 2 == 0 && (SRAM.contains(&target) || SDRAM.contains(&target))
 }
 
 /// IRQ handler dispatch table — one slot per interrupt ID.
@@ -427,7 +441,10 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
                     // write or a bad index, many at a bulk overrun through the table.
                     let damaged = HANDLERS
                         .iter()
-                        .filter(|c| c.get().is_some_and(|h| !is_plausible_code_address(h as usize)))
+                        .filter(|c| {
+                            c.get()
+                                .is_some_and(|h| !is_plausible_code_address(h as usize))
+                        })
                         .count();
                     log::error!(
                         "GIC: id={} handler pointer {:#010x} is not a code address - REFUSING to call \
