@@ -259,16 +259,14 @@ mod device {
             let mut status = [0u8; 64];
 
             // Mode 0 (query): does the card support group-1 function 1?
-            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_QUERY_HS, &mut status)
-                .await?;
+            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_QUERY_HS, &mut status).await?;
             let st = super::parse_switch_status(&status);
             if !st.hs_supported {
                 return Err(SdError::UnsupportedCard);
             }
 
             // Mode 1 (switch): actually switch to High-Speed.
-            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_SWITCH_HS, &mut status)
-                .await?;
+            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_SWITCH_HS, &mut status).await?;
             let st = super::parse_switch_status(&status);
             if st.group1_selected != 0x1 {
                 return Err(SdError::Protocol);

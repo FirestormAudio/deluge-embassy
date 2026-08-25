@@ -21,7 +21,12 @@ pub struct SampleRing {
 
 impl SampleRing {
     pub const fn new() -> Self {
-        Self { buf: [0.0; RING_SAMPLES], head: 0, count: 0, channels: 1 }
+        Self {
+            buf: [0.0; RING_SAMPLES],
+            head: 0,
+            count: 0,
+            channels: 1,
+        }
     }
 
     /// Reset to empty for a stream of `channels` channels (clamped to

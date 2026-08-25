@@ -88,7 +88,10 @@ pub(crate) async fn loopback_task() {
             continue;
         }
         if !was_connected {
-            info!("loopback: device connected cap={}ch play={}ch", cap_ch, play_ch);
+            info!(
+                "loopback: device connected cap={}ch play={}ch",
+                cap_ch, play_ch
+            );
             was_connected = true;
         }
         STAGE.store(STAGE_STREAMING, Ordering::Relaxed);

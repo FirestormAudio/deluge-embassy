@@ -13,9 +13,7 @@ use embassy_time::Timer;
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::pic;
 
-use crate::tasks::loopback::{
-    CAP_CH, PEAK_MILLI, PLAY_CH, STAGE, STAGE_STREAMING, STAGE_WAITING,
-};
+use crate::tasks::loopback::{CAP_CH, PEAK_MILLI, PLAY_CH, STAGE, STAGE_STREAMING, STAGE_WAITING};
 
 const INTERVAL_MS: u64 = 250;
 const TOP: usize = 10;

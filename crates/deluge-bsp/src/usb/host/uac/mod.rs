@@ -91,8 +91,8 @@ pub struct UacCaptureMatch {
 /// Requires Type-I PCM with `subslot_size == 3` (24-bit). Returns
 /// [`UacError::NoInputInterface`] / [`UacError::UnsupportedFormat`] otherwise.
 pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureMatch, UacError> {
-    let coll =
-        AudioInterfaceCollection::try_from_configuration(cfg).map_err(|_| UacError::BadDescriptors)?;
+    let coll = AudioInterfaceCollection::try_from_configuration(cfg)
+        .map_err(|_| UacError::BadDescriptors)?;
     let ac_interface = coll
         .control_interface
         .interface_descriptors
@@ -276,8 +276,13 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         // Negotiate 44.1 kHz on the clock-source entity.
         let cur = Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
         if cur != SAMPLE_RATE_HZ {
-            Self::set_sampling_freq(&mut control, m.ac_interface, m.clock_source_id, SAMPLE_RATE_HZ)
-                .await?;
+            Self::set_sampling_freq(
+                &mut control,
+                m.ac_interface,
+                m.clock_source_id,
+                SAMPLE_RATE_HZ,
+            )
+            .await?;
             let now =
                 Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
             if now != SAMPLE_RATE_HZ {
@@ -373,7 +378,9 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
             index: (clock_id as u16) << 8 | ac_interface as u16,
             length: 4,
         };
-        control.control_out(&setup.to_bytes(), &freq.to_le_bytes()).await?;
+        control
+            .control_out(&setup.to_bytes(), &freq.to_le_bytes())
+            .await?;
         Ok(())
     }
 
@@ -437,7 +444,8 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
                 frame[c] = decode_s24le(&chunk[c * 3..c * 3 + 3]);
             }
             let ring = &mut self.ring;
-            self.resampler.feed(&frame[..ch], self.r, |o| ring.push_frame(o));
+            self.resampler
+                .feed(&frame[..ch], self.r, |o| ring.push_frame(o));
         }
         self.r = self.pi.update(self.ring.fill_frames() as f32);
         // Full-duplex: emit one playback packet per capture tick (this cycle's
@@ -909,28 +917,39 @@ mod tests {
         push(&[8, 0x24, 0x0A, 0x09, 0x01, 0x07, 0x00, 0x00], &mut b);
         // CS Input Terminal (subtype 0x02): term id 0x01, type MIC 0x0201,
         // assoc 0, clock source id 0x09, nrchannels, ...
-        push(&[17, 0x24, 0x02, 0x01, 0x01, 0x02, 0, 0x09, channels, 0, 0, 0, 0, 0, 0, 0, 0], &mut b);
+        push(
+            &[
+                17, 0x24, 0x02, 0x01, 0x01, 0x02, 0, 0x09, channels, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            &mut b,
+        );
         // Std AS interface 1, alt 0 (zero bandwidth): 0 eps.
         push(&[9, 0x04, 1, 0, 0, 0x01, 0x02, 0x20, 0], &mut b);
         // Std AS interface 1, alt 1: 1 ep, AUDIO/AUDIOSTREAMING/UAC2.
         push(&[9, 0x04, 1, 1, 1, 0x01, 0x02, 0x20, 0], &mut b);
         // CS AS general (subtype 0x01): terminal link 0x01, controls, FORMAT_TYPE_I=1,
         // formats bitmap(4), nrchannels, channel config(4), name.
-        push(&[16, 0x24, 0x01, 0x01, 0x00, 0x01, 0x01, 0, 0, 0, channels, 0, 0, 0, 0, 0], &mut b);
+        push(
+            &[
+                16, 0x24, 0x01, 0x01, 0x00, 0x01, 0x01, 0, 0, 0, channels, 0, 0, 0, 0, 0,
+            ],
+            &mut b,
+        );
         // CS AS FORMAT_TYPE (subtype 0x02): FORMAT_TYPE_I=1, subslot, bit_res.
         push(&[6, 0x24, 0x02, 0x01, subslot, subslot * 8], &mut b);
         // Std iso IN endpoint 0x81, iso(0x01) async, mps, interval 4.
-        push(&[7, 0x05, 0x81, 0x01, mps as u8, (mps >> 8) as u8, 0x04], &mut b);
+        push(
+            &[7, 0x05, 0x81, 0x01, mps as u8, (mps >> 8) as u8, 0x04],
+            &mut b,
+        );
         // CS AS iso endpoint (0x25): general, attrs, controls, lock delay units/val.
         push(&[8, 0x25, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00], &mut b);
 
         // Configuration header: len 9, CONFIGURATION=0x02, total_len LE, 2 ifaces.
         let total = (9 + b.len()) as u16;
         let mut cfg: Vec<u8, 256> = Vec::new();
-        cfg.extend_from_slice(&[
-            9, 0x02, total as u8, (total >> 8) as u8, 2, 1, 0, 0x80, 50,
-        ])
-        .unwrap();
+        cfg.extend_from_slice(&[9, 0x02, total as u8, (total >> 8) as u8, 2, 1, 0, 0x80, 50])
+            .unwrap();
         cfg.extend_from_slice(&b).unwrap();
         cfg
     }
@@ -953,7 +972,10 @@ mod tests {
     fn rejects_non_24bit_format() {
         let raw = uac2_mic_cfg(2, 2); // 16-bit
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
+        assert!(matches!(
+            find_uac_capture(&cfg),
+            Err(UacError::UnsupportedFormat)
+        ));
     }
 
     #[test]
@@ -962,7 +984,10 @@ mod tests {
         // out of bounds if this were allowed through.
         let raw = uac2_mic_cfg(3, 9);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
+        assert!(matches!(
+            find_uac_capture(&cfg),
+            Err(UacError::UnsupportedFormat)
+        ));
 
         // 0 channels: `pump_once` would panic on `chunks_exact(0)` if this
         // were allowed through. Only assert if the fixture still parses as a
@@ -970,7 +995,10 @@ mod tests {
         // failing to parse for unrelated reasons wouldn't isolate the check.
         let raw0 = uac2_mic_cfg(3, 0);
         let cfg0 = ConfigurationDescriptor::try_from_slice(&raw0).unwrap();
-        assert!(matches!(find_uac_capture(&cfg0), Err(UacError::UnsupportedFormat)));
+        assert!(matches!(
+            find_uac_capture(&cfg0),
+            Err(UacError::UnsupportedFormat)
+        ));
     }
 
     #[test]
@@ -980,7 +1008,10 @@ mod tests {
         // rejected here rather than allowed through to slice-panic later.
         let raw = uac2_mic_cfg_mps(3, 2, 2048);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        assert!(matches!(find_uac_capture(&cfg), Err(UacError::UnsupportedFormat)));
+        assert!(matches!(
+            find_uac_capture(&cfg),
+            Err(UacError::UnsupportedFormat)
+        ));
     }
 
     // --- Uac::try_register negotiation ---
@@ -1020,8 +1051,10 @@ mod tests {
         // GET_CUR -> 48000, then after SET_CUR the confirming GET_CUR -> 44100.
         {
             let mut r = state.control_reads.borrow_mut();
-            r.push(heapless::Vec::from_slice(&48_000u32.to_le_bytes()).unwrap()).unwrap();
-            r.push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap()).unwrap();
+            r.push(heapless::Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
+                .unwrap();
+            r.push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+                .unwrap();
         }
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
@@ -1030,7 +1063,10 @@ mod tests {
         let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
         assert_eq!(host.channels(), 1);
         // The SET_CUR data stage carried 44100 LE.
-        assert_eq!(&state.control_out_data.borrow()[..4], &44_100u32.to_le_bytes());
+        assert_eq!(
+            &state.control_out_data.borrow()[..4],
+            &44_100u32.to_le_bytes()
+        );
     }
 
     // --- decode_s24le ---
@@ -1130,7 +1166,8 @@ mod tests {
         // (+0.5, -1.0) plus one torn trailing byte that `chunks_exact` must
         // silently drop rather than panic on.
         let mut pkt = heapless::Vec::<u8, 64>::new();
-        pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x80, 0xAA]).unwrap();
+        pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x80, 0xAA])
+            .unwrap();
         state.script.borrow_mut().reads.push(pkt).unwrap();
 
         let alloc = MockAlloc::new(state);

@@ -733,13 +733,31 @@ pub async fn wait_redraw() {
 /// grid. Drawn scaled ×3 and centered in the visible (non-bezel) area. Used by
 /// the app-loader as the frame the panel holds while a launched image boots.
 const BOOT_LOGO: [(usize, usize); 25] = [
-    (1, 0), (2, 1), (3, 2), (4, 3),
-    (4, 0), (5, 1), (6, 2), (7, 3),
-    (0, 2), (1, 3), (2, 4), (3, 5),
-    (5, 5), (6, 6), (7, 7),
-    (1, 6), (2, 7), (3, 8), (4, 9),
-    (8, 5), (9, 6), (10, 7),
-    (5, 7), (6, 8), (7, 9),
+    (1, 0),
+    (2, 1),
+    (3, 2),
+    (4, 3),
+    (4, 0),
+    (5, 1),
+    (6, 2),
+    (7, 3),
+    (0, 2),
+    (1, 3),
+    (2, 4),
+    (3, 5),
+    (5, 5),
+    (6, 6),
+    (7, 7),
+    (1, 6),
+    (2, 7),
+    (3, 8),
+    (4, 9),
+    (8, 5),
+    (9, 6),
+    (10, 7),
+    (5, 7),
+    (6, 8),
+    (7, 9),
 ];
 const BOOT_LOGO_W: usize = 11;
 const BOOT_LOGO_H: usize = 10;
@@ -753,7 +771,11 @@ pub fn boot_logo() -> FrameBuffer {
     for &(gx, gy) in BOOT_LOGO.iter() {
         for sy in 0..BOOT_LOGO_SCALE {
             for sx in 0..BOOT_LOGO_SCALE {
-                fb.set_pixel(x0 + gx * BOOT_LOGO_SCALE + sx, y0 + gy * BOOT_LOGO_SCALE + sy, true);
+                fb.set_pixel(
+                    x0 + gx * BOOT_LOGO_SCALE + sx,
+                    y0 + gy * BOOT_LOGO_SCALE + sy,
+                    true,
+                );
             }
         }
     }

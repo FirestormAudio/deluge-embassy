@@ -49,7 +49,8 @@ pub(crate) fn us_to_ostm_ticks(delta_us: u64) -> u64 {
 /// comparable future miscalculation self-heals in 100 ms and reads as a glitch rather than a hang.
 /// Defence in depth — not a substitute for the extension, which is what makes the miscalculation
 /// impossible in the first place.
-pub(crate) const MAX_ARM_OSTM_TICKS: u32 = (OSTM_PER_US_NUM as u32 / OSTM_PER_US_DEN as u32) * 100_000;
+pub(crate) const MAX_ARM_OSTM_TICKS: u32 =
+    (OSTM_PER_US_NUM as u32 / OSTM_PER_US_DEN as u32) * 100_000;
 
 /// Extend a fresh 32-bit `cnt` against the previously published 64-bit `last`.
 ///

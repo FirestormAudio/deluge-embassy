@@ -33,7 +33,10 @@ pub(crate) async fn probe_task() {
         };
 
         if last != present as i32 {
-            info!("VBUS-PROBE: VBUS {}", if present { "PRESENT" } else { "ABSENT" });
+            info!(
+                "VBUS-PROBE: VBUS {}",
+                if present { "PRESENT" } else { "ABSENT" }
+            );
             last = present as i32;
         }
 
@@ -43,7 +46,11 @@ pub(crate) async fn probe_task() {
             &mut fb,
             0,
             TOP + 16,
-            if present { b"VBUS: PRESENT" } else { b"VBUS: ABSENT " },
+            if present {
+                b"VBUS: PRESENT"
+            } else {
+                b"VBUS: ABSENT "
+            },
         );
         oled::send_frame(&fb).await;
         Timer::after_millis(200).await;

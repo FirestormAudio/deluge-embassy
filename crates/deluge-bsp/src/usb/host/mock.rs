@@ -241,8 +241,8 @@ mod tests {
 #[cfg(all(test, not(target_os = "none")))]
 mod control_mock_tests {
     use super::*;
-    use embassy_usb_driver::host::{pipe, UsbHostAllocator, UsbPipe};
     use embassy_usb_driver::EndpointType;
+    use embassy_usb_driver::host::{UsbHostAllocator, UsbPipe, pipe};
 
     #[test]
     fn control_in_pops_scripted_response_and_logs_setup() {
@@ -256,7 +256,12 @@ mod control_mock_tests {
         let mut pipe = alloc
             .alloc_pipe::<pipe::Control, pipe::InOut>(
                 1,
-                &EndpointInfo { addr: 0u8.into(), ep_type: EndpointType::Control, max_packet_size: 64, interval_ms: 0 },
+                &EndpointInfo {
+                    addr: 0u8.into(),
+                    ep_type: EndpointType::Control,
+                    max_packet_size: 64,
+                    interval_ms: 0,
+                },
                 None,
             )
             .unwrap();
@@ -276,13 +281,21 @@ mod control_mock_tests {
         let mut pipe = alloc
             .alloc_pipe::<pipe::Control, pipe::InOut>(
                 1,
-                &EndpointInfo { addr: 0u8.into(), ep_type: EndpointType::Control, max_packet_size: 64, interval_ms: 0 },
+                &EndpointInfo {
+                    addr: 0u8.into(),
+                    ep_type: EndpointType::Control,
+                    max_packet_size: 64,
+                    interval_ms: 0,
+                },
                 None,
             )
             .unwrap();
         let setup = [0x21, 0x01, 0x00, 0x01, 0x00, 0x01, 0x04, 0x00];
         embassy_futures::block_on(pipe.control_out(&setup, &44_100u32.to_le_bytes())).unwrap();
         assert_eq!(state.setups.borrow()[0], setup);
-        assert_eq!(&state.control_out_data.borrow()[..], &44_100u32.to_le_bytes());
+        assert_eq!(
+            &state.control_out_data.borrow()[..],
+            &44_100u32.to_le_bytes()
+        );
     }
 }

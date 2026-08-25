@@ -110,7 +110,10 @@ pub async fn bench_task() {
             Ok(h) => match reference {
                 None => {
                     reference = Some(h);
-                    info!("soak: pass {}/{}: csum {:016x} (reference)", pass, SOAK_PASSES, h);
+                    info!(
+                        "soak: pass {}/{}: csum {:016x} (reference)",
+                        pass, SOAK_PASSES, h
+                    );
                 }
                 Some(r) if r == h => info!("soak: pass {}/{}: OK", pass, SOAK_PASSES),
                 Some(r) => {
@@ -130,7 +133,10 @@ pub async fn bench_task() {
     if failures == 0 {
         info!("soak: PASS — {} passes, 0 errors", SOAK_PASSES);
     } else {
-        error!("soak: FAIL — {} error(s) in {} passes", failures, SOAK_PASSES);
+        error!(
+            "soak: FAIL — {} error(s) in {} passes",
+            failures, SOAK_PASSES
+        );
     }
 
     if WRITE_SOAK {
@@ -149,7 +155,10 @@ async fn write_soak() {
         return;
     }
     let base = total - SCRATCH_FROM_END;
-    info!("write soak: scratch @ LBA {} ({} sectors) — DESTRUCTIVE", base, CHUNK_SECTORS);
+    info!(
+        "write soak: scratch @ LBA {} ({} sectors) — DESTRUCTIVE",
+        base, CHUNK_SECTORS
+    );
 
     #[allow(static_mut_refs)]
     let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };

@@ -146,7 +146,7 @@ impl Audio {
 
 #[cfg(test)]
 mod tests {
-    use super::{adapt_block, StereoFrame};
+    use super::{StereoFrame, adapt_block};
 
     /// The closure must observe the *input* buffer, not `out`'s prior contents.
     #[test]

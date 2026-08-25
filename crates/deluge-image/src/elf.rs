@@ -319,7 +319,9 @@ impl StreamRouter {
             if p_filesz > p_memsz {
                 return Err(PlanError::WrongFormat);
             }
-            let file_end = p_offset.checked_add(p_filesz).ok_or(PlanError::WrongFormat)?;
+            let file_end = p_offset
+                .checked_add(p_filesz)
+                .ok_or(PlanError::WrongFormat)?;
 
             // Streaming cannot seek backward: segments must arrive in
             // non-decreasing, non-overlapping file order. Only file-backed
@@ -884,20 +886,41 @@ mod tests {
         assert_eq!(r.header_end(), 52 + 2 * 32);
 
         // A byte at file offset 0 lands at the SDRAM segment's paddr.
-        assert_eq!(r.route_at(0), RouteStep { dst: Some(SDRAM_LO), run: 0x200 });
+        assert_eq!(
+            r.route_at(0),
+            RouteStep {
+                dst: Some(SDRAM_LO),
+                run: 0x200
+            }
+        );
         // Offset 0x100 is 0x100 into that segment.
-        assert_eq!(r.route_at(0x100), RouteStep { dst: Some(SDRAM_LO + 0x100), run: 0x100 });
+        assert_eq!(
+            r.route_at(0x100),
+            RouteStep {
+                dst: Some(SDRAM_LO + 0x100),
+                run: 0x100
+            }
+        );
         // The SRAM segment routes to the staging window, not its final SRAM address.
         assert_eq!(
             r.route_at(0x200),
-            RouteStep { dst: Some(sram_stage_addr(SRAM_LOAD_ORIGIN)), run: 0x40 }
+            RouteStep {
+                dst: Some(sram_stage_addr(SRAM_LOAD_ORIGIN)),
+                run: 0x40
+            }
         );
         // Its recorded final destination is the SRAM address for the trampoline.
         let sram = r.segments().iter().find(|s| s.sram).unwrap();
         assert_eq!(sram.final_dst, SRAM_LOAD_ORIGIN);
         assert_eq!(sram.memsz, 0x80);
         // Past the last file byte: discard to the end.
-        assert_eq!(r.route_at(0x240), RouteStep { dst: None, run: u32::MAX });
+        assert_eq!(
+            r.route_at(0x240),
+            RouteStep {
+                dst: None,
+                run: u32::MAX
+            }
+        );
     }
 
     #[test]
@@ -911,9 +934,21 @@ mod tests {
         );
         let r = StreamRouter::new(&front).unwrap();
         // Header/gap before the first segment is discarded up to its start.
-        assert_eq!(r.route_at(0), RouteStep { dst: None, run: 0x100 });
+        assert_eq!(
+            r.route_at(0),
+            RouteStep {
+                dst: None,
+                run: 0x100
+            }
+        );
         // Gap between the two segments (0x140..0x200) is discarded.
-        assert_eq!(r.route_at(0x140), RouteStep { dst: None, run: 0x0C0 });
+        assert_eq!(
+            r.route_at(0x140),
+            RouteStep {
+                dst: None,
+                run: 0x0C0
+            }
+        );
     }
 
     #[test]
@@ -986,17 +1021,41 @@ mod tests {
 
         // Routing follows the two file-backed segments only: the zero-length
         // BSS segments never claim a byte or open a spurious discard run.
-        assert_eq!(r.route_at(0), RouteStep { dst: None, run: 0x4000 });
+        assert_eq!(
+            r.route_at(0),
+            RouteStep {
+                dst: None,
+                run: 0x4000
+            }
+        );
         assert_eq!(
             r.route_at(0x004000),
-            RouteStep { dst: Some(sram_stage_addr(0x2002_0000)), run: 0x1C9CE8 }
+            RouteStep {
+                dst: Some(sram_stage_addr(0x2002_0000)),
+                run: 0x1C9CE8
+            }
         );
-        assert_eq!(r.route_at(0x1CDCE8), RouteStep { dst: None, run: 0x318 });
+        assert_eq!(
+            r.route_at(0x1CDCE8),
+            RouteStep {
+                dst: None,
+                run: 0x318
+            }
+        );
         assert_eq!(
             r.route_at(0x1CE000),
-            RouteStep { dst: Some(sram_stage_addr(0x201E_9CE8)), run: 0x2ABDC }
+            RouteStep {
+                dst: Some(sram_stage_addr(0x201E_9CE8)),
+                run: 0x2ABDC
+            }
         );
-        assert_eq!(r.route_at(0x1F8BDC), RouteStep { dst: None, run: u32::MAX });
+        assert_eq!(
+            r.route_at(0x1F8BDC),
+            RouteStep {
+                dst: None,
+                run: u32::MAX
+            }
+        );
 
         // The BSS segments still reach the loader so their tails get zeroed.
         let bss = r.segments().last().unwrap();

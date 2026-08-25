@@ -339,7 +339,10 @@ pub(crate) async fn midi_send(data: &[u8]) {
             // Short write: rawmidi is opened non-blocking, so a full output
             // buffer truncates rather than waiting. Report it — silently
             // dropping the tail of a SysEx would be very hard to diagnose.
-            log::warn!("midi_send wrote {n}/{} bytes (output buffer full)", data.len());
+            log::warn!(
+                "midi_send wrote {n}/{} bytes (output buffer full)",
+                data.len()
+            );
         }
         Ok(_) => {}
         Err(e) => log::warn!("midi_send failed: {e}"),
@@ -558,8 +561,7 @@ pub(crate) fn input_start_pump(_spawner: Spawner) {
                 // pressed pad lights up its reflection. That is how this was
                 // found on hardware, after `pads_flush` was fixed alone.
                 y: (deluge_bsp::rgb::ROWS as isize - 1 - ev.y as isize)
-                    .clamp(0, deluge_bsp::rgb::ROWS as isize - 1)
-                    as u8,
+                    .clamp(0, deluge_bsp::rgb::ROWS as isize - 1) as u8,
                 pressed: ev.value != 0,
             },
             1 => crate::input::Event::Button {

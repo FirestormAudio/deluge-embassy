@@ -777,10 +777,9 @@ pub mod __rt {
             // Default to `info` so the backend's own diagnostics (libdeluge
             // open, oled_write failures) reach stderr → the boot console even
             // when the launcher doesn't set RUST_LOG.
-            let _ = env_logger::Builder::from_env(
-                env_logger::Env::default().default_filter_or("info"),
-            )
-            .try_init();
+            let _ =
+                env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                    .try_init();
             let dev = deluge_hal_linux::Deluge::open().expect("deluge_open failed");
             crate::linux::init(dev);
             log::info!("libdeluge opened; linux backend running");

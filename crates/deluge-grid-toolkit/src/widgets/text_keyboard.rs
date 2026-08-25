@@ -38,8 +38,8 @@ const KEYBOARD_CHARS: [[[char; 11]; 5]; 4] = [
     // QWERTY
     [
         ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-'],
-        ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '/'],   // col10: '/'
-        ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', '\''],  // col9: ';'
+        ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '/'], // col10: '/'
+        ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', '\''], // col9: ';'
         ['Z', 'X', 'C', 'V', 'B', 'N', 'M', ',', '.', '\\', '\0'], // col9: '\'
         ['\0', '\0', ' ', ' ', ' ', ' ', ' ', ' ', '\0', '\0', '\0'],
     ],
@@ -72,10 +72,23 @@ const KEYBOARD_CHARS: [[[char; 11]; 5]; 4] = [
 /// Map a base (unshifted) char to its shifted form on the US-QWERTY layout.
 fn shifted(base: char) -> char {
     match base {
-        '1' => '!', '2' => '@', '3' => '#', '4' => '$', '5' => '%',
-        '6' => '^', '7' => '&', '8' => '*', '9' => '(', '0' => ')',
-        '-' => '_', '\'' => '"', ',' => '<', '.' => '>',
-        '/' => '?', ';' => ':', '\\' => '|',
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        ';' => ':',
+        '\\' => '|',
         c if c.is_ascii_lowercase() => c.to_ascii_uppercase(),
         other => other,
     }
@@ -90,11 +103,7 @@ fn resolve(base: char, shift: bool) -> char {
     } else {
         base
     };
-    if shift {
-        shifted(lower)
-    } else {
-        lower
-    }
+    if shift { shifted(lower) } else { lower }
 }
 
 #[derive(Debug, Clone)]
@@ -302,7 +311,7 @@ mod tests {
     fn new_qwerty_symbol_keys_present() {
         let kb = TextKeyboardComponent::new(KeyboardLayout::Qwerty);
         assert_eq!(kb.char_at(13, QWERTY_HOME_ROW - 1), Some('/')); // char row1 col10
-        assert_eq!(kb.char_at(12, QWERTY_HOME_ROW), Some(';'));     // char row2 col9
+        assert_eq!(kb.char_at(12, QWERTY_HOME_ROW), Some(';')); // char row2 col9
         assert_eq!(kb.char_at(12, QWERTY_HOME_ROW + 1), Some('\\')); // char row3 col9
     }
 

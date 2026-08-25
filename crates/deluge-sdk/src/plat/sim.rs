@@ -207,9 +207,7 @@ async fn host_input_pump() {
         while let Some(ev) = crate::host::panel().pop_event() {
             let mapped = match ev {
                 InputEvent::Pad { x, y, pressed } => crate::input::Event::Pad { x, y, pressed },
-                InputEvent::Button { id, pressed } => {
-                    crate::input::Event::Button { id, pressed }
-                }
+                InputEvent::Button { id, pressed } => crate::input::Event::Button { id, pressed },
                 InputEvent::Encoder { index, delta } => {
                     crate::input::Event::Encoder { index, delta }
                 }

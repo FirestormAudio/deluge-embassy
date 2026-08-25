@@ -21,7 +21,12 @@ pub struct Resampler {
 
 impl Resampler {
     pub const fn new() -> Self {
-        Self { channels: 1, prev: [0.0; MAX_CHANNELS], have_prev: false, pos: 0.0 }
+        Self {
+            channels: 1,
+            prev: [0.0; MAX_CHANNELS],
+            have_prev: false,
+            pos: 0.0,
+        }
     }
 
     pub fn reset(&mut self, channels: usize) {
@@ -235,6 +240,9 @@ mod tests {
         );
         assert!((0.98..=1.02).contains(&r), "r must stay bounded, ended {r}");
         // Steady-state r tracks the clock offset (~1 + ppm), well inside band.
-        assert!(r > 1.0, "sustained fast clock should hold r slightly above 1.0");
+        assert!(
+            r > 1.0,
+            "sustained fast clock should hold r slightly above 1.0"
+        );
     }
 }

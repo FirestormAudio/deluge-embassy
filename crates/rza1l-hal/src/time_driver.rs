@@ -114,12 +114,7 @@ impl OstmDriver {
                 // and going backwards is the one thing this function must never do.
                 return last;
             }
-            match LAST_RAW.compare_exchange_weak(
-                last,
-                val,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match LAST_RAW.compare_exchange_weak(last, val, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => return val,
                 // Lost the race; re-read and retry. Bounded in practice: every retry means another
                 // caller published, so the loop cannot spin without the clock advancing.
@@ -246,4 +241,3 @@ pub unsafe fn init() {
         // OSTM1 will be enabled by try_set_alarm when needed.
     }
 }
-

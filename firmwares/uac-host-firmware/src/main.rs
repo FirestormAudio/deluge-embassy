@@ -88,7 +88,8 @@ pub extern "C" fn main() -> ! {
         // The supervisor enumerates + binds the UAC driver, which spawns the
         // capture/playback pump. It needs the spawner to spawn that child task.
         spawner.spawn(
-            deluge_bsp::usb::host::usb_host_supervisor(host_driver, spawner).expect("supervisor task pool full"),
+            deluge_bsp::usb::host::usb_host_supervisor(host_driver, spawner)
+                .expect("supervisor task pool full"),
         );
     })
 }

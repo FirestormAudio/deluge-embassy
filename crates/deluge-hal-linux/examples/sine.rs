@@ -5,9 +5,12 @@ fn main() {
         for f in out.iter_mut() {
             let s = 0.2 * phase.sin();
             phase += 2.0 * std::f32::consts::PI * 440.0 / 44100.0;
-            if phase > 2.0 * std::f32::consts::PI { phase -= 2.0 * std::f32::consts::PI; }
+            if phase > 2.0 * std::f32::consts::PI {
+                phase -= 2.0 * std::f32::consts::PI;
+            }
             *f = [s, s];
         }
-    }).expect("audio");
+    })
+    .expect("audio");
     std::thread::sleep(std::time::Duration::from_secs(3));
 }
